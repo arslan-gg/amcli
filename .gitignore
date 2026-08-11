@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.amcli.lock
+*.amcli.bak
+*.amcli.tmp.*
+.DS_Store

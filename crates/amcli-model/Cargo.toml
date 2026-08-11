@@ -1,0 +1,16 @@
+[package]
+name = "amcli-model"
+description = "ArchiMate model IR over a format-preserving XML document"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+amcli-xml.workspace = true
+thiserror = "2"
+zip = { version = "6", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+proptest = "1"

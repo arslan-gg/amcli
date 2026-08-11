@@ -1,0 +1,24 @@
+amcli
+Copyright 2026 the amcli authors
+
+This product includes software developed by the Archi project
+(https://github.com/archimatetool/archi), licensed under the MIT License.
+The full MIT license text is reproduced in assets/archi/LICENSE.archi.txt.
+
+Files vendored from Archi (see assets/archi/PROVENANCE.toml for the exact tag
+and checksums):
+
+  assets/archi/relationships.xml        ArchiMate 3.2 relationship validity matrix
+  assets/archi/relationships-keys.xml   relationship key letters
+  assets/archi/viewpoints.xml           ArchiMate viewpoint definitions
+
+Trademarks
+----------
+
+ArchiMate(R) is a registered trademark of The Open Group.
+Archi(R) is a trademark of Phillip Beauvoir.
+
+amcli is an independent open-source tool. It is not affiliated with, endorsed
+by, sponsored by, or certified by The Open Group or the Archi project. amcli
+reads and writes files in the Archi native model format and in The Open Group's
+ArchiMate Model Exchange File Format for interoperability purposes only.

@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/amcli-xml",
+    "crates/amcli-model",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/arslan-gg/amcli"
+rust-version = "1.90"
+
+[workspace.dependencies]
+amcli-xml = { path = "crates/amcli-xml" }
+amcli-model = { path = "crates/amcli-model" }
+amcli-graph = { path = "crates/amcli-graph" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

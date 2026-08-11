@@ -1,0 +1,16 @@
+[package]
+name = "amcli-xml"
+description = "Format-preserving XML tree: untouched nodes are re-emitted as their original bytes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+quick-xml = "0.38"
+smallvec = "1"
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
