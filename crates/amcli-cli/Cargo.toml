@@ -1,0 +1,24 @@
+[package]
+name = "amcli-cli"
+description = "A CLI over ArchiMate models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "amcli"
+path = "src/main.rs"
+
+[dependencies]
+amcli-model.workspace = true
+amcli-graph.workspace = true
+amcli-validate.workspace = true
+amcli-xml.workspace = true
+clap = { version = "4", features = ["derive", "wrap_help"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"

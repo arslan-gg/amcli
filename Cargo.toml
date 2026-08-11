@@ -5,6 +5,7 @@ members = [
     "crates/amcli-model",
     "crates/amcli-graph",
     "crates/amcli-validate",
+    "crates/amcli-cli",
     "xtask",
 ]
 
