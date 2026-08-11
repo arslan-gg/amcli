@@ -204,6 +204,11 @@ impl Model {
         self.index();
     }
 
+    /// Re-walk the document. Public so the validator can repair and re-scan.
+    pub fn reindex_public(&mut self) {
+        self.reindex();
+    }
+
     /// Look up a folder by its id attribute.
     pub fn folder_id_by_id(&self, id: &str) -> Option<FolderId> {
         match self.by_id.get(id) {

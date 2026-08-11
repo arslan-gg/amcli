@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use amcli_model::{Concept, ConceptId, ConceptKind, ElementType, Layer, Model, RelType};
+use amcli_model::{ConceptId, ConceptKind, ElementType, Layer, Model, RelType};
 
 pub mod select;
 pub use select::{Resolution, Selector};
@@ -681,12 +681,6 @@ fn snippet(text: &str, at: usize, len: usize) -> String {
         s.push('…');
     }
     s.replace(['\n', '\t'], " ")
-}
-
-/// Convenience for callers that want the concept behind an id without going
-/// through the model twice.
-pub fn concept_of<'a>(m: &'a Model, c: ConceptId) -> &'a Concept {
-    m.concept(c)
 }
 
 /// Element types, for callers building type filters from user input.

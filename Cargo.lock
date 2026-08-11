@@ -40,6 +40,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "amcli-validate"
+version = "0.1.0"
+dependencies = [
+ "amcli-graph",
+ "amcli-model",
+ "amcli-xml",
+]
+
+[[package]]
 name = "amcli-xml"
 version = "0.1.0"
 dependencies = [

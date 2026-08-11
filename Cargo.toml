@@ -4,6 +4,7 @@ members = [
     "crates/amcli-xml",
     "crates/amcli-model",
     "crates/amcli-graph",
+    "crates/amcli-validate",
     "xtask",
 ]
 
@@ -18,6 +19,7 @@ rust-version = "1.90"
 amcli-xml = { path = "crates/amcli-xml" }
 amcli-model = { path = "crates/amcli-model" }
 amcli-graph = { path = "crates/amcli-graph" }
+amcli-validate = { path = "crates/amcli-validate" }
 
 [profile.release]
 lto = "fat"

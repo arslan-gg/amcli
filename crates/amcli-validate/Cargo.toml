@@ -1,0 +1,13 @@
+[package]
+name = "amcli-validate"
+description = "Layered validation of an ArchiMate model, from XML shape to modelling hygiene"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+amcli-model.workspace = true
+amcli-graph.workspace = true
+amcli-xml.workspace = true

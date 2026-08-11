@@ -47,10 +47,10 @@ impl Selector {
         // A filter expression is anything carrying one of the operators. Testing
         // for the operator rather than for a keyword keeps `name=X` working
         // without quoting gymnastics.
-        if looks_like_filter(s) {
-            if let Ok(e) = Expr::parse(s) {
-                return Selector::Filter(e);
-            }
+        if looks_like_filter(s)
+            && let Ok(e) = Expr::parse(s)
+        {
+            return Selector::Filter(e);
         }
         if s.contains('*') || s.contains('?') {
             return Selector::Glob(s.to_string());
