@@ -116,6 +116,9 @@ enum Command {
         direction: String,
         #[arg(short = 'r', long)]
         rel: Option<String>,
+        /// Keep only concepts of this type.
+        #[arg(short = 't', long)]
+        r#type: Option<String>,
     },
     /// The neighbourhood within N hops, as an induced subgraph.
     Trace {
@@ -150,6 +153,10 @@ enum Command {
         direction: String,
         #[arg(short = 'n', long)]
         depth: Option<u32>,
+        /// Report only concepts of this type. The walk still crosses every
+        /// type, so asking for components two hops away still finds them.
+        #[arg(short = 't', long)]
+        r#type: Option<String>,
     },
     /// Composition and aggregation upwards.
     Ancestors { selector: String },
@@ -281,8 +288,8 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
             read::list(&graph, &ctx, r#type.as_deref(), folder.as_deref())
         }
         Command::Query { expr } => read::query(&graph, &ctx, expr),
-        Command::Neighbors { selector, direction, rel } => {
-            read::neighbors(&graph, &ctx, selector, direction, rel.as_deref())
+        Command::Neighbors { selector, direction, rel, r#type } => {
+            read::neighbors(&graph, &ctx, selector, direction, rel.as_deref(), r#type.as_deref())
         }
         Command::Trace { selector, direction, depth, rel, r#type } => read::trace(
             &graph,
@@ -296,8 +303,8 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         Command::Path { from, to, direction, all, depth } => {
             read::path(&graph, &ctx, from, to, direction, *all, *depth)
         }
-        Command::Impact { selector, direction, depth } => {
-            read::impact(&graph, &ctx, selector, direction, *depth)
+        Command::Impact { selector, direction, depth, r#type } => {
+            read::impact(&graph, &ctx, selector, direction, *depth, r#type.as_deref())
         }
         Command::Ancestors { selector } => read::containment(&graph, &ctx, selector, true),
         Command::Descendants { selector } => read::containment(&graph, &ctx, selector, false),

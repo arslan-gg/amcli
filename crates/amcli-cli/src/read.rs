@@ -258,10 +258,12 @@ pub fn neighbors(
     sel: &str,
     dir: &str,
     rel: Option<&str>,
+    ty: Option<&str>,
 ) -> Result<Output, CliError> {
     let m = g.model();
     let c = one(g, sel)?;
-    let arcs = g.neighbors(c, direction(dir)?, &rel_filter(rel)?);
+    let mut arcs = g.neighbors(c, direction(dir)?, &rel_filter(rel)?);
+    arcs.retain(|a| ty.is_none_or(|t| m.concept(a.other).kind.name().eq_ignore_ascii_case(t)));
     let total = arcs.len();
     let rows = arcs
         .iter()
@@ -403,12 +405,16 @@ pub fn impact(
     sel: &str,
     dir: &str,
     depth: Option<u32>,
+    ty: Option<&str>,
 ) -> Result<Output, CliError> {
     let m = g.model();
     let c = one(g, sel)?;
     let max = if ctx.limit == 0 { 100_000 } else { ctx.limit.max(50) * 10 };
-    let (hits, truncated) = g.impact(&[c], direction(dir)?, depth, &EdgeFilter::default(), max);
+    let (mut hits, truncated) = g.impact(&[c], direction(dir)?, depth, &EdgeFilter::default(), max);
 
+    // Projected, not pruned: the walk crossed every type, so asking for
+    // components two hops away still finds the ones reached through functions.
+    hits.retain(|(c, _, _)| ty.is_none_or(|t| m.concept(*c).kind.name().eq_ignore_ascii_case(t)));
     let total = hits.len();
     let rows = hits
         .iter()
