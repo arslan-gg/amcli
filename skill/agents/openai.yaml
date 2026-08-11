@@ -1,0 +1,7 @@
+interface:
+  display_name: ArchiMate Models
+  short_description: Search, traverse, edit and validate ArchiMate models from the CLI.
+  default_prompt: >-
+    Find the ArchiMate model in this repository and give me an orientation: its
+    size by layer, the ten most connected components, and anything that fails
+    validation.

@@ -7,8 +7,11 @@ use amcli_graph::Graph;
 use amcli_model::Model;
 use clap::{Parser, Subcommand};
 
+mod apply;
+mod export;
 mod output;
 mod read;
+mod skill;
 mod view;
 mod write;
 
@@ -38,7 +41,7 @@ Exit codes, so you can branch without parsing prose:
 ArchiMate(R) is a registered trademark of The Open Group. This project is
 independent and is not affiliated with or endorsed by them or by Archi."
 )]
-struct Cli {
+pub struct Cli {
     /// Model file. Defaults to $AMCLI_MODEL, else the nearest *.archimate
     /// walking up from the working directory.
     #[arg(short = 'm', long, global = true)]
@@ -187,6 +190,24 @@ enum Command {
     /// Properties on a concept.
     #[command(subcommand)]
     Prop(write::PropCmd),
+    /// Apply a batch of edits atomically: all of them land, or none do.
+    Apply {
+        /// A JSONL file, or `-` for stdin.
+        #[arg(default_value = "-")]
+        file: String,
+    },
+    /// Export the whole model.
+    Export {
+        /// csv | json | mermaid | dot. Named `to` rather than `format`
+        /// because clap merges a same-named subcommand field into the global
+        /// -F, which controls how amcli reports rather than what it writes.
+        to: String,
+        #[arg(short = 'o', long)]
+        out: Option<String>,
+    },
+    /// Install the agent skill.
+    #[command(subcommand)]
+    Skill(skill::SkillCmd),
     /// Model-level facts.
     Info,
 }
@@ -222,6 +243,12 @@ fn main() {
 }
 
 fn run(cli: &Cli) -> Result<Output, CliError> {
+    // The skill is about this machine, not about any model, so it runs before
+    // amcli goes looking for one.
+    if let Command::Skill(c) = &cli.command {
+        return skill::run(c);
+    }
+
     let path = find_model(cli.model.as_deref())?;
     let mut model = Model::open(&path).map_err(|e| {
         CliError::new(Code::Io, "io", e.to_string())
@@ -237,6 +264,9 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
             return write::run(cli_write_opts(cli), &mut model, &cli.command_write());
         }
         Command::View(c) => return view::run(&write_opts(cli), &mut model, c),
+        Command::Apply { file } => {
+            return apply::run(&write_opts(cli), &mut model, Some(file.as_str()));
+        }
         Command::Validate { level, fix, strict } => {
             return read::validate(&mut model, level, *fix, *strict, &write_opts(cli));
         }
@@ -274,11 +304,14 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         Command::Cycles { rel } => read::cycles(&graph, &ctx, rel.as_deref()),
         Command::Stats => read::stats(&graph, &ctx),
         Command::Info => read::info(&graph, &ctx),
+        Command::Export { to, out } => export::run(&graph, to, out.as_deref()),
         Command::Element(_)
         | Command::Relation(_)
         | Command::Folder(_)
         | Command::Prop(_)
         | Command::View(_)
+        | Command::Apply { .. }
+        | Command::Skill(_)
         | Command::Validate { .. } => unreachable!("dispatched above"),
     }
 }
