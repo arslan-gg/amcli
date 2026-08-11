@@ -534,3 +534,136 @@ impl Model {
 fn display_name(c: &Concept) -> String {
     if c.name.is_empty() { c.id.clone() } else { c.name.clone() }
 }
+
+// ---- views ---------------------------------------------------------------
+
+impl Model {
+    /// Create an empty view in the Views folder.
+    pub fn add_view(&mut self, name: &str, viewpoint: Option<&str>) -> Result<ViewId, EditError> {
+        let folder = self
+            .top_folder(FolderType::Diagrams)
+            .ok_or_else(|| EditError::NoSuchFolder("diagrams".to_string()))?;
+        let id = ids::new_id();
+        let mut b = NodeBuilder::new("element")
+            .attr("xsi:type", "archimate:ArchimateDiagramModel")
+            .attr("name", name)
+            .attr("id", &*id);
+        // An empty viewpoint means "no viewpoint", and EMF omits it.
+        if let Some(v) = viewpoint.filter(|v| !v.is_empty()) {
+            b = b.attr("viewpoint", v);
+        }
+        let folder_node = self.folder(folder).node;
+        self.doc.append_child(folder_node, b)?;
+        self.reindex();
+        Ok(self.view_by_id(&id).expect("just added"))
+    }
+
+    /// Put a concept on a view at the given bounds, returning the new diagram
+    /// object's id.
+    ///
+    /// A concept may legitimately appear on a view more than once, so this does
+    /// not deduplicate; callers that want at-most-once should check first.
+    pub fn add_view_object(
+        &mut self,
+        view: ViewId,
+        concept: ConceptId,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> Result<String, EditError> {
+        let id = ids::new_id();
+        let concept_id = self.concept(concept).id.clone();
+        let view_node = self.view(view).node;
+        let obj = self.doc.append_child(
+            view_node,
+            NodeBuilder::new("child")
+                .attr("xsi:type", "archimate:DiagramObject")
+                .attr("id", &*id)
+                .attr("archimateElement", &*concept_id),
+        )?;
+        // `<bounds>` is a child element, not attributes on the object.
+        self.doc.append_child(
+            obj,
+            NodeBuilder::new("bounds")
+                .attr("x", x.to_string())
+                .attr("y", y.to_string())
+                .attr("width", w.to_string())
+                .attr("height", h.to_string()),
+        )?;
+        self.reindex();
+        Ok(id)
+    }
+
+    /// Draw a relationship between two objects already on the view.
+    ///
+    /// The connection is a child of its *source* object, which is how Archi
+    /// stores it, and `targetConnections` on the target is recomputed rather
+    /// than appended to.
+    pub fn add_view_connection(
+        &mut self,
+        view: ViewId,
+        relationship: ConceptId,
+        source_object: &str,
+        target_object: &str,
+    ) -> Result<String, EditError> {
+        let id = ids::new_id();
+        let rel_id = self.concept(relationship).id.clone();
+        let view_node = self.view(view).node;
+        let src = self
+            .doc
+            .descendants(view_node)
+            .into_iter()
+            .find(|n| {
+                self.doc.local_name(*n) == "child"
+                    && self.doc.attr(*n, "id").as_deref() == Some(source_object)
+            })
+            .ok_or_else(|| EditError::NoSuchConcept(source_object.to_string()))?;
+
+        self.doc.append_child(
+            src,
+            NodeBuilder::new("sourceConnection")
+                .attr("xsi:type", "archimate:Connection")
+                .attr("id", &*id)
+                .attr("source", source_object)
+                .attr("target", target_object)
+                .attr("archimateRelationship", &*rel_id),
+        )?;
+        self.recompute_target_connections(view);
+        self.reindex();
+        Ok(id)
+    }
+
+    /// Move an object already on a view.
+    pub fn set_view_object_bounds(
+        &mut self,
+        view: ViewId,
+        object_id: &str,
+        x: i32,
+        y: i32,
+    ) -> Result<(), EditError> {
+        let view_node = self.view(view).node;
+        let Some(obj) = self.doc.descendants(view_node).into_iter().find(|n| {
+            self.doc.local_name(*n) == "child"
+                && self.doc.attr(*n, "id").as_deref() == Some(object_id)
+        }) else {
+            return Err(EditError::NoSuchConcept(object_id.to_string()));
+        };
+        if let Some(b) = self.doc.child_named(obj, "bounds") {
+            self.doc.set_attr(b, "x", &x.to_string());
+            self.doc.set_attr(b, "y", &y.to_string());
+        }
+        Ok(())
+    }
+
+    /// Every diagram object on a view, as (object id, concept id).
+    pub fn view_objects(&self, view: ViewId) -> Vec<(String, Option<String>)> {
+        let node = self.view(view).node;
+        self.doc
+            .descendants(node)
+            .into_iter()
+            .filter(|n| self.doc.local_name(*n) == "child")
+            .filter_map(|n| Some((self.doc.attr(n, "id")?, self.doc.attr(n, "archimateElement"))))
+            .collect()
+    }
+}

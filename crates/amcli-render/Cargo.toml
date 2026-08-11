@@ -1,0 +1,11 @@
+[package]
+name = "amcli-render"
+description = "Render a compiled ArchiMate view to SVG"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+amcli-view.workspace = true

@@ -498,29 +498,6 @@ pub fn stats(g: &Graph<'_>, ctx: &Ctx) -> Result<Output, CliError> {
         .meta("model_path", ctx.path.display().to_string()))
 }
 
-pub fn views(g: &Graph<'_>, _ctx: &Ctx) -> Result<Output, CliError> {
-    let m = g.model();
-    let rows = m
-        .views()
-        .map(|v| {
-            let objects = m
-                .doc
-                .descendants(v.node)
-                .into_iter()
-                .filter(|n| m.doc.local_name(*n) == "child")
-                .count();
-            Row::new()
-                .s("id", v.id.clone())
-                .s("name", v.name.clone())
-                .s("kind", if v.is_sketch { "sketch" } else { "archimate" })
-                .s("viewpoint", v.viewpoint.clone())
-                .n("objects", objects as i64)
-        })
-        .collect::<Vec<_>>();
-    let total = rows.len();
-    Ok(Output::rows(rows).meta_n("total", total as i64))
-}
-
 pub fn info(g: &Graph<'_>, ctx: &Ctx) -> Result<Output, CliError> {
     let m = g.model();
     let s = g.stats();

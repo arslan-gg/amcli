@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 
 mod output;
 mod read;
+mod view;
 mod write;
 
 use output::{CliError, Code, Format, Output, Printer};
@@ -158,8 +159,9 @@ enum Command {
     },
     /// Counts by type, layer and folder, plus orphans.
     Stats,
-    /// Views in the model.
-    Views,
+    /// Views: list, create, populate, lay out and draw.
+    #[command(subcommand)]
+    View(view::ViewCmd),
     /// Check the model.
     Validate {
         /// How far to check. Each level includes the ones before it:
@@ -234,6 +236,7 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         Command::Element(_) | Command::Relation(_) | Command::Folder(_) | Command::Prop(_) => {
             return write::run(cli_write_opts(cli), &mut model, &cli.command_write());
         }
+        Command::View(c) => return view::run(&write_opts(cli), &mut model, c),
         Command::Validate { level, fix, strict } => {
             return read::validate(&mut model, level, *fix, *strict, &write_opts(cli));
         }
@@ -270,12 +273,12 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         Command::Descendants { selector } => read::containment(&graph, &ctx, selector, false),
         Command::Cycles { rel } => read::cycles(&graph, &ctx, rel.as_deref()),
         Command::Stats => read::stats(&graph, &ctx),
-        Command::Views => read::views(&graph, &ctx),
         Command::Info => read::info(&graph, &ctx),
         Command::Element(_)
         | Command::Relation(_)
         | Command::Folder(_)
         | Command::Prop(_)
+        | Command::View(_)
         | Command::Validate { .. } => unreachable!("dispatched above"),
     }
 }

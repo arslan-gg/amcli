@@ -1,0 +1,16 @@
+[package]
+name = "amcli-view"
+description = "View geometry: absolute bounds, anchors, bendpoints, and layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+amcli-model.workspace = true
+amcli-graph.workspace = true
+amcli-xml.workspace = true
+
+[dev-dependencies]
+amcli-render.workspace = true

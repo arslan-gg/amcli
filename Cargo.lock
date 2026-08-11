@@ -23,7 +23,9 @@ version = "0.1.0"
 dependencies = [
  "amcli-graph",
  "amcli-model",
+ "amcli-render",
  "amcli-validate",
+ "amcli-view",
  "amcli-xml",
  "assert_cmd",
  "clap",
@@ -54,11 +56,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "amcli-render"
+version = "0.1.0"
+dependencies = [
+ "amcli-view",
+]
+
+[[package]]
 name = "amcli-validate"
 version = "0.1.0"
 dependencies = [
  "amcli-graph",
  "amcli-model",
+ "amcli-xml",
+]
+
+[[package]]
+name = "amcli-view"
+version = "0.1.0"
+dependencies = [
+ "amcli-graph",
+ "amcli-model",
+ "amcli-render",
  "amcli-xml",
 ]
 

@@ -5,6 +5,8 @@ members = [
     "crates/amcli-model",
     "crates/amcli-graph",
     "crates/amcli-validate",
+    "crates/amcli-view",
+    "crates/amcli-render",
     "crates/amcli-cli",
     "xtask",
 ]
@@ -21,6 +23,8 @@ amcli-xml = { path = "crates/amcli-xml" }
 amcli-model = { path = "crates/amcli-model" }
 amcli-graph = { path = "crates/amcli-graph" }
 amcli-validate = { path = "crates/amcli-validate" }
+amcli-view = { path = "crates/amcli-view" }
+amcli-render = { path = "crates/amcli-render" }
 
 [profile.release]
 lto = "fat"
