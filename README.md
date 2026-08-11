@@ -80,13 +80,17 @@ bounds Archi recorded, every connection on the polyline Archi computes. It does
 Archi's default view font is the platform system font, so its own export differs
 between macOS and Windows.
 
-`amcli view auto` lays a new view out by dependency, not by ArchiMate layer.
-Layer-ranking is the obvious choice and it reads badly: most relationships in a
-real model are *within* a layer, so each one becomes a horizontal line slicing
-through whatever sits between its ends. Dependency ranking puts those on
-consecutive rows, and edges that span more than one row are routed through
-reserved lanes and stored as bendpoints. `--layout layers` gives the strict
-one-row-per-layer arrangement if a layered viewpoint is what you want.
+`amcli view auto` lays a new view out from the dependency graph. The ArchiMate
+layer is deliberately not consulted: most relationships in a real model run
+*within* a layer, so ranking by layer puts them in one row and turns each into a
+horizontal line through whatever sits between its ends.
+
+Nodes are ranked by longest path and then pulled back down to sit directly above
+their earliest successor, so most edges span one row. Longer ones reserve a
+corridor in each row they cross — and a bendpoint is only written when the
+straight line would actually hit a box, because a kink that buys nothing is
+still a kink. On a graph that admits a clean drawing the result has no bends, no
+edge through a box, and no two edges crossing; a test asserts all three.
 
 `export mermaid` and `export dot` re-lay-out, so they are for a quick look in a
 chat window rather than for reproducing a diagram someone drew.

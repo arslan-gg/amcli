@@ -41,7 +41,7 @@ pub enum ViewCmd {
         depth: u32,
         #[arg(short = 'D', long, default_value = "both")]
         direction: String,
-        /// layered | grid
+        /// sugiyama (the default) | grid
         #[arg(long, default_value = "layered")]
         layout: String,
         #[arg(long)]
@@ -261,7 +261,7 @@ fn auto(
     check_viewpoint(vp)?;
     let algo = Algorithm::parse(algorithm).ok_or_else(|| {
         CliError::new(Code::Usage, "usage", format!("`{algorithm}` is not a layout"))
-            .hint("one of: layered, grid")
+            .hint("one of: sugiyama, grid")
     })?;
     let dir = Dir::parse(dir).ok_or_else(|| {
         CliError::new(Code::Usage, "usage", format!("`{dir}` is not a direction"))
@@ -291,14 +291,7 @@ fn auto(
                     ConceptKind::Element(e) => e.info().default_wh,
                     _ => (120, 55),
                 };
-                Item {
-                    id: concept.id.clone(),
-                    name: concept.name.clone(),
-                    // ArchiMate's layer ordering is the rank, top to bottom.
-                    rank: concept.kind.layer().map(layer_rank).unwrap_or(7),
-                    w,
-                    h,
-                }
+                Item { id: concept.id.clone(), name: concept.name.clone(), w, h }
             })
             .collect();
 
@@ -367,20 +360,6 @@ fn auto(
     finish(opts, m, row)
 }
 
-fn layer_rank(l: amcli_model::Layer) -> usize {
-    use amcli_model::Layer::*;
-    match l {
-        Motivation => 0,
-        Strategy => 1,
-        Business => 2,
-        Application => 3,
-        Technology => 4,
-        Physical => 5,
-        ImplementationMigration => 6,
-        Other => 7,
-    }
-}
-
 fn relayout(
     opts: &Opts,
     m: &mut Model,
@@ -413,7 +392,7 @@ fn relayout(
         .enumerate()
         .map(|(i, (id, r))| {
             let node = &scene.nodes[i];
-            Item { id: id.clone(), name: node.label.clone(), rank: 0, w: r.w, h: r.h }
+            Item { id: id.clone(), name: node.label.clone(), w: r.w, h: r.h }
         })
         .collect();
     let placed = place(&items, &[], algo);

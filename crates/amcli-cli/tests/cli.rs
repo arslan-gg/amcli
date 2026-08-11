@@ -467,14 +467,15 @@ fn the_skill_installs_where_agents_look_and_uninstalls_cleanly() {
     assert!(std::fs::read_link(&link).is_err());
 }
 
-/// The layout's whole job, asserted end to end: no drawn segment may pass
-/// through a box that is not one of its own endpoints.
+/// The layout's whole job, asserted end to end on a graph that admits a clean
+/// drawing: no bendpoints, no segment through a box, and no two segments
+/// crossing each other.
 ///
-/// Ranking rows by ArchiMate layer fails this badly, because most
-/// relationships in a real model are inside a layer and become horizontal
-/// lines through their neighbours.
+/// This graph is seven nodes and seven edges — a tree plus one cycle — so it is
+/// planar and a perfect drawing exists. Producing anything worse would mean the
+/// layout is inventing difficulty.
 #[test]
-fn generated_views_do_not_route_edges_through_boxes() {
+fn a_graph_that_can_be_drawn_cleanly_is_drawn_cleanly() {
     let m = Model::new("modelimporter_test.archimate");
     for (ty, name) in [
         ("ApplicationComponent", "Payment API"),
@@ -500,8 +501,46 @@ fn generated_views_do_not_route_edges_through_boxes() {
     let (code, out, _) = m.run(&["view", "render", "V", "--as", "json"]);
     assert_eq!(code, 0);
 
-    // Minimal parse of the scene dump; enough to walk segments against boxes.
-    let boxes: Vec<(i32, i32, i32, i32)> = out
+    let (boxes, lines) = scene(&out);
+    assert!(boxes.len() >= 6, "parsed {} boxes from {out}", boxes.len());
+    assert!(lines.len() >= 6, "parsed {} edges from {out}", lines.len());
+
+    let bends: usize = lines.iter().map(|l| l.len().saturating_sub(2)).sum();
+    assert_eq!(bends, 0, "this graph needs no bendpoints at all");
+
+    let mut through = 0;
+    for line in &lines {
+        for (p, q) in line.iter().zip(line.iter().skip(1)) {
+            for b in &boxes {
+                if segment_enters(*p, *q, *b) {
+                    through += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(through, 0, "{through} segments run through a box");
+
+    let segments: Vec<((i32, i32), (i32, i32))> =
+        lines.iter().flat_map(|l| l.iter().zip(l.iter().skip(1)).map(|(a, b)| (*a, *b))).collect();
+    let mut crossings = 0;
+    for (i, (a, b)) in segments.iter().enumerate() {
+        for (c, d) in segments.iter().skip(i + 1) {
+            if segments_cross(*a, *b, *c, *d) {
+                crossings += 1;
+            }
+        }
+    }
+    assert_eq!(crossings, 0, "{crossings} pairs of edges cross");
+
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}
+
+type Boxes = Vec<(i32, i32, i32, i32)>;
+type Lines = Vec<Vec<(i32, i32)>>;
+
+/// A minimal read of the scene dump: enough to walk segments against boxes.
+fn scene(out: &str) -> (Boxes, Lines) {
+    let boxes: Boxes = out
         .split(r#"{"id":"#)
         .filter(|s| s.contains(r#""depth""#))
         .filter_map(|s| {
@@ -511,14 +550,15 @@ fn generated_views_do_not_route_edges_through_boxes() {
             Some((n("x")?, n("y")?, n("w")?, n("h")?))
         })
         .collect();
-    assert!(boxes.len() >= 6, "parsed {} boxes from {out}", boxes.len());
 
-    let polylines: Vec<Vec<(i32, i32)>> = out
+    let lines: Lines = out
         .split(r#""points":[["#)
         .skip(1)
         .map(|s| {
-            let body = s.split("]]").next().unwrap_or_default();
-            body.split("],[")
+            s.split("]]")
+                .next()
+                .unwrap_or_default()
+                .split("],[")
                 .filter_map(|p| {
                     let mut it = p.trim_matches(['[', ']']).split(',');
                     Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
@@ -526,32 +566,38 @@ fn generated_views_do_not_route_edges_through_boxes() {
                 .collect()
         })
         .collect();
-    assert!(!polylines.is_empty(), "no edges in {out}");
+    (boxes, lines)
+}
 
-    let mut through = 0;
-    for line in &polylines {
-        for (p, q) in line.iter().zip(line.iter().skip(1)) {
-            for (x, y, w, h) in &boxes {
-                // Sample the segment; an endpoint touching its own box's border
-                // is normal, so the box is shrunk by a couple of units.
-                for step in 1..60 {
-                    let t = step as f64 / 60.0;
-                    let px = p.0 as f64 + (q.0 - p.0) as f64 * t;
-                    let py = p.1 as f64 + (q.1 - p.1) as f64 * t;
-                    if px > (x + 2) as f64
-                        && px < (x + w - 2) as f64
-                        && py > (y + 2) as f64
-                        && py < (y + h - 2) as f64
-                    {
-                        through += 1;
-                        break;
-                    }
-                }
-            }
+/// Does the segment pass through the interior of the box? The box is inset a
+/// little, because an endpoint resting on its own border is normal.
+fn segment_enters(p: (i32, i32), q: (i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    let (x, y, w, h) = b;
+    for step in 1..60 {
+        let t = step as f64 / 60.0;
+        let px = p.0 as f64 + (q.0 - p.0) as f64 * t;
+        let py = p.1 as f64 + (q.1 - p.1) as f64 * t;
+        if px > (x + 2) as f64
+            && px < (x + w - 2) as f64
+            && py > (y + 2) as f64
+            && py < (y + h - 2) as f64
+        {
+            return true;
         }
     }
-    assert_eq!(through, 0, "{through} edge segments run through a box");
+    false
+}
 
-    // And the result is a model, not just a picture.
-    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+fn segments_cross(a: (i32, i32), b: (i32, i32), c: (i32, i32), d: (i32, i32)) -> bool {
+    // Segments meeting at a shared endpoint are edges leaving the same box, not
+    // a crossing.
+    let ends = [a, b, c, d];
+    if ends.iter().enumerate().any(|(i, p)| ends.iter().skip(i + 1).any(|q| p == q)) {
+        return false;
+    }
+    let orient = |p: (i32, i32), q: (i32, i32), r: (i32, i32)| -> i64 {
+        (q.1 - p.1) as i64 * (r.0 - q.0) as i64 - (q.0 - p.0) as i64 * (r.1 - q.1) as i64
+    };
+    let sign = |v: i64| v.signum();
+    sign(orient(a, b, c)) != sign(orient(a, b, d)) && sign(orient(c, d, a)) != sign(orient(c, d, b))
 }

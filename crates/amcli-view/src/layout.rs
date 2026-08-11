@@ -1,16 +1,25 @@
 //! Placing concepts on a new view.
 //!
-//! The default is Sugiyama layering over the dependency graph, not over the
-//! ArchiMate layers. Ranking by layer is the obvious thing and it looks wrong:
-//! most relationships in a real model are *within* a layer — component to
-//! function, function to data object — so every one of them becomes a
-//! horizontal line slicing through the boxes that happen to sit between its two
-//! ends. Ranking by dependency puts those on consecutive rows instead, where
-//! the edge is short and vertical and crosses nothing.
+//! Rows come from the dependency graph and from nothing else. The ArchiMate
+//! layer is deliberately not consulted: most relationships in a real model run
+//! *within* a layer, so ranking by layer puts them all in one row and turns each
+//! into a horizontal line slicing through whatever sits between its ends.
 //!
-//! Edges spanning more than one rank are routed through dummy nodes, which
-//! reserve horizontal space in every row they pass and become the edge's
-//! bendpoints. That is what stops a long edge from cutting through a box.
+//! Three things do the work.
+//!
+//! **Tight ranking.** Longest-path layering alone shoves every node as high as
+//! it can go, which stretches edges for no reason — a node whose only successor
+//! is four rows down gets dragged to the top. Each node is then pulled back down
+//! to sit directly above its earliest successor, so most edges span exactly one
+//! row.
+//!
+//! **Lanes, not bends.** An edge crossing several rows reserves a corridor in
+//! each one, which keeps other boxes out of its way.
+//!
+//! **Bends only where a straight line would actually hit something.** The
+//! corridor usually leaves the direct line clear, and then the edge is drawn
+//! straight. Adding a bendpoint because an edge *might* need one is how a
+//! diagram ends up full of kinks that buy nothing.
 //!
 //! Everything is deterministic by construction: no randomness, no seeds, no
 //! iteration over a hash map, ties broken by `(name, id)`, all coordinates
@@ -33,21 +42,14 @@ const DUMMY_W: i32 = 12;
 pub struct Item {
     pub id: String,
     pub name: String,
-    /// The concept's ArchiMate layer, used only to break ties so that a
-    /// business element tends to sit above an application one. It does not
-    /// decide the row.
-    pub rank: usize,
     pub w: i32,
     pub h: i32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Algorithm {
-    /// Rows by dependency, long edges routed around what is in the way.
+    /// Rows by dependency, straight lines wherever they fit.
     Sugiyama,
-    /// Rows strictly by ArchiMate layer. Truer to a layered viewpoint, and
-    /// worse to look at whenever a layer talks to itself.
-    Layers,
     /// Sorted into a square grid. Never pretty, never fails.
     Grid,
 }
@@ -55,11 +57,7 @@ pub enum Algorithm {
 impl Algorithm {
     pub fn parse(s: &str) -> Option<Algorithm> {
         Some(match s {
-            // `layered` maps to the good one deliberately: it is what people
-            // type, and what they mean by it is "tidy rows", not "one row per
-            // ArchiMate layer whatever that does to the lines".
             "sugiyama" | "auto" | "layered" => Algorithm::Sugiyama,
-            "layers" => Algorithm::Layers,
             "grid" => Algorithm::Grid,
             _ => return None,
         })
@@ -79,7 +77,6 @@ pub struct Placement {
 pub fn place(items: &[Item], edges: &[(usize, usize)], algo: Algorithm) -> Placement {
     match algo {
         Algorithm::Grid => Placement { rects: grid(items), routes: HashMap::new() },
-        Algorithm::Layers => Placement { rects: by_layer(items, edges), routes: HashMap::new() },
         Algorithm::Sugiyama => sugiyama(items, edges),
     }
 }
@@ -108,18 +105,8 @@ fn grid(items: &[Item]) -> Vec<Rect> {
     out
 }
 
-fn key(items: &[Item], i: usize) -> (usize, &str, &str) {
-    (items[i].rank, items[i].name.as_str(), items[i].id.as_str())
-}
-
-// ---- the two ranking strategies -------------------------------------------
-
-/// Rows straight from the ArchiMate layer.
-fn by_layer(items: &[Item], edges: &[(usize, usize)]) -> Vec<Rect> {
-    let ranks: Vec<usize> = items.iter().map(|i| i.rank).collect();
-    let normalized = compact(&ranks);
-    let g = build(items, edges, &normalized, &[]);
-    g.finish(items)
+fn key(items: &[Item], i: usize) -> (&str, &str) {
+    (items[i].name.as_str(), items[i].id.as_str())
 }
 
 /// Longest-path ranking over the dependency graph, with cycles broken first.
@@ -189,6 +176,29 @@ fn rank_by_dependency(n: usize, edges: &[(usize, usize)]) -> (Vec<usize>, HashSe
         }
     }
     debug_assert_eq!(seen, n, "cycle breaking should have left a DAG");
+
+    // Longest-path alone puts every node as high as it can go, which stretches
+    // edges for nothing: a node whose only successor is four rows down gets
+    // dragged to the top and its edge then has to cross three rows. Pull each
+    // node back down until it sits directly above its earliest successor.
+    // Sinks stay put, so the drawing does not collapse.
+    loop {
+        let mut moved = false;
+        for v in 0..n {
+            if succ[v].is_empty() {
+                continue;
+            }
+            let latest = succ[v].iter().map(|w| rank[*w]).min().unwrap_or(rank[v] + 1) - 1;
+            if latest > rank[v] {
+                rank[v] = latest;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+
     (rank, reversed)
 }
 
@@ -515,55 +525,74 @@ impl Layered {
         out
     }
 
-    /// Waypoints for the edges that need them.
+    /// Waypoints, for the edges that genuinely need them.
+    ///
+    /// The corridor a long edge reserved usually leaves the straight line
+    /// clear, and a straight line is better than a routed one every time. So
+    /// the direct segment is tested against every box first, and only an edge
+    /// that would actually cut through something gets bendpoints. Adding a bend
+    /// because an edge *might* need one is how a diagram fills up with kinks
+    /// that buy nothing.
     fn routes(
         &self,
         items: &[Item],
         edges: &[(usize, usize)],
         rects: &[Rect],
     ) -> HashMap<usize, Vec<Pt>> {
-        let mut out: HashMap<usize, Vec<Pt>> = HashMap::new();
-
-        // A long edge follows its chain of dummies.
+        // Where each long edge's corridor runs, kept aside until we know
+        // whether it is needed.
+        let mut lanes: HashMap<usize, Vec<(usize, Pt)>> = HashMap::new();
         for (r, row) in self.rows.iter().enumerate() {
             for s in row {
                 let Slot::Dummy(ei, seg) = s else { continue };
                 let p = Pt { x: self.x[s] + DUMMY_W / 2, y: self.y[r] + 27 };
-                out.entry(*ei).or_default().push((*seg, p).1);
-            }
-        }
-        // Rows are walked top to bottom, so the waypoints come out in order —
-        // but an edge that runs upward needs them the other way round.
-        for (ei, pts) in out.iter_mut() {
-            let (a, b) = edges[*ei];
-            if rects[a].y > rects[b].y {
-                pts.reverse();
+                lanes.entry(*ei).or_default().push((*seg, p));
             }
         }
 
-        // An edge inside one row would otherwise be a horizontal line straight
-        // through whatever sits between its ends. Bow it below the row instead.
+        let mut out: HashMap<usize, Vec<Pt>> = HashMap::new();
         for (ei, (a, b)) in edges.iter().enumerate() {
-            if a == b || out.contains_key(&ei) {
+            if a == b {
                 continue;
             }
-            if rects[*a].y != rects[*b].y {
+            let (ra, rb) = (rects[*a], rects[*b]);
+
+            // Same row: a straight line would run along the row, through
+            // anything between the two. Bow it below unless they are adjacent.
+            if ra.y == rb.y {
+                let (left, right) = if ra.x <= rb.x { (*a, *b) } else { (*b, *a) };
+                let gap = rects[right].x - (rects[left].x + rects[left].w);
+                if gap <= HGAP + 8 {
+                    continue;
+                }
+                let y = rects[left].y + rects[left].h + 20 + (ei as i32 % 3) * 10;
+                let mut pts = vec![
+                    Pt { x: rects[left].x + rects[left].w / 2, y },
+                    Pt { x: rects[right].x + rects[right].w / 2, y },
+                ];
+                if ra.x > rb.x {
+                    pts.reverse();
+                }
+                out.insert(ei, pts);
                 continue;
             }
-            let (left, right) = if rects[*a].x <= rects[*b].x { (*a, *b) } else { (*b, *a) };
-            let gap = rects[right].x - (rects[left].x + rects[left].w);
-            // Adjacent boxes need no help; a straight short line is fine.
-            if gap <= HGAP + 8 {
+
+            if straight_is_clear(ra, rb, rects, *a, *b) {
                 continue;
             }
-            let y = rects[left].y + rects[left].h + 20 + (ei as i32 % 3) * 10;
-            let x1 = rects[left].x + rects[left].w / 2;
-            let x2 = rects[right].x + rects[right].w / 2;
-            let mut pts = vec![Pt { x: x1, y }, Pt { x: x2, y }];
-            if rects[*a].x > rects[*b].x {
+
+            let Some(lane) = lanes.get(&ei) else { continue };
+            let mut pts: Vec<(usize, Pt)> = lane.clone();
+            pts.sort_by_key(|(seg, _)| *seg);
+            let mut pts: Vec<Pt> = pts.into_iter().map(|(_, p)| p).collect();
+            // The chain was built from the upper end downwards; an edge drawn
+            // upward needs it the other way round.
+            if ra.y > rb.y {
                 pts.reverse();
             }
-            out.insert(ei, pts);
+            if !pts.is_empty() {
+                out.insert(ei, pts);
+            }
         }
 
         let _ = items;
@@ -571,12 +600,44 @@ impl Layered {
     }
 }
 
-fn slot_key(items: &[Item], s: Slot) -> (usize, String, String) {
+/// Does the line between two boxes' centres pass through any other box?
+fn straight_is_clear(from: Rect, to: Rect, all: &[Rect], a: usize, b: usize) -> bool {
+    let p = from.center();
+    let q = to.center();
+    for (i, other) in all.iter().enumerate() {
+        if i == a || i == b || other.w == 0 {
+            continue;
+        }
+        // A small inset, so an edge grazing a corner is not counted as a hit.
+        let box_ = Rect { x: other.x + 2, y: other.y + 2, w: other.w - 4, h: other.h - 4 };
+        if segment_hits(p, q, box_) {
+            return false;
+        }
+    }
+    true
+}
+
+fn segment_hits(p: Pt, q: Pt, b: Rect) -> bool {
+    const STEPS: i32 = 48;
+    for i in 1..STEPS {
+        let t = i as f64 / STEPS as f64;
+        let s = Pt {
+            x: p.x + ((q.x - p.x) as f64 * t) as i32,
+            y: p.y + ((q.y - p.y) as f64 * t) as i32,
+        };
+        if b.contains(s) {
+            return true;
+        }
+    }
+    false
+}
+
+fn slot_key(items: &[Item], s: Slot) -> (u8, String, String) {
     match s {
-        Slot::Item(i) => (items[i].rank, items[i].name.clone(), items[i].id.clone()),
-        // Dummies sort after real nodes at the same tie, and among themselves
-        // by the edge they belong to, so ordering stays reproducible.
-        Slot::Dummy(e, seg) => (usize::MAX, format!("~{e:08}"), format!("{seg:04}")),
+        Slot::Item(i) => (0, items[i].name.clone(), items[i].id.clone()),
+        // Dummies sort after real nodes, and among themselves by the edge they
+        // belong to, so ordering stays reproducible.
+        Slot::Dummy(e, seg) => (1, format!("{e:08}"), format!("{seg:04}")),
     }
 }
 
@@ -608,13 +669,7 @@ mod tests {
 
     fn items(n: usize) -> Vec<Item> {
         (0..n)
-            .map(|i| Item {
-                id: format!("id{i}"),
-                name: format!("Node {i}"),
-                rank: i % 3,
-                w: 120,
-                h: 55,
-            })
+            .map(|i| Item { id: format!("id{i}"), name: format!("Node {i}"), w: 120, h: 55 })
             .collect()
     }
 
@@ -647,7 +702,7 @@ mod tests {
         let it: Vec<Item> = ["Payment API", "Authorize", "Card Auth", "Payment Record"]
             .iter()
             .enumerate()
-            .map(|(i, n)| Item { id: format!("i{i}"), name: n.to_string(), rank: 3, w: 120, h: 55 })
+            .map(|(i, n)| Item { id: format!("i{i}"), name: n.to_string(), w: 120, h: 55 })
             .collect();
         let edges = vec![(0, 1), (1, 2), (1, 3)];
 
@@ -698,7 +753,7 @@ mod tests {
         // node in the bottom row.
         let n = 6;
         let it: Vec<Item> = (0..n)
-            .map(|i| Item { id: format!("i{i}"), name: format!("N{i}"), rank: 0, w: 120, h: 55 })
+            .map(|i| Item { id: format!("i{i}"), name: format!("N{i}"), w: 120, h: 55 })
             .collect();
         let edges: Vec<(usize, usize)> = (0..n / 2).map(|i| (i, n - 1 - i)).collect();
 
@@ -715,7 +770,7 @@ mod tests {
     fn layout_is_reproducible_and_order_independent() {
         let it = items(9);
         let edges = vec![(0, 1), (1, 2), (3, 4), (0, 5), (6, 7)];
-        for algo in [Algorithm::Grid, Algorithm::Layers, Algorithm::Sugiyama] {
+        for algo in [Algorithm::Grid, Algorithm::Sugiyama] {
             assert_eq!(place(&it, &edges, algo).rects, place(&it, &edges, algo).rects, "{algo:?}");
         }
 
@@ -737,7 +792,7 @@ mod tests {
     fn nothing_overlaps_and_everything_is_on_the_grid() {
         let it = items(12);
         let edges = vec![(0, 1), (1, 2), (2, 3), (0, 4), (5, 6), (7, 8), (2, 9)];
-        for algo in [Algorithm::Grid, Algorithm::Layers, Algorithm::Sugiyama] {
+        for algo in [Algorithm::Grid, Algorithm::Sugiyama] {
             let p = place(&it, &edges, algo);
             for r in &p.rects {
                 assert_eq!(r.x % GRID, 0, "{algo:?} {r:?}");
@@ -746,19 +801,6 @@ mod tests {
             for (i, a) in p.rects.iter().enumerate() {
                 for b in p.rects.iter().skip(i + 1) {
                     assert!(!overlaps(*a, *b), "{algo:?}: {a:?} overlaps {b:?}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_layers_algorithm_still_puts_one_layer_per_row() {
-        let it = items(9);
-        let p = place(&it, &[], Algorithm::Layers);
-        for (i, item) in it.iter().enumerate() {
-            for (j, other) in it.iter().enumerate() {
-                if item.rank < other.rank {
-                    assert!(p.rects[i].y < p.rects[j].y);
                 }
             }
         }
