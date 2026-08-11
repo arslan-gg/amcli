@@ -4,6 +4,7 @@ use amcli_graph::{Dir, EdgeFilter, Graph, Resolution, Selector};
 use amcli_model::{ConceptId, ConceptKind, Model, ViewId, viewpoints};
 use amcli_render::Options;
 use amcli_view::geometry::Rect;
+use amcli_view::geometry::bendpoint_for;
 use amcli_view::layout::{Algorithm, Item, free_slot, place};
 use clap::Subcommand;
 
@@ -324,15 +325,34 @@ fn auto(
         m.add_view(name, vp).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
 
     let mut object_ids = Vec::with_capacity(concepts.len());
-    for (c, r) in concepts.iter().zip(placed.iter()) {
+    for (c, r) in concepts.iter().zip(placed.rects.iter()) {
         let id = m
             .add_view_object(v, *c, r.x, r.y, r.w, r.h)
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
         object_ids.push(id);
     }
+
     let mut drawn = 0;
-    for (rel, a, b) in rels {
-        if m.add_view_connection(v, rel, &object_ids[a], &object_ids[b]).is_ok() {
+    let mut routed = 0;
+    for (edge_index, (rel, a, b)) in rels.into_iter().enumerate() {
+        // Waypoints the layout produced are stored as bendpoints, so the
+        // routing lives in the file and Archi draws the same line we do.
+        let bends: Vec<(i32, i32, i32, i32)> = placed
+            .routes
+            .get(&edge_index)
+            .map(|pts| {
+                pts.iter()
+                    .map(|p| {
+                        let bp = bendpoint_for(placed.rects[a], placed.rects[b], *p);
+                        (bp.start_x, bp.start_y, bp.end_x, bp.end_y)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !bends.is_empty() {
+            routed += 1;
+        }
+        if m.add_view_connection(v, rel, &object_ids[a], &object_ids[b], &bends).is_ok() {
             drawn += 1;
         }
     }
@@ -342,6 +362,7 @@ fn auto(
         .s("name", name.to_string())
         .n("objects", object_ids.len() as i64)
         .n("connections", drawn)
+        .n("routed", routed)
         .b("dry_run", opts.dry_run);
     finish(opts, m, row)
 }
@@ -397,7 +418,7 @@ fn relayout(
         .collect();
     let placed = place(&items, &[], algo);
 
-    for ((id, _), r) in movable.iter().zip(placed.iter()) {
+    for ((id, _), r) in movable.iter().zip(placed.rects.iter()) {
         m.set_view_object_bounds(v, id, r.x, r.y)
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     }

@@ -466,3 +466,92 @@ fn the_skill_installs_where_agents_look_and_uninstalls_cleanly() {
     assert!(!skill.exists());
     assert!(std::fs::read_link(&link).is_err());
 }
+
+/// The layout's whole job, asserted end to end: no drawn segment may pass
+/// through a box that is not one of its own endpoints.
+///
+/// Ranking rows by ArchiMate layer fails this badly, because most
+/// relationships in a real model are inside a layer and become horizontal
+/// lines through their neighbours.
+#[test]
+fn generated_views_do_not_route_edges_through_boxes() {
+    let m = Model::new("modelimporter_test.archimate");
+    for (ty, name) in [
+        ("ApplicationComponent", "Payment API"),
+        ("ApplicationService", "Card Authorization"),
+        ("ApplicationFunction", "Authorize"),
+        ("DataObject", "Payment Record"),
+        ("Goal", "Reduce fraud"),
+    ] {
+        assert_eq!(m.run(&["element", "add", ty, name]).0, 0);
+    }
+    for (ty, a, b) in [
+        ("Assignment", "Payment API", "Authorize"),
+        ("Access", "Authorize", "Payment Record"),
+        ("Realization", "Authorize", "Card Authorization"),
+        ("Serving", "Card Authorization", "BR1"),
+        ("Influence", "Card Authorization", "Reduce fraud"),
+        ("Serving", "Payment API", "BR1"),
+    ] {
+        assert_eq!(m.run(&["relation", "add", ty, a, b]).0, 0, "{ty} {a} -> {b}");
+    }
+
+    assert_eq!(m.run(&["view", "auto", "V", "--from", "Payment API", "-n", "4"]).0, 0);
+    let (code, out, _) = m.run(&["view", "render", "V", "--as", "json"]);
+    assert_eq!(code, 0);
+
+    // Minimal parse of the scene dump; enough to walk segments against boxes.
+    let boxes: Vec<(i32, i32, i32, i32)> = out
+        .split(r#"{"id":"#)
+        .filter(|s| s.contains(r#""depth""#))
+        .filter_map(|s| {
+            let n = |k: &str| -> Option<i32> {
+                s.split(&format!(r#""{k}":"#)).nth(1)?.split([',', '}']).next()?.parse().ok()
+            };
+            Some((n("x")?, n("y")?, n("w")?, n("h")?))
+        })
+        .collect();
+    assert!(boxes.len() >= 6, "parsed {} boxes from {out}", boxes.len());
+
+    let polylines: Vec<Vec<(i32, i32)>> = out
+        .split(r#""points":[["#)
+        .skip(1)
+        .map(|s| {
+            let body = s.split("]]").next().unwrap_or_default();
+            body.split("],[")
+                .filter_map(|p| {
+                    let mut it = p.trim_matches(['[', ']']).split(',');
+                    Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
+                })
+                .collect()
+        })
+        .collect();
+    assert!(!polylines.is_empty(), "no edges in {out}");
+
+    let mut through = 0;
+    for line in &polylines {
+        for (p, q) in line.iter().zip(line.iter().skip(1)) {
+            for (x, y, w, h) in &boxes {
+                // Sample the segment; an endpoint touching its own box's border
+                // is normal, so the box is shrunk by a couple of units.
+                for step in 1..60 {
+                    let t = step as f64 / 60.0;
+                    let px = p.0 as f64 + (q.0 - p.0) as f64 * t;
+                    let py = p.1 as f64 + (q.1 - p.1) as f64 * t;
+                    if px > (x + 2) as f64
+                        && px < (x + w - 2) as f64
+                        && py > (y + 2) as f64
+                        && py < (y + h - 2) as f64
+                    {
+                        through += 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(through, 0, "{through} edge segments run through a box");
+
+    // And the result is a model, not just a picture.
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}

@@ -600,12 +600,17 @@ impl Model {
     /// The connection is a child of its *source* object, which is how Archi
     /// stores it, and `targetConnections` on the target is recomputed rather
     /// than appended to.
+    /// `bendpoints` are Draw2D relative offsets — `(startX, startY, endX,
+    /// endY)` — not positions. Converting an absolute waypoint into that form
+    /// is `geometry::bendpoint_for` in amcli-view; the model layer stores what
+    /// it is given.
     pub fn add_view_connection(
         &mut self,
         view: ViewId,
         relationship: ConceptId,
         source_object: &str,
         target_object: &str,
+        bendpoints: &[(i32, i32, i32, i32)],
     ) -> Result<String, EditError> {
         let id = ids::new_id();
         let rel_id = self.concept(relationship).id.clone();
@@ -620,7 +625,7 @@ impl Model {
             })
             .ok_or_else(|| EditError::NoSuchConcept(source_object.to_string()))?;
 
-        self.doc.append_child(
+        let conn = self.doc.append_child(
             src,
             NodeBuilder::new("sourceConnection")
                 .attr("xsi:type", "archimate:Connection")
@@ -629,6 +634,16 @@ impl Model {
                 .attr("target", target_object)
                 .attr("archimateRelationship", &*rel_id),
         )?;
+        for (sx, sy, ex, ey) in bendpoints {
+            self.doc.append_child(
+                conn,
+                NodeBuilder::new("bendpoint")
+                    .attr("startX", sx.to_string())
+                    .attr("startY", sy.to_string())
+                    .attr("endX", ex.to_string())
+                    .attr("endY", ey.to_string()),
+            )?;
+        }
         self.recompute_target_connections(view);
         self.reindex();
         Ok(id)
