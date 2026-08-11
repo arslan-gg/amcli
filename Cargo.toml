@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/amcli-xml",
     "crates/amcli-model",
+    "crates/amcli-graph",
     "xtask",
 ]
 

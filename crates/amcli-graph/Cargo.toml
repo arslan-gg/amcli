@@ -1,0 +1,14 @@
+[package]
+name = "amcli-graph"
+description = "Indices and graph queries over an ArchiMate model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+amcli-model.workspace = true
+amcli-xml.workspace = true
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case"] }
+thiserror = "2"
