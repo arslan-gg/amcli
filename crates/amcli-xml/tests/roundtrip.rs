@@ -90,7 +90,7 @@ fn identity_over_corpus() {
             checked += 1;
         }
     }
-    assert!(checked >= 8, "expected a real corpus, only checked {checked} files");
+    assert!(checked >= 9, "expected a real corpus, only checked {checked} files");
 }
 
 // ---- involution: an edit and its inverse leave no trace -------------------

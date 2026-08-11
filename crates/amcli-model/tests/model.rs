@@ -21,19 +21,19 @@ fn a_real_model_indexes_the_way_the_file_reads() {
     assert_eq!(m.purpose().as_deref(), Some("A variety of testing scenarios"));
 
     // Two elements and one relationship, all in the same namespace.
-    assert_eq!(m.concepts().len(), 3);
-    let actor = m.concepts().iter().find(|c| c.name == "Business Actor").unwrap();
+    assert_eq!(m.concepts().count(), 3);
+    let actor = m.concepts().find(|c| c.name == "Business Actor").unwrap();
     assert_eq!(actor.kind, ConceptKind::Element(ElementType::BusinessActor));
     assert_eq!(actor.id, "59fa6c90");
     assert_eq!(m.folder_path_of(actor), "/Business");
 
-    let rel = m.concepts().iter().find(|c| c.kind.is_relationship()).unwrap();
+    let rel = m.concepts().find(|c| c.kind.is_relationship()).unwrap();
     assert_eq!(rel.kind, ConceptKind::Relationship(RelType::Assignment));
     assert_eq!(rel.source.as_deref(), Some("59fa6c90"));
     assert_eq!(rel.target.as_deref(), Some("1efcd76f"));
 
     // Nine top-level folders, and Views holds diagrams rather than concepts.
-    assert_eq!(m.folders().len(), 9);
+    assert_eq!(m.folders().count(), 9);
     assert_eq!(
         m.folder_by_path("/Business").map(|f| m.folder(f).folder_type),
         Some(FolderType::Business)
@@ -44,9 +44,9 @@ fn a_real_model_indexes_the_way_the_file_reads() {
     );
 
     // Three ArchiMate views plus one sketch.
-    assert_eq!(m.views().len(), 4);
-    assert_eq!(m.views().iter().filter(|v| v.is_sketch).count(), 1);
-    assert!(m.views().iter().any(|v| v.name == "2 Test Bounds and Images"));
+    assert_eq!(m.views().count(), 4);
+    assert_eq!(m.views().filter(|v| v.is_sketch).count(), 1);
+    assert!(m.views().any(|v| v.name == "2 Test Bounds and Images"));
 }
 
 #[test]
@@ -55,16 +55,16 @@ fn unknown_types_survive_instead_of_being_dropped() {
     // endpoints. A tool that only understands the types it knows would lose all
     // three; refusing to open the file would be worse still.
     let m = open("compatibility_test3.archimate");
-    assert_eq!(m.concepts().len(), 3);
+    assert_eq!(m.concepts().count(), 3);
 
-    let e1 = m.concepts().iter().find(|c| c.name == "E1").unwrap();
+    let e1 = m.concepts().find(|c| c.name == "E1").unwrap();
     assert!(
         matches!(&e1.kind, ConceptKind::Unknown { xsi, is_relationship: false } if xsi == "Bogus1")
     );
 
     // Classified as an edge because it has both endpoints, not because of its
     // name or the folder it happens to sit in.
-    let e3 = m.concepts().iter().find(|c| c.id.ends_with("eae3e9")).unwrap();
+    let e3 = m.concepts().find(|c| c.id.ends_with("eae3e9")).unwrap();
     assert!(matches!(&e3.kind, ConceptKind::Unknown { is_relationship: true, .. }));
     assert!(e3.kind.is_relationship());
     assert_eq!(e3.kind.matrix_idx(), None, "an unknown type has no matrix row");
@@ -86,7 +86,7 @@ fn a_zipped_model_is_opened_and_written_back_unchanged() {
     // Written by an older Archi: the model version is not fixed at 5.0.0, so
     // nothing may assume it.
     assert_eq!(m.version(), "5.8.0");
-    assert!(!m.views().is_empty());
+    assert!(m.views().count() > 0);
     assert!(m.is_unmodified());
 
     // Untouched means untouched: no recompression, no reordered entries, no
@@ -121,7 +121,7 @@ fn editing_a_zipped_model_keeps_the_other_entries_byte_for_byte() {
 
     let reopened = Model::from_bytes(out, "x.archimate").unwrap();
     assert_eq!(reopened.name(), "Renamed");
-    assert_eq!(reopened.concepts().len(), m.concepts().len());
+    assert_eq!(reopened.concepts().count(), m.concepts().count());
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn every_corpus_model_loads_and_writes_back_identically() {
         assert!(m.duplicate_ids().is_empty(), "{path:?} has duplicate ids");
         checked += 1;
     }
-    assert_eq!(checked, 8);
+    assert_eq!(checked, 9);
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn documentation_properties_and_features_are_read_from_child_elements() {
         "</archimate:model>\n"
     );
     let m = Model::from_bytes(src.as_bytes().to_vec(), "x.archimate").unwrap();
-    let c = &m.concepts()[0];
+    let c = m.concepts().next().unwrap();
 
     assert_eq!(m.documentation(c.node).as_deref(), Some("Handles & settles payments"));
     assert_eq!(

@@ -39,3 +39,17 @@ bytes = 9279
 # $ImplementationMigrationElements$) which expand to the layer's element set.
 # An EMPTY concept list means "everything is allowed", evaluated independently
 # for elements and for relationships.
+
+# ---------------------------------------------------------------------------
+# Test corpus (tests/corpus/), all from the same repository and tag.
+#
+# tests/com.archimatetool.editor.tests/testdata/models/*.archimate
+#   compatibility_test1..3, model_zipped, testCopySnapshot, testDeleteHandler,
+#   testFindReplace, testmodel1
+# tests/com.archimatetool.modelimporter.tests/testdata/test.archimate
+#   -> modelimporter_test.archimate; the only fixture carrying <feature>,
+#      <documentation>, <property> and dashed-UUID ids together.
+#
+# Archisurance is deliberately NOT vendored: it ships inside this MIT repository
+# but the model content itself originates with The Open Group / BiZZdesign, and
+# that provenance was not established.

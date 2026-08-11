@@ -85,14 +85,14 @@ impl Selector {
                 .copied()
                 .filter(|c| type_matches(&m.concept(*c).kind, type_name))
                 .collect(),
-            Selector::Glob(pat) => (0..m.concepts().len())
-                .map(|i| ConceptId(i as u32))
-                .filter(|c| glob_match(pat, &m.concept(*c).name))
+            Selector::Glob(pat) => m
+                .concepts_with_ids()
+                .filter(|(_, c)| glob_match(pat, &c.name))
+                .map(|(i, _)| i)
                 .collect(),
-            Selector::Filter(e) => (0..m.concepts().len())
-                .map(|i| ConceptId(i as u32))
-                .filter(|c| e.eval(g, *c))
-                .collect(),
+            Selector::Filter(e) => {
+                m.concepts_with_ids().map(|(i, _)| i).filter(|c| e.eval(g, *c)).collect()
+            }
         };
         out.sort_by_key(|c| {
             let concept = m.concept(*c);
@@ -125,19 +125,17 @@ impl Selector {
         }
         let m = g.model();
         let mut scored: Vec<(usize, ConceptId)> = m
-            .concepts()
-            .iter()
-            .enumerate()
+            .concepts_with_ids()
             .filter_map(|(i, c)| {
                 let name = c.name.to_lowercase();
                 if name.is_empty() {
                     return None;
                 }
                 if name.contains(&needle) || needle.contains(&name) {
-                    return Some((0, ConceptId(i as u32)));
+                    return Some((0, i));
                 }
                 let d = edit_distance(&needle, &name);
-                (d <= needle.len().div_ceil(2)).then_some((d, ConceptId(i as u32)))
+                (d <= needle.len().div_ceil(2)).then_some((d, i))
             })
             .collect();
         scored.sort_by_key(|(d, c)| (*d, m.concept(*c).name.clone(), *c));
@@ -267,7 +265,7 @@ fn eval_term(
             });
         }
         Key::View => {
-            let on_view = m.views().iter().any(|v| {
+            let on_view = m.views().any(|v| {
                 let refs = m.doc.descendants(v.node).into_iter().any(|n| {
                     m.doc.attr(n, "archimateElement").as_deref() == Some(concept.id.as_str())
                         || m.doc.attr(n, "archimateRelationship").as_deref()
@@ -535,7 +533,6 @@ pub fn known_type_names() -> Vec<&'static str> {
 /// Types that are neither an element nor a relationship we know about.
 pub fn unknown_type_names(m: &Model) -> HashSet<String> {
     m.concepts()
-        .iter()
         .filter_map(|c| match &c.kind {
             ConceptKind::Unknown { xsi, .. } => Some(xsi.clone()),
             _ => None,

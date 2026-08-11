@@ -64,7 +64,9 @@ fn write_children(
     let mut run: Option<Span> = None;
     for &c in live {
         let cn = doc.node(c);
-        if doc.is_pristine(c) {
+        // A moved node's bytes are still good but its surroundings are not, so
+        // it cannot join a contiguous run.
+        if doc.is_pristine(c) && !cn.lead_synthetic {
             let s = Span { start: cn.lead.start, end: cn.span.end };
             run = match run {
                 Some(prev) if prev.end == s.start => Some(Span { start: prev.start, end: s.end }),
@@ -81,8 +83,8 @@ fn write_children(
         }
         // An existing child's lead is authoritative even when it is empty —
         // `<a><b/></a>` has no whitespace and must not grow any. Only a node
-        // this library created has no source whitespace to speak of.
-        if cn.state == NodeState::Inserted {
+        // created or moved here has no source whitespace to speak of.
+        if cn.lead_synthetic {
             write_break(doc, w, depth + 1)?;
         } else {
             write_span(doc, w, cn.lead)?;

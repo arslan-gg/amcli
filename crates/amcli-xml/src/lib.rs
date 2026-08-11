@@ -144,6 +144,11 @@ struct NodeData {
     subtree_dirty: bool,
     /// Detached by `remove_subtree`; skipped by the emitter and by traversal.
     removed: bool,
+    /// The whitespace before this node has to be invented, because the node was
+    /// created here or moved here and its original surroundings do not apply.
+    /// Its own bytes are still valid, which is why a moved subtree stays
+    /// byte-identical.
+    lead_synthetic: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -470,6 +475,7 @@ impl Doc {
             state: NodeState::Inserted,
             subtree_dirty: false,
             removed: false,
+            lead_synthetic: true,
         });
         let at = at.min(self.nodes[parent.idx()].children.len());
         self.nodes[parent.idx()].children.insert(at, id);
@@ -481,6 +487,38 @@ impl Doc {
     pub fn append_child(&mut self, parent: NodeId, b: NodeBuilder) -> Result<NodeId, MixedContent> {
         let at = self.nodes[parent.idx()].children.len();
         self.insert_child(parent, at, b)
+    }
+
+    /// Move a node, with everything under it, to a new parent.
+    ///
+    /// The node keeps its own bytes — only the whitespace around it is
+    /// reinvented — so re-filing a concept cannot lose unknown attributes or
+    /// unknown children the way rebuilding it from known fields would.
+    pub fn move_child(&mut self, id: NodeId, new_parent: NodeId, at: usize) {
+        if id == self.root || self.is_ancestor(id, new_parent) {
+            return;
+        }
+        if let Some(old) = self.nodes[id.idx()].parent {
+            self.nodes[old.idx()].children.retain(|c| *c != id);
+            self.mark_subtree_dirty(old);
+        }
+        let at = at.min(self.nodes[new_parent.idx()].children.len());
+        self.nodes[new_parent.idx()].children.insert(at, id);
+        self.nodes[id.idx()].parent = Some(new_parent);
+        self.nodes[id.idx()].lead_synthetic = true;
+        self.mark_subtree_dirty(new_parent);
+    }
+
+    /// Guard against re-parenting a node under its own descendant.
+    fn is_ancestor(&self, maybe_ancestor: NodeId, of: NodeId) -> bool {
+        let mut cur = Some(of);
+        while let Some(n) = cur {
+            if n == maybe_ancestor {
+                return true;
+            }
+            cur = self.nodes[n.idx()].parent;
+        }
+        false
     }
 
     /// Detach a node and everything under it. The whitespace that preceded it

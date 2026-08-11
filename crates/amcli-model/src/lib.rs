@@ -4,10 +4,12 @@
 use std::path::PathBuf;
 
 pub mod container;
+pub mod edit;
 pub mod generated;
 pub mod ids;
 pub mod model;
 
+pub use edit::{Cascade, EditError};
 pub use generated::{ElementType, FolderType, Layer, RelType, matrix, viewpoints};
 pub use model::{Concept, ConceptId, ConceptKind, Entity, Folder, FolderId, Model, View, ViewId};
 

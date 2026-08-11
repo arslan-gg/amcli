@@ -114,7 +114,9 @@ pub struct Graph<'m> {
 
 impl<'m> Graph<'m> {
     pub fn build(model: &'m Model) -> Graph<'m> {
-        let n = model.concepts().len();
+        // Sized by slots, not by live concepts: a ConceptId is a stable handle
+        // and deleted slots keep their index.
+        let n = model.concept_slots();
         let mut g = Graph {
             model,
             out: vec![Vec::new(); n],
@@ -124,8 +126,7 @@ impl<'m> Graph<'m> {
             dangling: Vec::new(),
         };
 
-        for (i, c) in model.concepts().iter().enumerate() {
-            let id = ConceptId(i as u32);
+        for (id, c) in model.concepts_with_ids() {
             if !c.name.is_empty() {
                 g.by_name.entry(c.name.to_lowercase()).or_default().push(id);
             }
@@ -139,7 +140,7 @@ impl<'m> Graph<'m> {
                 .zip(c.target.as_deref().and_then(|t| model.concept_by_id(t)));
             match ends {
                 Some((s, t)) => {
-                    g.ends[i] = Some((s, t));
+                    g.ends[id.0 as usize] = Some((s, t));
                     g.out[s.0 as usize].push(Arc { rel: id, other: t, dir: Dir::Out });
                     g.inc[t.0 as usize].push(Arc { rel: id, other: s, dir: Dir::In });
                 }
@@ -514,7 +515,8 @@ impl<'m> Graph<'m> {
         let mut out = Vec::new();
         let f = EdgeFilter::default();
         for start in 0..n {
-            if seen[start] || self.model.concept(ConceptId(start as u32)).kind.is_relationship() {
+            let c = self.model.concept(ConceptId(start as u32));
+            if seen[start] || !c.alive || c.kind.is_relationship() {
                 continue;
             }
             let mut comp = Vec::new();
@@ -549,8 +551,7 @@ impl<'m> Graph<'m> {
     pub fn search(&self, needle: &str, limit: usize) -> Vec<Hit> {
         let needle = needle.to_lowercase();
         let mut hits: Vec<Hit> = Vec::new();
-        for (i, c) in self.model.concepts().iter().enumerate() {
-            let id = ConceptId(i as u32);
+        for (id, c) in self.model.concepts_with_ids() {
             if c.name.to_lowercase().contains(&needle) {
                 hits.push(Hit { concept: id, field: MatchField::Name, snippet: c.name.clone() });
                 continue;
@@ -601,7 +602,7 @@ impl<'m> Graph<'m> {
         let mut elements = 0;
         let mut relationships = 0;
 
-        for (i, c) in self.model.concepts().iter().enumerate() {
+        for (id, c) in self.model.concepts_with_ids() {
             *by_type.entry(c.kind.name().to_string()).or_default() += 1;
             if c.kind.is_relationship() {
                 relationships += 1;
@@ -611,7 +612,7 @@ impl<'m> Graph<'m> {
             if let Some(l) = c.kind.layer() {
                 *by_layer.entry(l).or_default() += 1;
             }
-            let (i_deg, o_deg) = self.degree(ConceptId(i as u32));
+            let (i_deg, o_deg) = self.degree(id);
             if i_deg + o_deg == 0 {
                 orphans += 1;
             }
@@ -619,8 +620,8 @@ impl<'m> Graph<'m> {
         Stats {
             elements,
             relationships,
-            views: self.model.views().len(),
-            folders: self.model.folders().len(),
+            views: self.model.views().count(),
+            folders: self.model.folders().count(),
             orphans,
             by_type,
             by_layer,

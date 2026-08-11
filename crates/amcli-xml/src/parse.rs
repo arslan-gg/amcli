@@ -139,6 +139,7 @@ fn new_node(
         state: NodeState::Pristine,
         subtree_dirty: false,
         removed: false,
+        lead_synthetic: false,
     }
 }
 

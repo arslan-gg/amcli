@@ -79,6 +79,10 @@ impl ConceptKind {
 
 #[derive(Clone, Debug)]
 pub struct Concept {
+    /// False once deleted. The slot itself survives so that a `ConceptId`
+    /// handed to a caller stays valid across later edits — renumbering on every
+    /// mutation would silently repoint a handle at a different concept.
+    pub alive: bool,
     pub node: NodeId,
     pub id: String,
     pub name: String,
@@ -91,6 +95,7 @@ pub struct Concept {
 
 #[derive(Clone, Debug)]
 pub struct Folder {
+    pub alive: bool,
     pub node: NodeId,
     pub id: String,
     pub name: String,
@@ -103,6 +108,7 @@ pub struct Folder {
 
 #[derive(Clone, Debug)]
 pub struct View {
+    pub alive: bool,
     pub node: NodeId,
     pub id: String,
     pub name: String,
@@ -131,6 +137,11 @@ pub struct Model {
     folders: Vec<Folder>,
     views: Vec<View>,
     by_id: HashMap<String, Entity>,
+    /// Which slot each XML node already owns. This is what makes ConceptId,
+    /// FolderId and ViewId stable handles: the arena never renumbers, so a
+    /// re-walk after an edit updates slots in place rather than reassigning
+    /// them.
+    slot_of_node: HashMap<NodeId, Entity>,
     /// Ids seen more than once. A duplicate is a validation finding, not a
     /// reason to refuse to open the file — you cannot fix what you cannot load.
     duplicate_ids: Vec<String>,
@@ -165,10 +176,40 @@ impl Model {
             folders: Vec::new(),
             views: Vec::new(),
             by_id: HashMap::new(),
+            slot_of_node: HashMap::new(),
             duplicate_ids: Vec::new(),
         };
         m.index();
         Ok(m)
+    }
+
+    /// Rebuild every index from the document.
+    ///
+    /// Called after each structural edit. Doing it wholesale rather than
+    /// incrementally is O(n) per edit, which on a 3,000-concept model is
+    /// microseconds — and it makes an index that disagrees with the document
+    /// structurally impossible, which is worth far more than the cycles.
+    pub(crate) fn reindex(&mut self) {
+        for c in &mut self.concepts {
+            c.alive = false;
+        }
+        for f in &mut self.folders {
+            f.alive = false;
+        }
+        for v in &mut self.views {
+            v.alive = false;
+        }
+        self.by_id.clear();
+        self.duplicate_ids.clear();
+        self.index();
+    }
+
+    /// Look up a folder by its id attribute.
+    pub fn folder_id_by_id(&self, id: &str) -> Option<FolderId> {
+        match self.by_id.get(id) {
+            Some(Entity::Folder(f)) => Some(*f),
+            _ => None,
+        }
     }
 
     /// Walk the folder tree once, classifying everything as it goes.
@@ -193,15 +234,28 @@ impl Model {
             .unwrap_or(FolderType::User);
 
         let path = format!("{parent_path}/{name}");
-        let fid = FolderId(self.folders.len() as u32);
-        self.folders.push(Folder {
+        let folder = Folder {
+            alive: true,
             node,
             id: id.clone(),
             name,
             folder_type,
             parent,
             path: path.clone(),
-        });
+        };
+        let fid = match self.slot_of_node.get(&node) {
+            Some(Entity::Folder(f)) => {
+                let f = *f;
+                self.folders[f.0 as usize] = folder;
+                f
+            }
+            _ => {
+                let f = FolderId(self.folders.len() as u32);
+                self.folders.push(folder);
+                self.slot_of_node.insert(node, Entity::Folder(f));
+                f
+            }
+        };
         self.register(id, Entity::Folder(fid));
 
         let children: Vec<NodeId> = self.doc.children(node).collect();
@@ -223,15 +277,28 @@ impl Model {
         // Views live in the same `<element>` slot as concepts, told apart only
         // by their type.
         if bare == "ArchimateDiagramModel" || bare == "SketchModel" {
-            let vid = ViewId(self.views.len() as u32);
-            self.views.push(View {
+            let view = View {
+                alive: true,
                 node,
                 id: id.clone(),
                 name,
                 folder,
                 viewpoint: self.doc.attr(node, "viewpoint").unwrap_or_default(),
                 is_sketch: bare == "SketchModel",
-            });
+            };
+            let vid = match self.slot_of_node.get(&node) {
+                Some(Entity::View(v)) => {
+                    let v = *v;
+                    self.views[v.0 as usize] = view;
+                    v
+                }
+                _ => {
+                    let v = ViewId(self.views.len() as u32);
+                    self.views.push(view);
+                    self.slot_of_node.insert(node, Entity::View(v));
+                    v
+                }
+            };
             self.register(id, Entity::View(vid));
             self.index_visuals(node);
             return;
@@ -251,8 +318,21 @@ impl Model {
             },
         };
 
-        let cid = ConceptId(self.concepts.len() as u32);
-        self.concepts.push(Concept { node, id: id.clone(), name, kind, folder, source, target });
+        let concept =
+            Concept { alive: true, node, id: id.clone(), name, kind, folder, source, target };
+        let cid = match self.slot_of_node.get(&node) {
+            Some(Entity::Concept(c)) => {
+                let c = *c;
+                self.concepts[c.0 as usize] = concept;
+                c
+            }
+            _ => {
+                let c = ConceptId(self.concepts.len() as u32);
+                self.concepts.push(concept);
+                self.slot_of_node.insert(node, Entity::Concept(c));
+                c
+            }
+        };
         self.register(id, Entity::Concept(cid));
     }
 
@@ -310,16 +390,45 @@ impl Model {
         self.doc.child_named(self.doc.root(), "purpose").map(|n| self.doc.text(n))
     }
 
-    pub fn concepts(&self) -> &[Concept] {
-        &self.concepts
+    /// Live concepts. Deleted slots are skipped, so this can never hand back a
+    /// tombstone by accident.
+    pub fn concepts(&self) -> impl Iterator<Item = &Concept> + '_ {
+        self.concepts.iter().filter(|c| c.alive)
     }
 
-    pub fn folders(&self) -> &[Folder] {
-        &self.folders
+    /// Live concepts with their stable handles.
+    pub fn concepts_with_ids(&self) -> impl Iterator<Item = (ConceptId, &Concept)> + '_ {
+        self.concepts
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.alive)
+            .map(|(i, c)| (ConceptId(i as u32), c))
     }
 
-    pub fn views(&self) -> &[View] {
-        &self.views
+    /// Number of slots, including tombstones. Use it to size arrays indexed by
+    /// `ConceptId`, never as a concept count.
+    pub fn concept_slots(&self) -> usize {
+        self.concepts.len()
+    }
+
+    pub fn folders(&self) -> impl Iterator<Item = &Folder> + '_ {
+        self.folders.iter().filter(|f| f.alive)
+    }
+
+    pub fn folders_with_ids(&self) -> impl Iterator<Item = (FolderId, &Folder)> + '_ {
+        self.folders
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.alive)
+            .map(|(i, f)| (FolderId(i as u32), f))
+    }
+
+    pub fn views(&self) -> impl Iterator<Item = &View> + '_ {
+        self.views.iter().filter(|v| v.alive)
+    }
+
+    pub fn views_with_ids(&self) -> impl Iterator<Item = (ViewId, &View)> + '_ {
+        self.views.iter().enumerate().filter(|(_, v)| v.alive).map(|(i, v)| (ViewId(i as u32), v))
     }
 
     pub fn duplicate_ids(&self) -> &[String] {
@@ -358,18 +467,14 @@ impl Model {
 
     pub fn folder_by_path(&self, path: &str) -> Option<FolderId> {
         let want = path.trim_end_matches('/');
-        self.folders
-            .iter()
-            .position(|f| f.path.eq_ignore_ascii_case(want))
-            .map(|i| FolderId(i as u32))
+        self.folders_with_ids().find(|(_, f)| f.path.eq_ignore_ascii_case(want)).map(|(i, _)| i)
     }
 
     /// The top-level folder of a given type, which is where new concepts go.
     pub fn top_folder(&self, t: FolderType) -> Option<FolderId> {
-        self.folders
-            .iter()
-            .position(|f| f.parent.is_none() && f.folder_type == t)
-            .map(|i| FolderId(i as u32))
+        self.folders_with_ids()
+            .find(|(_, f)| f.parent.is_none() && f.folder_type == t)
+            .map(|(i, _)| i)
     }
 
     // ---- per-concept detail, read straight from the document --------------
