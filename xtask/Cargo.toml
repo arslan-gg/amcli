@@ -10,3 +10,5 @@ publish = false
 [dependencies]
 quick-xml = "0.38"
 anyhow = "1"
+# To make the checksums in PROVENANCE.toml a gate rather than a note.
+sha2 = "0.10"

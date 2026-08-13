@@ -49,7 +49,9 @@ Consequences worth knowing before you edit it:
 `assets/archi/` holds MIT-licensed files vendored from `archimatetool/archi`.
 They are **generated inputs, not hand-edited** — `assets/archi/PROVENANCE.toml`
 records the upstream tag and checksums, and updating them is a deliberate,
-reviewable change.
+reviewable change. `cargo xtask verify` enforces both halves: the assets
+against the recorded checksums, and the generated tables against the assets.
+The refresh procedure is in the header of PROVENANCE.toml itself.
 
 ## Format traps worth knowing before you touch the model layer
 

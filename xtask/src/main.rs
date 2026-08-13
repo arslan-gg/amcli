@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
 
 mod types;
 use types::{
@@ -37,6 +38,8 @@ fn repo_root() -> PathBuf {
 fn codegen(verify_only: bool) -> Result<()> {
     let root = repo_root();
     let assets = root.join("assets/archi");
+
+    check_provenance(&assets, verify_only)?;
 
     let keys = parse_keys(&assets.join("relationships-keys.xml"))?;
     let (concepts, cells) = parse_matrix(&assets.join("relationships.xml"))?;
@@ -660,6 +663,99 @@ fn rustfmt(src: String) -> Result<String> {
         bail!("rustfmt rejected generated code: {}", String::from_utf8_lossy(&out.stderr));
     }
     Ok(String::from_utf8(out.stdout)?)
+}
+
+// ---- provenance -----------------------------------------------------------
+//
+// The generated tables are checked against the vendored assets, but until now
+// nothing checked the assets against the checksums recorded for them, so an
+// edited asset regenerated cleanly and `verify` stayed green. That made the
+// sha256 lines in PROVENANCE.toml a note rather than a gate, which is the
+// opposite of what vendoring third-party files is for.
+
+struct Vendored {
+    path: String,
+    sha256: String,
+    bytes: u64,
+}
+
+/// `verify` refuses on a mismatch; `codegen` reports it and continues, printing
+/// the lines to paste, because during a deliberate upstream bump the recorded
+/// checksums are *supposed* to be stale until you update them.
+fn check_provenance(assets: &Path, enforce: bool) -> Result<()> {
+    let manifest = assets.join("PROVENANCE.toml");
+    let text = std::fs::read_to_string(&manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+
+    let mut want: Vec<Vendored> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line == "[[files]]" {
+            want.push(Vendored { path: String::new(), sha256: String::new(), bytes: 0 });
+            continue;
+        }
+        let Some(entry) = want.last_mut() else { continue };
+        if let Some(v) = toml_string(line, "path") {
+            entry.path = v;
+        } else if let Some(v) = toml_string(line, "sha256") {
+            entry.sha256 = v;
+        } else if let Some(v) = toml_value(line, "bytes") {
+            entry.bytes = v.parse().unwrap_or(0);
+        }
+    }
+    if want.is_empty() {
+        bail!("{} lists no [[files]] entries", manifest.display());
+    }
+
+    let mut drift = Vec::new();
+    for entry in &want {
+        let path = assets.join(&entry.path);
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("{} is missing", path.display()))?;
+        let got = hex(&Sha256::digest(&bytes));
+        if got != entry.sha256 || bytes.len() as u64 != entry.bytes {
+            drift.push((entry, got, bytes.len()));
+        }
+    }
+    if drift.is_empty() {
+        return Ok(());
+    }
+
+    let mut report = String::from("vendored assets do not match PROVENANCE.toml:\n");
+    for (entry, got, len) in &drift {
+        report.push_str(&format!(
+            "\n  {}\n    recorded sha256 = \"{}\"  bytes = {}\n    actual   sha256 = \"{got}\"  bytes = {len}\n",
+            entry.path, entry.sha256, entry.bytes
+        ));
+    }
+    if enforce {
+        report.push_str(
+            "\nIf this is an upstream Archi update, it belongs in the same commit as a\n\
+             bump to [source] tag/fetched and the checksums above. If it is not, the\n\
+             vendored files have been edited, and hand-editing them is what the\n\
+             checksums exist to prevent.\n",
+        );
+        bail!("{report}");
+    }
+    eprintln!("warning: {report}");
+    eprintln!("Paste the actual values into PROVENANCE.toml, then run `cargo xtask verify`.\n");
+    Ok(())
+}
+
+fn toml_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    Some(line.strip_prefix(key)?.trim_start().strip_prefix('=')?.trim())
+}
+
+fn toml_string(line: &str, key: &str) -> Option<String> {
+    let inner = toml_value(line, key)?.strip_prefix('"')?;
+    let end = inner.find('"')?;
+    Some(inner[..end].to_string())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+        s.push_str(&format!("{b:02x}"));
+        s
+    })
 }
 
 // ---- tiny XML helpers -----------------------------------------------------
