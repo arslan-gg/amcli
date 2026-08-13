@@ -41,8 +41,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
 
-      # install.ps1 cannot be shellchecked, so assert the half of its contract
-      # that a test can reach: stdout is the path and nothing else.
+      # install.ps1 cannot be shellchecked. Parse the whole file first: -DryRun
+      # exercises one branch, and the first bug here was in a branch it never
+      # reaches. This covers every line for syntax, which is the class of error
+      # that makes the script unusable rather than merely wrong.
+      - name: the PowerShell installer parses
+        shell: pwsh
+        run: |
+          $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path .\skills\amcli\scripts\install.ps1), [ref]$null, [ref]$errs) | Out-Null
+          if ($errs) { $errs | ForEach-Object { Write-Host $_ }; throw "$($errs.Count) parse error(s)" }
+
       - name: the PowerShell installer keeps the stdout contract
         shell: pwsh
         run: |

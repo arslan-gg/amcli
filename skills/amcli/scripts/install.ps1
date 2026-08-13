@@ -41,10 +41,14 @@ $bin = 'amcli.exe'
 function Resolve-Tag {
     try {
         $r = Invoke-WebRequest -Uri "$Base/releases/latest" -MaximumRedirection 5 -UseBasicParsing
+        # PowerShell 7 exposes the final URI here; Windows PowerShell 5.1,
+        # which is what ships with Windows, exposes it there.
         $url = $r.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
+        if (-not $url) { $url = $r.BaseResponse.ResponseUri.AbsoluteUri }
     } catch {
         return $null
     }
+    if (-not $url) { return $null }
     $tag = $url.Split('/')[-1]
     # With no releases published GitHub lands on the list page instead, so the
     # last segment is "releases". That is a fresh repository, not an error.
@@ -70,7 +74,11 @@ https://rustup.rs and re-run this script, or run:
     }
     Say 'no published release found; building from source with cargo (a few minutes)...'
     $stage = Join-Path $InstallDir ".amcli-install-$([System.Guid]::NewGuid().ToString('N'))"
-    cargo install --git $Base --locked --root $stage amcli-cli 1>&2
+    # Everything cargo prints has to reach stderr, or the build log would land
+    # on stdout and break the one-line contract. PowerShell has no `1>&2` —
+    # that operator is reserved — so route both streams by hand.
+    cargo install --git $Base --locked --root $stage amcli-cli 2>&1 |
+        ForEach-Object { [Console]::Error.WriteLine($_) }
     if ($LASTEXITCODE -ne 0) {
         Die 'cargo could not build amcli. It needs Rust 1.90 or newer (edition 2024); run `rustup update` if yours is older.'
     }
