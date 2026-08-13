@@ -44,6 +44,10 @@ jobs:
             os: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
+          # Windows on ARM runs this under emulation, so one build covers both.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            exe: .exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -69,21 +73,27 @@ jobs:
       # requires — that binary builds cleanly and then dies with `Killed: 9`
       # on every user's machine.
       - name: smoke test
+        shell: bash
         run: |
-          bin=target/${{ matrix.target }}/release/amcli
+          bin=target/${{ matrix.target }}/release/amcli${{ matrix.exe }}
           "$bin" --version
           "$bin" skill commands > /dev/null
 
       # Flat tarball: the installer extracts into a temp directory and expects
-      # ./amcli there. LICENSE and NOTICE travel with it because Apache-2.0
-      # 4(d) requires the NOTICE to accompany the distribution, and we vendor
-      # MIT-licensed Archi assets.
+      # ./amcli there. .tar.gz on every platform including Windows, where
+      # tar.exe has shipped since Windows 10 1803 — one archive format keeps
+      # the checksum step and both installers to a single code path.
+      #
+      # LICENSE and NOTICE travel with it because Apache-2.0 4(d) requires the
+      # NOTICE to accompany the distribution, and we vendor MIT Archi assets.
       - name: package
+        shell: bash
         run: |
           name=amcli-${GITHUB_REF_NAME}-${{ matrix.target }}
+          bin=amcli${{ matrix.exe }}
           mkdir -p staging
-          cp target/${{ matrix.target }}/release/amcli LICENSE NOTICE staging/
-          tar -czf "$name.tar.gz" -C staging amcli LICENSE NOTICE
+          cp "target/${{ matrix.target }}/release/$bin" LICENSE NOTICE staging/
+          tar -czf "$name.tar.gz" -C staging "$bin" LICENSE NOTICE
           ls -l "$name.tar.gz"
 
       - uses: actions/upload-artifact@v4

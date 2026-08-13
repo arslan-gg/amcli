@@ -451,9 +451,17 @@ fn the_skill_installs_where_agents_look_and_uninstalls_cleanly() {
         "the command reference is a command, not a file"
     );
 
-    // One symlink for Claude Code; Codex reads ~/.agents/skills natively.
+    // One link for Claude Code; Codex reads ~/.agents/skills natively.
     let link = home.path().join(".claude/skills/amcli");
+    #[cfg(unix)]
     assert_eq!(std::fs::read_link(&link).unwrap(), skill);
+    // Windows needs a privilege for symlinks that a normal user does not have,
+    // so there it is a copy and only the content can be compared.
+    #[cfg(not(unix))]
+    assert_eq!(
+        std::fs::read_to_string(link.join("SKILL.md")).unwrap(),
+        std::fs::read_to_string(skill.join("SKILL.md")).unwrap()
+    );
 
     // The frontmatter carries only fields the Agent Skills spec defines, or
     // strict validators reject the file.
@@ -542,16 +550,20 @@ fn the_skill_points_at_paths_that_exist_and_never_downgrades_itself() {
         "that instruction downgrades the skill when the binary is the stale one"
     );
 
-    for line in body.lines() {
-        for word in line.split_whitespace() {
-            let Some(rest) = word.strip_prefix("~/.agents/skills/amcli/") else { continue };
-            let rel = rest.trim_end_matches(['`', '"', ')', ',', '.']);
-            assert!(
-                source.join(rel).exists(),
-                "SKILL.md tells the agent to run {rel}, which is not in the skill"
-            );
-        }
+    // Both spellings: the PowerShell line uses backslashes, and a typo there
+    // is just as broken as one in the sh line.
+    let mut found = 0;
+    for word in body.split_whitespace() {
+        let word = word.replace('\\', "/");
+        let Some(rest) = word.strip_prefix("~/.agents/skills/amcli/") else { continue };
+        let rel = rest.trim_end_matches(['`', '"', ')', ',', '.']);
+        assert!(
+            source.join(rel).exists(),
+            "SKILL.md tells the agent to run {rel}, which is not in the skill"
+        );
+        found += 1;
     }
+    assert!(found >= 2, "expected the sh and PowerShell installers to be named, saw {found}");
 }
 
 /// A skill newer than the binary is the expected steady state, so the failure

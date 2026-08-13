@@ -54,14 +54,14 @@ on the current shell's PATH yet, so plain `amcli` will still report "command not
 found" even though the install succeeded — that is the single most likely way
 this goes wrong.
 
-**Native Windows PowerShell**, where there is no `sh`: there is no Windows build
-yet. Use WSL, or install Rust from <https://rustup.rs> and run
+**Native Windows PowerShell**, where there is no `sh`, use the PowerShell one
+instead. It follows the same contract:
 
-    cargo install --git https://github.com/arslan-gg/amcli --locked amcli-cli
+    $AMCLI = & ~\.agents\skills\amcli\scripts\install.ps1
 
-The installer asks for nothing, never uses `sudo`, and never edits a shell
+Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
-its own. Do not pipe it from a URL — it is already on disk.
+its own. Do not pipe either from a URL — they are already on disk.
 
 ## Finding the model
 

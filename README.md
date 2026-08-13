@@ -102,7 +102,11 @@ binary. It refuses to touch a directory `npx skills add` owns, since that
 tool's lock file records an upstream tree hash and would silently overwrite
 anything written underneath it.
 
-Windows has no prebuilt binary yet — use WSL, or the `cargo install` line above.
+On Windows use the PowerShell installer, which follows the same contract:
+
+```powershell
+& ~\.agents\skills\amcli\scripts\install.ps1
+```
 
 ## Rendering
 
@@ -147,8 +151,7 @@ matrix, and CI fails if the committed output goes stale.
 
 Read, write, validate, views and SVG all work and are covered by tests. Not yet
 built: coArchi's grafico directory format, The Open Group's Open Exchange XML,
-PNG output (render to SVG and convert), and a Windows binary — which needs no
-new code, only a matrix entry and a PowerShell installer.
+and PNG output (render to SVG and convert).
 
 No Homebrew tap, deliberately. `brew` does not exist in the Linux containers
 where most agents run, and a tap costs a second repository, a fine-grained PAT

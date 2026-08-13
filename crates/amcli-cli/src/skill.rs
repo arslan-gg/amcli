@@ -27,6 +27,7 @@ const FILES: &[(&str, &str)] = &[
     ("references/types.md", include_str!("../../../skills/amcli/references/types.md")),
     ("references/batch.md", include_str!("../../../skills/amcli/references/batch.md")),
     ("scripts/install.sh", include_str!("../../../skills/amcli/scripts/install.sh")),
+    ("scripts/install.ps1", include_str!("../../../skills/amcli/scripts/install.ps1")),
     ("agents/openai.yaml", include_str!("../../../skills/amcli/agents/openai.yaml")),
 ];
 

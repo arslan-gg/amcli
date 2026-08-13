@@ -29,6 +29,26 @@ jobs:
       # match the vendored Archi assets.
       - run: cargo xtask verify
 
+  # Windows is the platform the id-generation and USERPROFILE fixes were for,
+  # so it has to run the suite rather than merely compile: the id test only
+  # fails where entropy is unavailable, and every `amcli skill` command used to
+  # exit 7 here because only HOME was consulted.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
+      # install.ps1 cannot be shellchecked, so assert the half of its contract
+      # that a test can reach: stdout is the path and nothing else.
+      - name: the PowerShell installer keeps the stdout contract
+        shell: pwsh
+        run: |
+          $out = & .\skills\amcli\scripts\install.ps1 -DryRun -InstallDir C:\amcli-test
+          if ($out -ne 'C:\amcli-test\amcli.exe') { throw "stdout was: [$out]" }
+
   installer:
     runs-on: ubuntu-24.04
     steps:

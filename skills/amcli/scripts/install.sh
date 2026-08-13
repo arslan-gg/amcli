@@ -31,6 +31,8 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 TARGET=
 TAG=
+# amcli.exe under Git Bash; set by detect_target.
+BIN=amcli
 TMP=
 
 # Must end in a success: an EXIT trap whose last command fails replaces the
@@ -43,8 +45,9 @@ trap cleanup EXIT INT TERM
 
 # ---------------------------------------------------------------- platform
 
-# Sets TARGET. Returns 1 for a platform with no prebuilt binary (the caller
-# falls back to cargo) and 2 for Windows shells, which need their own message.
+# Sets TARGET, and BIN when the executable is not simply called `amcli`.
+# Returns 1 for a platform with no prebuilt binary, which the caller turns into
+# the cargo fallback rather than an error.
 detect_target() {
     os=$(uname -s 2>/dev/null || echo unknown)
     arch=$(uname -m 2>/dev/null || echo unknown)
@@ -69,7 +72,15 @@ detect_target() {
         *) return 1 ;;
         esac
         ;;
-    MINGW* | MSYS* | CYGWIN*) return 2 ;;
+    MINGW* | MSYS* | CYGWIN*)
+        # Git Bash, MSYS and Cygwin run the native Windows build; only the
+        # file name differs.
+        BIN=amcli.exe
+        case $arch in
+        x86_64) TARGET=x86_64-pc-windows-msvc ;;
+        *) return 1 ;;
+        esac
+        ;;
     *) return 1 ;;
     esac
     return 0
@@ -165,7 +176,7 @@ installed. Install Rust from https://rustup.rs and re-run this script, or run:
         die "cargo could not build amcli. amcli needs Rust 1.90 or newer
 (edition 2024); if yours is older, run \`rustup update\` and try again."
     fi
-    install_from "$TMP/bin/amcli"
+    install_from "$TMP/bin/$BIN"
 }
 
 # ---------------------------------------------------------------- install
@@ -175,12 +186,12 @@ install_from() {
     chmod 755 "$1"
     # Same-filesystem rename: TMP lives inside DIR precisely so this cannot
     # fail by crossing a mount point, and so two installs cannot interleave.
-    mv -f "$1" "$DIR/amcli"
+    mv -f "$1" "$DIR/$BIN"
 
-    resolved=$DIR/amcli
+    resolved=$DIR/$BIN
     case $resolved in
     /*) ;;
-    *) resolved=$(cd "$DIR" && pwd)/amcli ;;
+    *) resolved=$(cd "$DIR" && pwd)/$BIN ;;
     esac
 
     # A stale binary earlier in PATH turns "it installed fine but behaves like
@@ -202,12 +213,6 @@ install_from() {
 
 rc=0
 detect_target || rc=$?
-if [ "$rc" = 2 ]; then
-    die "this looks like Git Bash, MSYS or Cygwin on Windows, which has no
-prebuilt amcli binary yet. Use WSL, or install Rust from https://rustup.rs and:
-  cargo install --git $BASE --locked amcli-cli"
-fi
-
 if [ "$rc" != 0 ]; then
     cargo_fallback "no prebuilt binary for $(uname -s)/$(uname -m)."
     exit 0
@@ -219,7 +224,7 @@ elif ! resolve_tag; then
     if [ "${AMCLI_DRY_RUN:-0}" = 1 ]; then
         say "target:  $TARGET"
         say "release: none published yet, would build with cargo"
-        printf '%s\n' "$DIR/amcli"
+        printf '%s\n' "$DIR/$BIN"
         exit 0
     fi
     cargo_fallback "no published release found for $REPO yet."
@@ -233,8 +238,8 @@ if [ "${AMCLI_DRY_RUN:-0}" = 1 ]; then
     say "target:  $TARGET"
     say "release: $TAG"
     say "url:     $URL"
-    say "install: $DIR/amcli"
-    printf '%s\n' "$DIR/amcli"
+    say "install: $DIR/$BIN"
+    printf '%s\n' "$DIR/$BIN"
     exit 0
 fi
 
@@ -255,6 +260,6 @@ fi
 
 verify "$TMP/$ASSET" "$TMP/SHA256SUMS" "$ASSET"
 tar -xzf "$TMP/$ASSET" -C "$TMP" || die "could not unpack $ASSET"
-[ -f "$TMP/amcli" ] || die "$ASSET does not contain an amcli binary"
+[ -f "$TMP/$BIN" ] || die "$ASSET does not contain $BIN"
 
-install_from "$TMP/amcli"
+install_from "$TMP/$BIN"

@@ -1,0 +1,4 @@
+[alias]
+# Without this `cargo xtask ...` is not a command, and both the README and CI
+# have been referring to it as though it were.
+xtask = "run --quiet --package xtask --"
