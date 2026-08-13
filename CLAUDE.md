@@ -22,6 +22,30 @@ touches the document must preserve that property.
 | `crates/amcli-model` | The ArchiMate IR: types, folders, concepts, views, containers (plain XML / ZIP / grafico). |
 | `xtask` | Codegen from the vendored Archi assets. |
 
+## `skills/amcli/` is shipped, not documentation
+
+`npx skills add arslan-gg/amcli` copies that directory out of the default
+branch verbatim, and `crates/amcli-cli/src/skill.rs` embeds the same files with
+`include_str!` for the binary-first route. **Both routes must produce identical
+bytes** — `both_install_routes_ship_the_same_bytes` walks the directory and
+fails if a file is there but not in `FILES`.
+
+Consequences worth knowing before you edit it:
+
+- **Nothing may be generated into it.** A file written only by `skill install`
+  makes the two routes differ; a committed generated file goes stale on the
+  next release. That is why there is no `references/commands.md` and why
+  `amcli skill commands` exists instead.
+- **The executable bit does not survive.** The skills CLI has two install
+  paths, and its blob fast path writes every file 0644. Invoke scripts as
+  `sh scripts/install.sh`, never `./scripts/install.sh`.
+- **The skill ships from the branch, the binary from the newest tag**, so the
+  skill is normally the *newer* of the two. Never tell an agent to reconcile
+  that by reinstalling the skill — it would downgrade itself. The reconciliation
+  lives in `parse_or_hint` in `main.rs`.
+- Files beginning with a dot are never copied, so no `.gitattributes` or
+  `.version` inside the skill folder.
+
 `assets/archi/` holds MIT-licensed files vendored from `archimatetool/archi`.
 They are **generated inputs, not hand-edited** — `assets/archi/PROVENANCE.toml`
 records the upstream tag and checksums, and updating them is a deliberate,

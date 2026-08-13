@@ -1,0 +1,9 @@
+# The whole product proposition is that a parse-then-write round trip is
+# byte-identical, so git must never rewrite a byte of anything it stores.
+# `* text=auto` would convert tests/corpus/*.archimate to CRLF on a Windows
+# clone and break the identity test in a way nobody would connect to git.
+* -text
+
+# The one exception: the installer has to run under `sh` after a Windows clone,
+# and CRLF there fails with `$'\r': command not found`.
+*.sh text eol=lf

@@ -439,11 +439,17 @@ fn the_skill_installs_where_agents_look_and_uninstalls_cleanly() {
     let skill = home.path().join(".agents/skills/amcli");
     assert!(skill.join("SKILL.md").exists(), "the documented cross-tool location");
     assert!(skill.join("references/types.md").exists());
-    // Generated from the command tree, so it cannot describe a version of amcli
-    // that is not this one.
-    let commands = std::fs::read_to_string(skill.join("references/commands.md")).unwrap();
-    assert!(commands.contains("--expect-checksum"));
-    assert!(commands.contains("amcli element"));
+    // The skill is what teaches an agent to install the binary, so the
+    // installer has to travel with it rather than be fetched from a URL.
+    assert!(skill.join("scripts/install.sh").exists());
+
+    // Nothing is generated into the directory: `npx skills add` copies
+    // `skills/amcli/` verbatim, and anything written only by this command
+    // would make the two routes disagree.
+    assert!(
+        !skill.join("references/commands.md").exists(),
+        "the command reference is a command, not a file"
+    );
 
     // One symlink for Claude Code; Codex reads ~/.agents/skills natively.
     let link = home.path().join(".claude/skills/amcli");
@@ -465,6 +471,98 @@ fn the_skill_installs_where_agents_look_and_uninstalls_cleanly() {
     assert_eq!(run(&["skill", "uninstall"]).status.code(), Some(0));
     assert!(!skill.exists());
     assert!(std::fs::read_link(&link).is_err());
+}
+
+/// `npx skills add` copies `skills/amcli/` out of the repository; this binary
+/// writes the copy compiled into it. If those two ever differ, an agent gets
+/// different instructions depending on how it installed, and the conflict
+/// check in `skill install` starts firing on content it wrote itself.
+///
+/// Adding a file to `skills/amcli/` without adding it to `FILES` is the way
+/// that happens, so this walks the directory rather than the list.
+#[test]
+fn both_install_routes_ship_the_same_bytes() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/amcli");
+    let home = tempfile::tempdir().unwrap();
+    let out = Command::cargo_bin("amcli")
+        .unwrap()
+        .env("HOME", home.path())
+        .args(["skill", "install"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let installed = home.path().join(".agents/skills/amcli");
+
+    let mut checked = 0;
+    let mut stack = vec![source.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let rel = path.strip_prefix(&source).unwrap();
+            let want = std::fs::read(&path).unwrap();
+            let got = std::fs::read(installed.join(rel)).unwrap_or_else(|_| {
+                panic!("{} is in skills/amcli but not embedded in the binary", rel.display())
+            });
+            assert!(want == got, "{} differs between the two install routes", rel.display());
+            checked += 1;
+        }
+    }
+    assert!(checked >= 5, "expected the whole skill, walked only {checked} files");
+}
+
+/// The command reference is a command, so it cannot describe a release other
+/// than the one running.
+#[test]
+fn the_command_reference_comes_from_the_binary() {
+    let out = Command::cargo_bin("amcli").unwrap().args(["skill", "commands"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("--expect-checksum"));
+    assert!(text.contains("amcli element"));
+    assert!(text.contains("amcli skill"));
+}
+
+/// Two things in SKILL.md that an agent executes literally, so a typo in
+/// either is a broken recovery path rather than a documentation nit.
+#[test]
+fn the_skill_points_at_paths_that_exist_and_never_downgrades_itself() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/amcli");
+    let body = std::fs::read_to_string(source.join("SKILL.md")).unwrap();
+
+    // Under `npx skills add` the skill ships from the default branch and the
+    // binary from the newest tag, so the skill is the *newer* of the two. An
+    // instruction to run `skill install --force` on a missing command would
+    // overwrite it with the older binary's copy and strand the npx lock file.
+    assert!(
+        !body.contains("skill install --force"),
+        "that instruction downgrades the skill when the binary is the stale one"
+    );
+
+    for line in body.lines() {
+        for word in line.split_whitespace() {
+            let Some(rest) = word.strip_prefix("~/.agents/skills/amcli/") else { continue };
+            let rel = rest.trim_end_matches(['`', '"', ')', ',', '.']);
+            assert!(
+                source.join(rel).exists(),
+                "SKILL.md tells the agent to run {rel}, which is not in the skill"
+            );
+        }
+    }
+}
+
+/// A skill newer than the binary is the expected steady state, so the failure
+/// has to say so where the agent is already reading.
+#[test]
+fn an_unknown_subcommand_blames_the_binary_not_the_skill() {
+    let out = Command::cargo_bin("amcli").unwrap().arg("frobnicate").output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "usage");
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("older"), "names the cause: {err}");
+    assert!(err.contains("scripts/install.sh"), "gives a runnable recovery: {err}");
 }
 
 /// The layout's whole job, asserted end to end on a graph that admits a clean

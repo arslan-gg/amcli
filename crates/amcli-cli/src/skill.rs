@@ -1,14 +1,15 @@
 //! Installing the agent skill.
 //!
-//! The canonical content is embedded in the binary, so the skill can never
-//! describe a version of amcli that is not the one installed. `references/
-//! commands.md` is generated from the command tree at install time for the same
-//! reason: a hand-written command reference goes stale on the first release.
+//! `npx skills add arslan-gg/amcli` is the primary route and copies
+//! `skills/amcli/` out of the repository verbatim. This command is the reverse
+//! route, for someone who got the binary first. Both must produce the *same*
+//! bytes, so the embedded copy is taken from that same directory and nothing
+//! is generated into it — see `Commands` below for why the command reference
+//! is not a file.
 //!
 //! Installation targets `~/.agents/skills/`, the documented cross-tool location
-//! that Codex reads natively, and symlinks `~/.claude/skills/` at it. That
-//! mirrors what `npx skills add` does, so a skill installed either way lands in
-//! the same place.
+//! that Codex reads natively, and symlinks `~/.claude/skills/` at it, which is
+//! exactly what `npx skills add` does.
 
 use std::path::{Path, PathBuf};
 
@@ -18,11 +19,15 @@ use crate::output::{CliError, Code, Output, Row};
 
 /// The skill, compiled in. Editing these files and rebuilding is the only way
 /// to change what gets installed.
+///
+/// `scripts/install.sh` is here too: the skill is what teaches an agent to
+/// install the binary, so the installer has to travel with it.
 const FILES: &[(&str, &str)] = &[
-    ("SKILL.md", include_str!("../../../skill/SKILL.md")),
-    ("references/types.md", include_str!("../../../skill/references/types.md")),
-    ("references/batch.md", include_str!("../../../skill/references/batch.md")),
-    ("agents/openai.yaml", include_str!("../../../skill/agents/openai.yaml")),
+    ("SKILL.md", include_str!("../../../skills/amcli/SKILL.md")),
+    ("references/types.md", include_str!("../../../skills/amcli/references/types.md")),
+    ("references/batch.md", include_str!("../../../skills/amcli/references/batch.md")),
+    ("scripts/install.sh", include_str!("../../../skills/amcli/scripts/install.sh")),
+    ("agents/openai.yaml", include_str!("../../../skills/amcli/agents/openai.yaml")),
 ];
 
 #[derive(Subcommand, Clone)]
@@ -46,6 +51,8 @@ pub enum SkillCmd {
     },
     /// Print the skill instead of writing it.
     Show,
+    /// Every command and flag this binary has, in one page.
+    Commands,
     /// Where the skill would go.
     Path {
         #[arg(long)]
@@ -57,6 +64,10 @@ pub fn run(cmd: &SkillCmd) -> Result<Output, CliError> {
     match cmd {
         SkillCmd::Show => {
             print!("{}", FILES[0].1);
+            Ok(Output::empty())
+        }
+        SkillCmd::Commands => {
+            print!("{}", command_reference());
             Ok(Output::empty())
         }
         SkillCmd::Path { project } => {
@@ -73,9 +84,29 @@ pub fn run(cmd: &SkillCmd) -> Result<Output, CliError> {
 }
 
 fn home() -> Result<PathBuf, CliError> {
+    // Native Windows shells set USERPROFILE and not HOME; without the fallback
+    // every `amcli skill` command exits 7 there.
     std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
-        .ok_or_else(|| CliError::new(Code::Io, "io", "HOME is not set"))
+        .ok_or_else(|| CliError::new(Code::Io, "io", "neither HOME nor USERPROFILE is set"))
+}
+
+/// True when `npx skills add` owns this skill.
+///
+/// Its lock file is the only record that it manages the directory, and the
+/// hash it stores is the upstream git tree SHA, so it cannot notice that we
+/// rewrote the folder — it would simply overwrite our version on the next
+/// upstream change, or leave a dangling entry if we deleted it.
+fn managed_by_skills_cli() -> bool {
+    let Ok(home) = home() else { return false };
+    let Ok(text) = std::fs::read_to_string(home.join(".agents/.skill-lock.json")) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("skills")?.get("amcli").cloned())
+        .is_some()
 }
 
 fn target(project: bool) -> Result<PathBuf, CliError> {
@@ -104,6 +135,15 @@ fn install(project: bool, force: bool, copy: bool) -> Result<Output, CliError> {
         CliError::new(Code::Io, "io", format!("{}: {e}", p.display()))
     };
 
+    if !force && !project && managed_by_skills_cli() {
+        return Err(CliError::new(
+            Code::Conflict,
+            "conflict",
+            format!("{} was installed by `npx skills add`", root.display()),
+        )
+        .hint("that install is already current; use `npx skills update amcli` to change it, or --force to overwrite it here"));
+    }
+
     // Refuse to clobber content someone may have edited, unless told.
     if root.exists() && !force {
         let differs = FILES.iter().any(|(name, body)| {
@@ -129,10 +169,12 @@ fn install(project: bool, force: bool, copy: bool) -> Result<Output, CliError> {
         written.push(name.to_string());
     }
 
-    // Generated, not written by hand, so it cannot drift from the binary.
-    let commands = root.join("references/commands.md");
-    std::fs::write(&commands, command_reference()).map_err(|e| io(e, &commands))?;
-    written.push("references/commands.md".to_string());
+    // Nothing is generated into the directory. A committed command reference
+    // would be one more thing that goes stale, and a generated one would make
+    // this install differ from what `npx skills add` copies — which is exactly
+    // the difference the check above is trying to detect. `amcli skill
+    // commands` reads the tree out of the running binary instead, and so
+    // cannot be out of date by construction.
 
     // One link, for Claude Code. Codex reads ~/.agents/skills natively, so a
     // second copy under ~/.codex would only be another thing to keep in sync.
@@ -185,6 +227,18 @@ fn uninstall(project: bool) -> Result<Output, CliError> {
     let link = claude_link(project)?;
     let mut removed = Vec::new();
 
+    // Deleting a directory `npx skills add` owns would leave its lock file
+    // describing something that is no longer there, and nothing would repair
+    // that but a manual edit.
+    if !project && managed_by_skills_cli() {
+        return Err(CliError::new(
+            Code::Conflict,
+            "conflict",
+            format!("{} was installed by `npx skills add`", root.display()),
+        )
+        .hint("remove it the same way: `npx skills remove amcli`"));
+    }
+
     // Only the link is removed, never whatever it pointed at if it was not ours.
     if link.symlink_metadata().is_ok() {
         let _ = std::fs::remove_file(&link);
@@ -217,7 +271,11 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// Render the whole command tree out of clap, so the reference is exactly what
-/// the binary does.
+/// this binary does rather than what some release of it once did.
+///
+/// This is why there is no `references/commands.md`: a file would have to be
+/// either committed (and stale by the next release) or generated (and then
+/// different between the two install routes).
 fn command_reference() -> String {
     let mut out = String::from(
         "# amcli commands\n\n\

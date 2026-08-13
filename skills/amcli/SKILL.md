@@ -15,8 +15,10 @@ description: >-
   corrupts models in ways Archi then refuses to open.
 license: Apache-2.0
 compatibility: >-
-  Needs the `amcli` binary on PATH and a shell. No network, no daemon, no server,
-  and no Archi installation: amcli works directly on the model file.
+  Needs a shell and the `amcli` binary; if the binary is missing, the Setup
+  section installs it and needs network for that one step. After that: no
+  network, no daemon, no server, and no Archi installation — amcli works
+  directly on the model file.
 metadata:
   homepage: https://github.com/arslan-gg/amcli
   binary: amcli
@@ -34,7 +36,34 @@ hand corrupts models.
 
 ## Setup
 
-    amcli --version || echo "install it first: see the project README"
+Run this before anything else:
+
+    amcli --version
+
+If it prints a version, carry on to the next section. If it does not:
+
+**Wherever `sh` runs** — macOS, Linux, WSL, Git Bash — use the installer that
+came with this skill. It sits next to this file, which is normally
+`~/.agents/skills/amcli`, or `./.agents/skills/amcli` for a project install:
+
+    AMCLI=$(sh ~/.agents/skills/amcli/scripts/install.sh)
+
+It prints the absolute path of the binary on stdout and nothing else. **Use
+`$AMCLI` for the rest of the session.** A newly installed binary is usually not
+on the current shell's PATH yet, so plain `amcli` will still report "command not
+found" even though the install succeeded — that is the single most likely way
+this goes wrong.
+
+**Native Windows PowerShell**, where there is no `sh`: there is no Windows build
+yet. Use WSL, or install Rust from <https://rustup.rs> and run
+
+    cargo install --git https://github.com/arslan-gg/amcli --locked amcli-cli
+
+The installer asks for nothing, never uses `sudo`, and never edits a shell
+config. If no prebuilt binary matches the platform it builds one with cargo on
+its own. Do not pipe it from a URL — it is already on disk.
+
+## Finding the model
 
 amcli finds the model on its own: `-m PATH`, else `$AMCLI_MODEL`, else the
 nearest `*.archimate` walking up from the working directory. If several are
@@ -160,13 +189,11 @@ mirrors — and never deletes anyone's modelling.
 and `export dot` re-lay-out, so they are for a quick look, not for reproducing
 someone's diagram.
 
-## Reference files
+## Going deeper
 
-| File | Read it when |
+| Where | When |
 |---|---|
-| `references/commands.md` | you need a subcommand or flag not shown above |
+| `amcli skill commands` | you need a subcommand or flag not shown above — it prints the whole tree, read out of the binary you are actually running, so it is never out of date |
+| `amcli <command> --help` | you need one command's flags in detail |
 | `references/types.md` | you need an exact ArchiMate 3.2 type name, or which relationships are legal between two types |
 | `references/batch.md` | you are writing a batch of more than about ten operations |
-
-If a command documented here reports an unknown subcommand, the installed skill
-is older than the binary — run `amcli skill install --force`.

@@ -219,8 +219,39 @@ enum Command {
     Info,
 }
 
+/// Parse, but turn "no such subcommand" into a version-skew hint.
+///
+/// The skill is installed from the default branch by `npx skills add` while
+/// the binary comes from the newest release, so the skill can legitimately be
+/// *newer* than the binary and document a command it does not have. clap
+/// answers that with "unrecognized subcommand" and exits before any of our
+/// code runs, which reads like a broken skill rather than an old binary.
+///
+/// This is deliberately the only place the two versions are reconciled: a
+/// `metadata:` field would be inert (the skills CLI reads only `name` and
+/// `description`), and asking an agent to compare version strings by eye is
+/// the kind of step that fails quietly.
+fn parse_or_hint() -> Cli {
+    use clap::error::ErrorKind;
+    match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let skew =
+                matches!(e.kind(), ErrorKind::InvalidSubcommand | ErrorKind::UnknownArgument);
+            let _ = e.print();
+            if skew {
+                eprintln!(
+                    "\nIf a skill or documentation said this exists, this amcli is older \
+                     than that document.\nUpgrade it:  sh ~/.agents/skills/amcli/scripts/install.sh"
+                );
+            }
+            std::process::exit(if e.use_stderr() { Code::Usage as i32 } else { 0 });
+        }
+    }
+}
+
 fn main() {
-    let cli = Cli::parse();
+    let cli = parse_or_hint();
     let Some(format) = Format::parse(&cli.format) else {
         eprintln!("error: unknown format `{}`; expected text, json or jsonl", cli.format);
         std::process::exit(Code::Usage as i32);
