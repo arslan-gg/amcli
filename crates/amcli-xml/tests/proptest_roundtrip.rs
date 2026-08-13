@@ -27,7 +27,12 @@ fn corpus() -> Vec<(String, Vec<u8>)> {
             if bytes.starts_with(b"PK") || bytes.len() > 64 * 1024 {
                 continue; // zipped models and the 229 KB matrix are covered elsewhere
             }
-            out.push((path.display().to_string(), bytes));
+            // The file name, not the path: proptest records shrunk failures in
+            // the checked-in .proptest-regressions file, so anything in this
+            // label ends up committed. An absolute path there leaks the
+            // machine it was found on.
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+            out.push((name.to_string(), bytes));
         }
     }
     assert!(!out.is_empty(), "no corpus files found");
