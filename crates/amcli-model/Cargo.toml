@@ -12,6 +12,7 @@ amcli-xml.workspace = true
 thiserror = "2"
 zip = { version = "6", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
+getrandom = "0.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

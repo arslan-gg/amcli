@@ -50,6 +50,7 @@ name = "amcli-model"
 version = "0.1.0"
 dependencies = [
  "amcli-xml",
+ "getrandom 0.3.4",
  "libc",
  "proptest",
  "sha2",
