@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # rustfmt is not optional here: `xtask verify` compares against
+          # rustfmt-formatted bytes, so without the component it reports drift
+          # that does not exist.
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+      # The generated type tables and the packed relationship matrix must still
+      # match the vendored Archi assets.
+      - run: cargo xtask verify
+
+  installer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # -s sh, not shellcheck's default bash dialect. The installer has to run
+      # under Alpine's ash, where agents commonly live, and every bashism that
+      # would break there is invisible when linting as bash.
+      - run: shellcheck -s sh skills/amcli/scripts/install.sh
+
+      # The contract the skill tells agents to rely on: stdout is the binary
+      # path and nothing else.
+      - name: stdout carries only the path
+        run: |
+          out=$(AMCLI_DRY_RUN=1 AMCLI_INSTALL_DIR=/tmp/bin sh skills/amcli/scripts/install.sh 2>/dev/null)
+          test "$out" = "/tmp/bin/amcli" || { echo "stdout was: $out" >&2; exit 1; }
+
+      # `npx skills add` loses the executable bit whenever it takes its blob
+      # fast path, so the installer must work without it. The first real
+      # install will take the clone path and keep the bit, which means nothing
+      # else would ever exercise this.
+      - name: runs without the executable bit
+        run: |
+          chmod 644 skills/amcli/scripts/install.sh
+          AMCLI_DRY_RUN=1 sh skills/amcli/scripts/install.sh >/dev/null

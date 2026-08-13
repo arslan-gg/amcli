@@ -60,17 +60,49 @@ byte-identical.
 
 ## Install
 
-Not published yet. To build from source:
+Install the skill; it installs the binary.
 
 ```bash
-cargo build --release          # target/release/amcli
-amcli skill install            # teach your agent to use it
+npx skills add arslan-gg/amcli -y
 ```
 
-`skill install` writes the [Agent Skills](https://agentskills.io) package into
+That writes the [Agent Skills](https://agentskills.io) package into
 `~/.agents/skills/amcli/` — the documented cross-tool location Codex reads
-natively — and symlinks `~/.claude/skills/amcli` at it, mirroring what
-`npx skills add` does.
+natively — and symlinks `~/.claude/skills/amcli` at it. The `-y` matters:
+without it the CLI opens an interactive agent picker, which hangs in a
+non-interactive shell.
+
+The skill's own setup section then tells the agent to run the installer that
+came with it, so in the normal case you never run this yourself:
+
+```bash
+sh ~/.agents/skills/amcli/scripts/install.sh
+```
+
+It resolves the newest release, verifies a sha256, and installs to
+`~/.local/bin`. It prints the absolute path of the binary on stdout and nothing
+else, so `AMCLI=$(sh …/install.sh)` works — which matters because a fresh
+install is usually not on the current shell's PATH yet. It never uses `sudo`
+and never edits a shell config. `AMCLI_VERSION`, `AMCLI_INSTALL_DIR` and
+`AMCLI_DRY_RUN` override the obvious things.
+
+If no prebuilt binary matches the platform, or no release exists yet, it builds
+with cargo instead. That path also works by hand, and needs no release at all:
+
+```bash
+cargo install --git https://github.com/arslan-gg/amcli --locked amcli-cli
+```
+
+Note the `--git`. Plain `cargo install amcli-cli` does not work and is not
+planned: the binary embeds the skill with `include_str!` from outside its own
+package directory, which cargo will not put in a `.crate` tarball.
+
+Binary first instead? `amcli skill install` writes the same skill from the
+binary. It refuses to touch a directory `npx skills add` owns, since that
+tool's lock file records an upstream tree hash and would silently overwrite
+anything written underneath it.
+
+Windows has no prebuilt binary yet — use WSL, or the `cargo install` line above.
 
 ## Rendering
 
@@ -115,7 +147,13 @@ matrix, and CI fails if the committed output goes stale.
 
 Read, write, validate, views and SVG all work and are covered by tests. Not yet
 built: coArchi's grafico directory format, The Open Group's Open Exchange XML,
-PNG output (render to SVG and convert), and publication to a Homebrew tap.
+PNG output (render to SVG and convert), and a Windows binary — which needs no
+new code, only a matrix entry and a PowerShell installer.
+
+No Homebrew tap, deliberately. `brew` does not exist in the Linux containers
+where most agents run, and a tap costs a second repository, a fine-grained PAT
+that the default `GITHUB_TOKEN` cannot substitute for, and Gatekeeper
+quarantine handling — all for a route the agent never takes.
 
 ## Licence and trademarks
 

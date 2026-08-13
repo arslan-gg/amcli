@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # A tag that disagrees with Cargo.toml ships assets whose `--version` reports
+  # something else, and the installer's idempotency check then compares the
+  # wrong things. Cheaper to fail here than to yank a release.
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag matches the workspace version
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$version" != "$tag" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+          # Built on Intel rather than cross-compiled on the arm64 runner
+          # purely so the smoke test below can actually execute it: GitHub's
+          # arm64 macOS runners have no Rosetta.
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # There are no C dependencies in the tree, so modern rustc links musl
+      # self-contained. Installing musl-tools anyway costs seconds and removes
+      # a failure mode that would only ever appear during a release.
+      - name: musl toolchain
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p amcli-cli
+
+      # Run the artifact on its own hardware before anyone can download it.
+      # Catches a musl link failure, and catches the case where `strip = true`
+      # in our release profile invalidates the ad-hoc signature Apple Silicon
+      # requires — that binary builds cleanly and then dies with `Killed: 9`
+      # on every user's machine.
+      - name: smoke test
+        run: |
+          bin=target/${{ matrix.target }}/release/amcli
+          "$bin" --version
+          "$bin" skill commands > /dev/null
+
+      # Flat tarball: the installer extracts into a temp directory and expects
+      # ./amcli there. LICENSE and NOTICE travel with it because Apache-2.0
+      # 4(d) requires the NOTICE to accompany the distribution, and we vendor
+      # MIT-licensed Archi assets.
+      - name: package
+        run: |
+          name=amcli-${GITHUB_REF_NAME}-${{ matrix.target }}
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/amcli LICENSE NOTICE staging/
+          tar -czf "$name.tar.gz" -C staging amcli LICENSE NOTICE
+          ls -l "$name.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: "*.tar.gz"
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # One job, one SHA256SUMS. A matrix job cannot checksum artifacts it does
+      # not have, so four jobs each uploading their own would leave three
+      # platforms unable to verify anything.
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      # --latest and no --draft/--prerelease on purpose: the installer resolves
+      # the newest tag through the /releases/latest redirect, and a draft or a
+      # prerelease is invisible to it.
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.tar.gz dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --latest
