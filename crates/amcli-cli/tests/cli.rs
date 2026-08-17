@@ -808,13 +808,18 @@ fn either_spelling_of_the_layout_flag_is_accepted() {
     assert!(err.contains("grid"), "{err}");
 }
 
-/// Two builds that both say `0.1.0` cannot be told apart, which is what made a
-/// stale binary earlier in PATH look like a broken skill.
+/// Two builds reporting the same version cannot be told apart, which is what
+/// made a stale binary earlier in PATH look like a broken skill.
+///
+/// The version comes from the package rather than being spelled out here: this
+/// test is about the build identifier, and hard-coding the number only means it
+/// fails on the commit that bumps it.
 #[test]
 fn the_version_says_which_build_it_is() {
     let out = Command::cargo_bin("amcli").unwrap().arg("--version").output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.starts_with("amcli 0.1.0"), "{text}");
+    let expected = format!("amcli {}", env!("CARGO_PKG_VERSION"));
+    assert!(text.starts_with(&expected), "expected {expected}, got {text}");
     assert!(text.contains('('), "no build identifier: {text}");
     // Whatever it is, it is not empty parentheses.
     let build = text.split('(').nth(1).unwrap().trim_end_matches([')', '\n']);
