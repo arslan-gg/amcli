@@ -23,6 +23,7 @@ use std::sync::Arc;
 mod emit;
 mod parse;
 
+pub use emit::escape_attr;
 pub use parse::XmlError;
 
 /// A byte range into the source buffer.

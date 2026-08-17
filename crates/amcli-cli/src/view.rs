@@ -21,8 +21,11 @@ pub enum ViewCmd {
         /// One of the 25 ArchiMate viewpoint ids, e.g. layered.
         #[arg(long)]
         viewpoint: Option<String>,
+        /// Delete any view already using this name instead of refusing.
+        #[arg(long)]
+        replace: bool,
     },
-    /// Put a concept on a view.
+    /// Put a concept on a view, drawing the relationships it brings with it.
     Add {
         view: String,
         selector: String,
@@ -30,6 +33,9 @@ pub enum ViewCmd {
         x: Option<i32>,
         #[arg(long)]
         y: Option<i32>,
+        /// Place the box only; do not draw its relationships.
+        #[arg(long)]
+        no_connect: bool,
     },
     /// Build a view from a concept and its neighbourhood, laid out and wired up.
     Auto {
@@ -41,21 +47,29 @@ pub enum ViewCmd {
         depth: u32,
         #[arg(short = 'D', long, default_value = "both")]
         direction: String,
-        /// sugiyama (the default) | grid
-        #[arg(long, default_value = "layered")]
+        /// auto (the default) | layered | grid. `--algorithm` is the same flag.
+        #[arg(long, alias = "algorithm", default_value = "auto")]
         layout: String,
         #[arg(long)]
         viewpoint: Option<String>,
+        /// Delete any view already using this name instead of refusing.
+        #[arg(long)]
+        replace: bool,
     },
     /// Re-place the objects on a view.
     Layout {
         view: String,
-        #[arg(long, default_value = "layered")]
+        /// auto (the default) | layered | grid. `--layout` is the same flag.
+        #[arg(long, alias = "layout", default_value = "auto")]
         algorithm: String,
         /// Move everything, not just objects that have never been placed.
         #[arg(long)]
         relayout_all: bool,
     },
+    /// Delete a view. No concept is touched — only the drawing.
+    Delete { view: String },
+    /// Change a view's name.
+    Rename { view: String, name: String },
     /// Draw a view.
     Render {
         view: String,
@@ -78,18 +92,71 @@ pub enum ViewCmd {
 pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError> {
     match cmd {
         ViewCmd::List => list(m),
-        ViewCmd::Create { name, viewpoint } => create(opts, m, name, viewpoint.as_deref()),
-        ViewCmd::Add { view, selector, x, y } => add(opts, m, view, selector, *x, *y),
-        ViewCmd::Auto { name, from, depth, direction, layout, viewpoint } => {
-            auto(opts, m, name, from, *depth, direction, layout, viewpoint.as_deref())
+        ViewCmd::Create { name, viewpoint, replace } => {
+            create(opts, m, name, viewpoint.as_deref(), *replace)
+        }
+        ViewCmd::Add { view, selector, x, y, no_connect } => {
+            add(opts, m, view, selector, *x, *y, !*no_connect)
+        }
+        ViewCmd::Auto { name, from, depth, direction, layout, viewpoint, replace } => {
+            auto(opts, m, name, from, *depth, direction, layout, viewpoint.as_deref(), *replace)
         }
         ViewCmd::Layout { view, algorithm, relayout_all } => {
             relayout(opts, m, view, algorithm, *relayout_all)
         }
+        ViewCmd::Delete { view } => delete(opts, m, view),
+        ViewCmd::Rename { view, name } => rename(opts, m, view, name),
         ViewCmd::Render { view, draw_as, out, margin, scale } => {
             render(m, view, draw_as, out.as_deref(), *margin, *scale)
         }
     }
+}
+
+/// Make a view name available, or refuse to.
+///
+/// Creating a second view with the same name used to succeed silently, which
+/// left two indistinguishable views behind and no CLI way to remove either. A
+/// name clash is a conflict (exit 6) unless the caller says what to do about it.
+fn claim_name(
+    m: &mut Model,
+    name: &str,
+    except: Option<ViewId>,
+    replace: bool,
+) -> Result<Vec<String>, CliError> {
+    let clash: Vec<ViewId> = m
+        .views_with_ids()
+        .filter(|(i, v)| v.name == name && Some(*i) != except)
+        .map(|(i, _)| i)
+        .collect();
+    if clash.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !replace {
+        return Err(CliError::new(
+            Code::Conflict,
+            "conflict",
+            format!("{} view(s) are already called `{name}`", clash.len()),
+        )
+        .hint("pass --replace to overwrite, choose another name, or `amcli view delete` first")
+        .rows(
+            clash
+                .iter()
+                .map(|v| {
+                    Row::new()
+                        .s("selector", format!("id:{}", m.view(*v).id))
+                        .s("name", m.view(*v).name.clone())
+                })
+                .collect(),
+        ));
+    }
+
+    let mut replaced = Vec::new();
+    for v in clash {
+        let id = m.view(v).id.clone();
+        m.delete_view(v).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+        replaced.push(id);
+    }
+    Ok(replaced)
 }
 
 fn find_view(m: &Model, sel: &str) -> Result<ViewId, CliError> {
@@ -153,15 +220,82 @@ fn check_viewpoint(vp: Option<&str>) -> Result<(), CliError> {
     )))
 }
 
-fn create(opts: &Opts, m: &mut Model, name: &str, vp: Option<&str>) -> Result<Output, CliError> {
+fn create(
+    opts: &Opts,
+    m: &mut Model,
+    name: &str,
+    vp: Option<&str>,
+    replace: bool,
+) -> Result<Output, CliError> {
     check_viewpoint(vp)?;
+    let replaced = claim_name(m, name, None, replace)?;
     let v =
         m.add_view(name, vp).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     let row = Row::new()
         .s("id", m.view(v).id.clone())
         .s("name", name.to_string())
+        .n("replaced", replaced.len() as i64)
         .b("dry_run", opts.dry_run);
     finish(opts, m, row)
+}
+
+fn rename(opts: &Opts, m: &mut Model, view: &str, name: &str) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    claim_name(m, name, Some(v), false)?;
+    let old = m.view(v).name.clone();
+    m.rename_view(v, name);
+    let row = Row::new()
+        .s("id", m.view(v).id.clone())
+        .s("from", old)
+        .s("to", name.to_string())
+        .b("dry_run", opts.dry_run);
+    finish(opts, m, row)
+}
+
+fn delete(opts: &Opts, m: &mut Model, view: &str) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+
+    // A view drawn *on another view* as a reference box is the one case where
+    // deleting this one changes something else, so it gets the same treatment as
+    // a cascading concept delete: refuse, and let the refusal be the report.
+    let refs = m.view_references(v);
+    if !refs.is_empty() && !opts.yes && !opts.dry_run {
+        return Err(CliError::new(
+            Code::Invalid,
+            "cascade",
+            format!(
+                "`{}` is drawn as a reference on {} other view(s); deleting it removes those boxes too",
+                m.view(v).name,
+                refs.iter().map(|(view, _)| view).collect::<std::collections::HashSet<_>>().len()
+            ),
+        )
+        .hint("re-run with -y to go ahead, or --dry-run to see the detail")
+        .rows(
+            refs.iter()
+                .map(|(view, object)| {
+                    Row::new()
+                        .s("on_view", m.view_by_id(view).map(|i| m.view(i).name.clone()).unwrap_or_default())
+                        .s("object", object.clone())
+                })
+                .collect(),
+        ));
+    }
+
+    let name = m.view(v).name.clone();
+    let id = m.view(v).id.clone();
+    // Deleting in memory even for a dry run: nothing is written unless the write
+    // happens at the end, so this reports exactly what would go.
+    let plan =
+        m.delete_view(v).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    let row = Row::new()
+        .s("id", id)
+        .s("name", name)
+        .n("objects", plan.diagram_objects.len() as i64)
+        .n("connections", plan.connections.len() as i64)
+        .n("references", refs.len() as i64)
+        .b("dry_run", opts.dry_run);
+    let out = finish(opts, m, row)?;
+    Ok(out.note("no concept was deleted; a view is a drawing of the model, not part of it"))
 }
 
 fn finish(opts: &Opts, m: &Model, row: Row) -> Result<Output, CliError> {
@@ -206,6 +340,61 @@ fn viewpoint_note(m: &Model, view: ViewId, c: ConceptId) -> Option<String> {
         .then(|| format!("viewpoint `{vp}` does not cover {}; added anyway", e.info().short))
 }
 
+/// Relationships that become drawable once `objects` are on the view, as
+/// (relationship, source object, target object).
+///
+/// This is what `view auto` does for a whole neighbourhood, applied to whatever
+/// is on the view now. Without it, `view add` left a floating box even when its
+/// counterpart was right there on the same diagram — and no amount of
+/// re-laying-out could fix that, because the connection was never in the file.
+fn induced_connections(
+    m: &Model,
+    v: ViewId,
+    objects: &[ConceptId],
+) -> Vec<(ConceptId, String, String)> {
+    let g = Graph::build(m);
+
+    // First object per concept. A concept may appear on a view more than once;
+    // drawing one line rather than one per copy is what Archi does when you drop
+    // an element onto a diagram.
+    let mut object_of: std::collections::HashMap<String, String> = Default::default();
+    for (object, concept) in m.view_objects(v) {
+        if let Some(concept) = concept {
+            object_of.entry(concept).or_insert(object);
+        }
+    }
+
+    // Relationships already drawn here, so re-running is a no-op.
+    let drawn: std::collections::HashSet<String> = m
+        .doc
+        .descendants(m.view(v).node)
+        .into_iter()
+        .filter_map(|n| m.doc.attr(n, "archimateRelationship"))
+        .collect();
+
+    let mut out: Vec<(ConceptId, String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    for c in objects {
+        for arc in g.neighbors(*c, Dir::Both, &EdgeFilter::default()) {
+            let rel = m.concept(arc.rel);
+            if drawn.contains(&rel.id) || !seen.insert(rel.id.clone()) {
+                continue;
+            }
+            // The connection's ends are the *objects*, and which is source is
+            // the relationship's business, not the traversal's.
+            let Some((s, t)) = g.ends(arc.rel) else { continue };
+            let (Some(src), Some(tgt)) =
+                (object_of.get(&m.concept(s).id), object_of.get(&m.concept(t).id))
+            else {
+                continue;
+            };
+            out.push((arc.rel, src.clone(), tgt.clone()));
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)] // one parameter per CLI flag
 fn add(
     opts: &Opts,
     m: &mut Model,
@@ -213,6 +402,7 @@ fn add(
     sel: &str,
     x: Option<i32>,
     y: Option<i32>,
+    connect: bool,
 ) -> Result<Output, CliError> {
     let v = find_view(m, view)?;
     let c = resolve(m, sel)?;
@@ -234,16 +424,34 @@ fn add(
         .add_view_object(v, c, slot.x, slot.y, slot.w, slot.h)
         .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
 
+    // Gather, then mutate: the graph borrows the model.
+    let wire = if connect { induced_connections(m, v, &[c]) } else { Vec::new() };
+    let mut drawn = 0;
+    for (rel, src, tgt) in wire {
+        if m.add_view_connection(v, rel, &src, &tgt, &[]).is_ok() {
+            drawn += 1;
+        }
+    }
+
     let row = Row::new()
         .s("object", id)
         .s("concept", m.concept(c).id.clone())
         .n("x", slot.x as i64)
         .n("y", slot.y as i64)
+        .n("connections", drawn)
         .b("dry_run", opts.dry_run);
     let out = finish(opts, m, row)?;
-    Ok(match note {
+    let out = match note {
         Some(n) => out.note(n),
         None => out,
+    };
+    Ok(if drawn > 0 {
+        out.note(format!(
+            "drew {drawn} relationship(s) to what was already there; \
+             `amcli view layout {view} --relayout-all` will tidy the placement"
+        ))
+    } else {
+        out
     })
 }
 
@@ -257,15 +465,15 @@ fn auto(
     dir: &str,
     algorithm: &str,
     vp: Option<&str>,
+    replace: bool,
 ) -> Result<Output, CliError> {
     check_viewpoint(vp)?;
-    let algo = Algorithm::parse(algorithm).ok_or_else(|| {
-        CliError::new(Code::Usage, "usage", format!("`{algorithm}` is not a layout"))
-            .hint("one of: sugiyama, grid")
-    })?;
+    let algo = parse_algorithm(algorithm)?;
     let dir = Dir::parse(dir).ok_or_else(|| {
         CliError::new(Code::Usage, "usage", format!("`{dir}` is not a direction"))
+            .hint("one of: out, in, both")
     })?;
+    let replaced = claim_name(m, name, None, replace)?;
 
     // Gather first, mutate second: the graph borrows the model.
     let (items, edges, concepts, rels) = {
@@ -356,8 +564,32 @@ fn auto(
         .n("objects", object_ids.len() as i64)
         .n("connections", drawn)
         .n("routed", routed)
+        // Which algorithm ran, because under `auto` it may not be the one the
+        // caller would have guessed.
+        .s("algorithm", placed.algorithm.as_str())
+        .n("replaced", replaced.len() as i64)
         .b("dry_run", opts.dry_run);
-    finish(opts, m, row)
+    let out = finish(opts, m, row)?;
+    Ok(fallback_note(out, algo, placed.algorithm))
+}
+
+fn parse_algorithm(name: &str) -> Result<Algorithm, CliError> {
+    Algorithm::parse(name).ok_or_else(|| {
+        CliError::new(Code::Usage, "usage", format!("`{name}` is not a layout"))
+            .hint(format!("one of: {}", Algorithm::NAMES))
+    })
+}
+
+/// Say so when `auto` declined to layer, rather than leaving someone to wonder
+/// why the diagram came out as a grid.
+fn fallback_note(out: Output, asked: Algorithm, used: Algorithm) -> Output {
+    if asked == Algorithm::Auto && used == Algorithm::Grid {
+        return out.note(
+            "this graph is too wide and shallow to layer usefully, so it was laid out as a \
+             grid; pass --layout layered to force layering anyway",
+        );
+    }
+    out
 }
 
 fn relayout(
@@ -368,45 +600,78 @@ fn relayout(
     all: bool,
 ) -> Result<Output, CliError> {
     let v = find_view(m, view)?;
-    let algo = Algorithm::parse(algorithm).ok_or_else(|| {
-        CliError::new(Code::Usage, "usage", format!("`{algorithm}` is not a layout"))
-    })?;
+    let algo = parse_algorithm(algorithm)?;
 
     // Only objects that have never been placed move, unless told otherwise.
     // Reflowing everything by default is how one added element turns into a
     // four-hundred-line diff.
     let scene = amcli_view::compile(m, v);
-    let movable: Vec<(String, Rect)> = scene
+    let movable: Vec<Item> = scene
         .nodes
         .iter()
         .filter(|n| all || (n.abs.x == 0 && n.abs.y == 0))
-        .map(|n| (n.id.clone(), n.abs))
+        // The label has to come from the node being moved. Indexing the scene by
+        // the *filtered* position read some other node's name, which fed the
+        // wrong sort key into a layout that is otherwise deterministic.
+        .map(|n| Item { id: n.id.clone(), name: n.label.clone(), w: n.abs.w, h: n.abs.h })
         .collect();
 
     if movable.is_empty() {
         return Ok(Output::empty().note("nothing to move; pass --relayout-all to reflow the view"));
     }
 
-    let items: Vec<Item> = movable
-        .iter()
-        .enumerate()
-        .map(|(i, (id, r))| {
-            let node = &scene.nodes[i];
-            Item { id: id.clone(), name: node.label.clone(), w: r.w, h: r.h }
-        })
-        .collect();
-    let placed = place(&items, &[], algo);
+    // The edges between the objects being moved. Without them every layered
+    // relayout saw an edgeless graph, ranked everything at zero, and produced
+    // one enormous row — the layout was never given the chance to do its job.
+    let edges = edges_between(m, &scene, &movable);
+    let placed = place(&movable, &edges, algo);
 
-    for ((id, _), r) in movable.iter().zip(placed.rects.iter()) {
-        m.set_view_object_bounds(v, id, r.x, r.y)
+    for (item, r) in movable.iter().zip(placed.rects.iter()) {
+        m.set_view_object_bounds(v, &item.id, r.x, r.y)
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     }
 
     let row = Row::new()
         .s("view", m.view(v).id.clone())
         .n("moved", movable.len() as i64)
+        .n("edges", edges.len() as i64)
+        .s("algorithm", placed.algorithm.as_str())
         .b("dry_run", opts.dry_run);
-    finish(opts, m, row)
+    let out = finish(opts, m, row)?;
+    Ok(fallback_note(out, algo, placed.algorithm))
+}
+
+/// Model relationships between the given diagram objects, as index pairs.
+fn edges_between(m: &Model, scene: &amcli_view::Scene, items: &[Item]) -> Vec<(usize, usize)> {
+    let g = Graph::build(m);
+    let concept_of: std::collections::HashMap<&str, Option<ConceptId>> = scene
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.concept_id.as_deref().and_then(|c| m.concept_by_id(c))))
+        .collect();
+
+    let mut slot: std::collections::HashMap<ConceptId, usize> = Default::default();
+    for (i, item) in items.iter().enumerate() {
+        if let Some(Some(c)) = concept_of.get(item.id.as_str()) {
+            slot.entry(*c).or_insert(i);
+        }
+    }
+
+    let mut edges = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let Some(Some(c)) = concept_of.get(item.id.as_str()) else { continue };
+        // Outbound only: an undirected pass would add every edge twice.
+        for arc in g.neighbors(*c, Dir::Out, &EdgeFilter::default()) {
+            if let Some(j) = slot.get(&arc.other)
+                && *j != i
+            {
+                edges.push((i, *j));
+            }
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    edges
 }
 
 fn render(
@@ -439,7 +704,7 @@ fn render(
     match out_path {
         Some(p) => {
             std::fs::write(p, &body)
-                .map_err(|e| CliError::new(Code::Io, "io", format!("{p}: {e}")))?;
+                .map_err(|e| CliError::new(Code::Io, "io", format!("`{p}`: {e}")))?;
             let mut o = Output::one(
                 Row::new()
                     .s("path", p.to_string())

@@ -102,6 +102,64 @@ fn direction(d: &str) -> Result<Dir, CliError> {
     })
 }
 
+/// A `-t` filter, checked against the types that exist.
+///
+/// An unknown type used to filter everything out and report `0`, which is the
+/// same answer as "this model has none of those" and reads as fact rather than
+/// as a typo. Every count downstream of it is then wrong and nothing says so.
+///
+/// The returned closure compares canonically, so `-t Triggering` and
+/// `-t TriggeringRelationship` select the same concepts — matching what
+/// `relation add` already accepts.
+fn type_filter<'a>(
+    g: &Graph<'a>,
+    ty: Option<&str>,
+) -> Result<impl Fn(&Model, ConceptId) -> bool + use<'a>, CliError> {
+    let want: Option<String> = match ty {
+        None => None,
+        Some(t) => {
+            let canonical = amcli_graph::select::canonical_type_name(t);
+            if canonical.is_none() && !amcli_graph::select::model_knows_type(g.model(), t) {
+                return Err(unknown_type(g, t));
+            }
+            Some(canonical.unwrap_or(t).to_string())
+        }
+    };
+    Ok(move |m: &Model, c: ConceptId| match &want {
+        None => true,
+        Some(t) => m.concept(c).kind.name().eq_ignore_ascii_case(t),
+    })
+}
+
+fn unknown_type(g: &Graph<'_>, name: &str) -> CliError {
+    let e = CliError::new(Code::Usage, "usage", format!("`{name}` is not a concept type"));
+
+    // `-t` names one ArchiMate type. Asking it for "every element" or "every
+    // relationship" is a different question, and there is now a field for it,
+    // so point at that rather than at the nearest-looking type name.
+    if ["element", "elements", "relation", "relations", "relationship", "relationships"]
+        .contains(&name.to_lowercase().as_str())
+    {
+        let kind = if name.to_lowercase().starts_with("rel") { "relation" } else { "element" };
+        return e.hint(format!(
+            "`-t` takes one ArchiMate type, e.g. -t ApplicationComponent. For the whole \
+             category use the filter field instead:  amcli query 'kind={kind}'"
+        ));
+    }
+
+    let close = amcli_graph::select::similar_type_names(name);
+    let e = if close.is_empty() {
+        e.hint("`amcli skill commands` and references/types.md list every type; the ones this model uses are below")
+    } else {
+        e.hint(format!("did you mean: {}? the types this model uses are below", close.join(", ")))
+    };
+    // This model's own types, rather than all seventy-two: it is the shorter
+    // list and the one the caller is actually working in.
+    let mut used: Vec<(String, usize)> = g.stats().by_type.into_iter().collect();
+    used.sort_by_key(|(name, count)| (std::cmp::Reverse(*count), name.clone()));
+    e.rows(used.into_iter().map(|(t, n)| Row::new().s("type", t).n("count", n as i64)).collect())
+}
+
 fn concept_row(m: &Model, g: &Graph<'_>, c: ConceptId) -> Row {
     let concept = m.concept(c);
     let (i, o) = g.degree(c);
@@ -112,6 +170,9 @@ fn concept_row(m: &Model, g: &Graph<'_>, c: ConceptId) -> Row {
         .s("folder", m.folder_path_of(concept))
         .n("in", i as i64)
         .n("out", o as i64)
+        // Appended, never inserted: a column added in the middle would silently
+        // repoint every `cut -f5` an agent has already written.
+        .n("views", g.views_of(c).len() as i64)
 }
 
 /// Documentation is never returned whole in a list: one long blob can cost more
@@ -181,11 +242,9 @@ pub fn get(g: &Graph<'_>, ctx: &Ctx, sel: &str, full: bool) -> Result<Output, Cl
 
 pub fn search(g: &Graph<'_>, ctx: &Ctx, query: &str, ty: Option<&str>) -> Result<Output, CliError> {
     let m = g.model();
+    let keep = type_filter(g, ty)?;
     let hits = g.search(query, usize::MAX);
-    let filtered: Vec<_> = hits
-        .into_iter()
-        .filter(|h| ty.is_none_or(|t| m.concept(h.concept).kind.name().eq_ignore_ascii_case(t)))
-        .collect();
+    let filtered: Vec<_> = hits.into_iter().filter(|h| keep(m, h.concept)).collect();
 
     let total = filtered.len();
     let shown = ctx.cap(total);
@@ -215,9 +274,10 @@ pub fn list(
     folder: Option<&str>,
 ) -> Result<Output, CliError> {
     let m = g.model();
+    let keep = type_filter(g, ty)?;
     let all: Vec<ConceptId> = m
         .concepts_with_ids()
-        .filter(|(_, c)| ty.is_none_or(|t| c.kind.name().eq_ignore_ascii_case(t)))
+        .filter(|(i, _)| keep(m, *i))
         .filter(|(_, c)| folder.is_none_or(|f| m.folder_path_of(c).starts_with(f)))
         .map(|(i, _)| i)
         .collect();
@@ -238,7 +298,7 @@ pub fn query(g: &Graph<'_>, ctx: &Ctx, expr: &str) -> Result<Output, CliError> {
     // name that happens to match nothing.
     if let Err(e) = amcli_graph::select::Expr::parse(expr) {
         return Err(CliError::new(Code::Usage, "usage", e.to_string())
-            .hint("fields: id name type layer folder doc deg view prop:KEY in:Rel out:Rel"));
+            .hint(format!("fields: {}", amcli_graph::select::FIELDS)));
     }
     let matches = Selector::parse(expr).matches(g);
     let total = matches.len();
@@ -261,9 +321,10 @@ pub fn neighbors(
     ty: Option<&str>,
 ) -> Result<Output, CliError> {
     let m = g.model();
+    let keep = type_filter(g, ty)?;
     let c = one(g, sel)?;
     let mut arcs = g.neighbors(c, direction(dir)?, &rel_filter(rel)?);
-    arcs.retain(|a| ty.is_none_or(|t| m.concept(a.other).kind.name().eq_ignore_ascii_case(t)));
+    arcs.retain(|a| keep(m, a.other));
     let total = arcs.len();
     let rows = arcs
         .iter()
@@ -289,6 +350,7 @@ pub fn trace(
     ty: Option<&str>,
 ) -> Result<Output, CliError> {
     let m = g.model();
+    let keep = type_filter(g, ty)?;
     let root = one(g, sel)?;
     let max_nodes = if ctx.limit == 0 { 100_000 } else { ctx.limit.max(50) * 10 };
     let sub = g.k_hop(&[root], depth, direction(dir)?, &rel_filter(rel)?, max_nodes);
@@ -298,7 +360,7 @@ pub fn trace(
     let nodes: Vec<Row> = sub
         .nodes
         .iter()
-        .filter(|(c, _)| ty.is_none_or(|t| m.concept(*c).kind.name().eq_ignore_ascii_case(t)))
+        .filter(|(c, _)| keep(m, *c))
         .map(|(c, d)| {
             let mut r = Row::new().s("kind", "node");
             r.0.extend(concept_row(m, g, *c).0);
@@ -408,13 +470,14 @@ pub fn impact(
     ty: Option<&str>,
 ) -> Result<Output, CliError> {
     let m = g.model();
+    let keep = type_filter(g, ty)?;
     let c = one(g, sel)?;
     let max = if ctx.limit == 0 { 100_000 } else { ctx.limit.max(50) * 10 };
     let (mut hits, truncated) = g.impact(&[c], direction(dir)?, depth, &EdgeFilter::default(), max);
 
     // Projected, not pruned: the walk crossed every type, so asking for
     // components two hops away still finds the ones reached through functions.
-    hits.retain(|(c, _, _)| ty.is_none_or(|t| m.concept(*c).kind.name().eq_ignore_ascii_case(t)));
+    hits.retain(|(c, _, _)| keep(m, *c));
     let total = hits.len();
     let rows = hits
         .iter()

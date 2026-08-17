@@ -38,8 +38,14 @@ Plateau · Gap
 Composition · Aggregation · Assignment · Realization · Serving · Access ·
 Influence · Triggering · Flow · Specialization · Association
 
-Both the bare name and the suffixed form are accepted: `Serving` and
-`ServingRelationship` mean the same thing.
+Both the bare name and the suffixed form are accepted everywhere a type is named
+— `relation add`, `-t`, `-r` and `type=` in a filter: `Serving` and
+`ServingRelationship` mean the same thing. Output always prints the suffixed
+form, because that is what the file says.
+
+A name that is not a type is exit 2 with the types this model uses listed, so an
+empty result always means "this model has none", never "you spelled it wrong".
+`-t` takes one type; for a whole category use `kind=element` or `kind=relation`.
 
 ## Things that surprise people
 

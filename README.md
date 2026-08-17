@@ -14,8 +14,8 @@ total   relationships   1745
 layer   Application     812
 
 $ amcli search payment -t ApplicationComponent -l 3
-4e9a7c21  ApplicationComponent  Payment API      /Application/Payments  7  12  name
-1b90ccde  ApplicationComponent  Payment Gateway  /Application/Payments  2   4  name
+4e9a7c21  ApplicationComponent  Payment API      /Application/Payments  7  12  3  name
+1b90ccde  ApplicationComponent  Payment Gateway  /Application/Payments  2   4  1  name
 
 $ amcli impact id:4e9a7c21 -D in          # what breaks if this changes?
 $ amcli relation add Serving "Payment API" "Checkout"
@@ -57,6 +57,12 @@ and both come back with something to retry.
 **Batches are atomic.** `amcli apply` takes JSONL, resolves forward references
 between lines, and writes once at the end. If any line fails the file is
 byte-identical.
+
+**A model can be rebuilt reproducibly.** Keep the batches in the repository and
+pass `--id-seed`: ids are derived from what they name rather than drawn at random,
+so regenerating an unchanged model produces an unchanged file. Without a seed —
+still the default, because an id only has to be unique — every rebuild reissues
+every id and the whole file looks changed.
 
 ## Install
 
@@ -127,6 +133,13 @@ corridor in each row they cross — and a bendpoint is only written when the
 straight line would actually hit a box, because a kink that buys nothing is
 still a kink. On a graph that admits a clean drawing the result has no bends, no
 edge through a box, and no two edges crossing; a test asserts all three.
+
+Some graphs cannot be layered usefully: a hundred motivation elements two ranks
+deep gives layering nothing to stack, and the honest layered drawing of it is one
+row thousands of pixels wide. The default `--layout auto` measures that and falls
+back to a grid, reporting which one it used. `--layout layered` forces layering
+regardless. The reverse case is left alone deliberately — tall and narrow is what
+a correctly layered dependency chain looks like.
 
 `export mermaid` and `export dot` re-lay-out, so they are for a quick look in a
 chat window rather than for reproducing a diagram someone drew.

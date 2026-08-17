@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use amcli_model::{ConceptId, ConceptKind, ElementType, Layer, Model, RelType};
+use amcli_model::{ConceptId, ConceptKind, ElementType, Layer, Model, RelType, ViewId};
 
 pub mod select;
 pub use select::{Resolution, Selector};
@@ -110,6 +110,13 @@ pub struct Graph<'m> {
     ends: Vec<Option<(ConceptId, ConceptId)>>,
     /// Relationships whose `source` or `target` names a missing id.
     dangling: Vec<ConceptId>,
+    /// Which views each concept is drawn on, in document order.
+    ///
+    /// Built here, once, because the alternative is what the `view` filter used
+    /// to do: re-walk every view's descendants for every candidate concept,
+    /// which is quadratic and was slow enough to be worth avoiding on a real
+    /// model. It is also what lets a concept row carry a view count at all.
+    on_views: Vec<Vec<ViewId>>,
 }
 
 impl<'m> Graph<'m> {
@@ -124,7 +131,30 @@ impl<'m> Graph<'m> {
             by_name: HashMap::new(),
             ends: vec![None; n],
             dangling: Vec::new(),
+            on_views: vec![Vec::new(); n],
         };
+
+        for (view, v) in model.views_with_ids() {
+            for node in model.doc.descendants(v.node) {
+                // A diagram object names its concept with one attribute or the
+                // other depending on whether it is a box or a line.
+                let referenced = model
+                    .doc
+                    .attr(node, "archimateElement")
+                    .or_else(|| model.doc.attr(node, "archimateRelationship"));
+                if let Some(id) = referenced
+                    && let Some(c) = model.concept_by_id(&id)
+                {
+                    let seen = &mut g.on_views[c.0 as usize];
+                    // A concept may appear on one view several times; the
+                    // question callers ask is "which views", not "how many
+                    // boxes".
+                    if seen.last() != Some(&view) && !seen.contains(&view) {
+                        seen.push(view);
+                    }
+                }
+            }
+        }
 
         for (id, c) in model.concepts_with_ids() {
             if !c.name.is_empty() {
@@ -165,6 +195,12 @@ impl<'m> Graph<'m> {
 
     pub fn degree(&self, c: ConceptId) -> (usize, usize) {
         (self.inc[c.0 as usize].len(), self.out[c.0 as usize].len())
+    }
+
+    /// The views this concept is drawn on. Empty means it is in the model but
+    /// on no diagram, which is the thing `view=0` asks about.
+    pub fn views_of(&self, c: ConceptId) -> &[ViewId] {
+        &self.on_views[c.0 as usize]
     }
 
     pub fn neighbors(&self, c: ConceptId, dir: Dir, f: &EdgeFilter) -> Vec<Arc> {

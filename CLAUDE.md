@@ -72,6 +72,19 @@ The refresh procedure is in the header of PROVENANCE.toml itself.
 - EMF omits attributes whose value equals the schema default, so writing one back
   explicitly breaks byte identity.
 
+## Two process-wide things, and what they cost
+
+- **`ids::set_seed` is a `OnceLock`.** `--id-seed` switches new ids from random to
+  derived-from-content, and `new_id` is called from deep inside `edit.rs`, so the
+  seed is process-wide rather than threaded through every signature. The
+  consequence for tests: within one test binary the first caller wins and every
+  other test in that file sees the seed. That is why the seeded test lives in its
+  own file (`crates/amcli-model/tests/seeded_ids.rs`) — cargo gives each file its
+  own binary. Do not set a seed from a shared test file.
+- **`--version` carries the commit**, from `crates/amcli-cli/build.rs`. It uses
+  the commit *date*, never the build date: a wall clock would make every rebuild
+  of the same source a different binary.
+
 ## Testing
 
 ```bash

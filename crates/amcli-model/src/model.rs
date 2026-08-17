@@ -520,6 +520,28 @@ impl Model {
         &self.folders[c.folder.0 as usize].path
     }
 
+    /// An id for something about to be added: random by default, derived from
+    /// `parts` when a seed is set.
+    ///
+    /// The uniqueness check is here rather than in `ids` because only the model
+    /// knows what is taken. A derived id that is already in use walks its
+    /// attempt counter, so the first of a set of same-named twins keeps the id
+    /// it had on the previous rebuild.
+    pub(crate) fn fresh_id(&self, parts: &[&str]) -> String {
+        if !crate::ids::is_seeded() {
+            return crate::ids::new_id();
+        }
+        for attempt in 0..10_000 {
+            let id = crate::ids::derived_id(parts, attempt);
+            if !self.by_id.contains_key(&id) {
+                return id;
+            }
+        }
+        // Unreachable short of a deliberate collision attack, and falling back
+        // to a random id is still correct — just not reproducible.
+        crate::ids::new_id()
+    }
+
     // ---- writing ----------------------------------------------------------
 
     /// Serialise, re-wrapping into a ZIP if that is what we opened.
