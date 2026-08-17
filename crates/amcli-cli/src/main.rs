@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 
 mod apply;
 mod export;
+mod init;
 mod output;
 mod read;
 mod skill;
@@ -17,10 +18,13 @@ mod write;
 
 use output::{CliError, Code, Format, Output, Printer};
 
+/// The version, plus enough to tell two builds of it apart. See `build.rs`.
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("AMCLI_BUILD"), ")");
+
 #[derive(Parser)]
 #[command(
     name = "amcli",
-    version,
+    version = VERSION,
     about = "A CLI over ArchiMate models. No Archi, no JVM, no daemon.",
     after_help = "\
 Reads are bare verbs; anything that changes the model is noun-verb, which makes
@@ -59,7 +63,7 @@ pub struct Cli {
     #[arg(long, global = true, value_delimiter = ',', allow_hyphen_values = true)]
     fields: Option<Vec<String>>,
 
-    /// Print how many results there would be, and nothing else.
+    /// Print how many results there would be, and nothing else. Never writes.
     #[arg(long, global = true)]
     count: bool,
 
@@ -78,6 +82,12 @@ pub struct Cli {
     /// Skip the confirmation on a cascading delete.
     #[arg(short = 'y', long, global = true)]
     yes: bool,
+
+    /// Derive new ids from what they name instead of at random, so that
+    /// rebuilding a model from the same batches produces the same file.
+    /// Also read from $AMCLI_ID_SEED.
+    #[arg(long, global = true, value_name = "SEED")]
+    id_seed: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -217,6 +227,17 @@ enum Command {
     Skill(skill::SkillCmd),
     /// Model-level facts.
     Info,
+    /// Create an empty model with the folders Archi expects.
+    Init {
+        /// The model's name.
+        name: String,
+        /// Where to write it. Defaults to a slug of the name.
+        #[arg(short = 'o', long)]
+        out: Option<PathBuf>,
+        /// Overwrite an existing file.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Parse, but turn "no such subcommand" into a version-skew hint.
@@ -231,23 +252,71 @@ enum Command {
 /// `metadata:` field would be inert (the skills CLI reads only `name` and
 /// `description`), and asking an agent to compare version strings by eye is
 /// the kind of step that fails quietly.
+///
+/// An unknown *flag* is emphatically not the same thing, and used to get the
+/// same footer. It sent a reader off to reinstall a current binary over what was
+/// a misremembered flag name, so that case gets the one thing that actually
+/// helps: the flags the command does have.
 fn parse_or_hint() -> Cli {
     use clap::error::ErrorKind;
     match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
-            let skew =
-                matches!(e.kind(), ErrorKind::InvalidSubcommand | ErrorKind::UnknownArgument);
+            let kind = e.kind();
             let _ = e.print();
-            if skew {
-                eprintln!(
-                    "\nIf a skill or documentation said this exists, this amcli is older \
-                     than that document.\nUpgrade it:  sh ~/.agents/skills/amcli/scripts/install.sh"
-                );
+            match kind {
+                ErrorKind::InvalidSubcommand => eprintln!(
+                    "\nThis amcli is {VERSION}. If a skill or documentation said that \
+                     subcommand exists,\nthis binary is older than that document. \
+                     Upgrade it:\n  sh ~/.agents/skills/amcli/scripts/install.sh"
+                ),
+                ErrorKind::UnknownArgument => {
+                    if let Some(flags) = flags_for(std::env::args().skip(1)) {
+                        eprintln!("\n{flags}");
+                    }
+                }
+                _ => {}
             }
             std::process::exit(if e.use_stderr() { Code::Usage as i32 } else { 0 });
         }
     }
+}
+
+/// The flags accepted by the deepest subcommand named in an argument list.
+///
+/// Read out of clap's own definitions, so it cannot list a flag that does not
+/// exist or miss one that does.
+///
+/// A token that is not a subcommand is skipped rather than ending the walk: the
+/// arguments still contain flag values and positionals (`-m model.archimate view
+/// layout …`), and stopping at the first one of those reported only the global
+/// flags — which is not the question being answered.
+fn flags_for(args: impl Iterator<Item = String>) -> Option<String> {
+    use clap::CommandFactory;
+    let mut cmd = Cli::command();
+    let mut path = vec!["amcli".to_string()];
+    for arg in args {
+        if arg.starts_with('-') {
+            continue;
+        }
+        let Some(next) = cmd.find_subcommand(&arg).cloned() else { continue };
+        path.push(next.get_name().to_string());
+        cmd = next;
+    }
+
+    let mut names: Vec<String> = cmd
+        .get_arguments()
+        .filter_map(|a| a.get_long())
+        .map(|l| format!("--{l}"))
+        .chain(
+            Cli::command().get_arguments().filter_map(|a| a.get_long()).map(|l| format!("--{l}")),
+        )
+        .collect();
+    names.sort();
+    names.dedup();
+    (!names.is_empty()).then(|| {
+        format!("Flags of `{}`, and the global ones:\n  {}", path.join(" "), names.join(" "))
+    })
 }
 
 fn main() {
@@ -281,10 +350,18 @@ fn main() {
 }
 
 fn run(cli: &Cli) -> Result<Output, CliError> {
-    // The skill is about this machine, not about any model, so it runs before
+    // Set before any edit, and process-wide: every id minted this run has to
+    // come from the same decision.
+    amcli_model::ids::set_seed(cli.id_seed.clone().or_else(|| std::env::var("AMCLI_ID_SEED").ok()));
+
+    // Neither of these is about a model that already exists, so both run before
     // amcli goes looking for one.
-    if let Command::Skill(c) = &cli.command {
-        return skill::run(c);
+    match &cli.command {
+        Command::Skill(c) => return skill::run(c),
+        Command::Init { name, out, force } => {
+            return init::run(&write_opts(cli), name, out.as_deref(), *force);
+        }
+        _ => {}
     }
 
     let path = find_model(cli.model.as_deref())?;
@@ -350,6 +427,7 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         | Command::View(_)
         | Command::Apply { .. }
         | Command::Skill(_)
+        | Command::Init { .. }
         | Command::Validate { .. } => unreachable!("dispatched above"),
     }
 }
@@ -366,8 +444,19 @@ impl Cli {
     }
 }
 
+/// `--count` is documented as printing how many results there would be and
+/// nothing else, so on a write it has to mean the same thing `--dry-run` does.
+///
+/// It did not, and `view auto --count` created the view while reporting a count
+/// — leaving duplicate views behind on a command whose whole point was to avoid
+/// changing anything. Both flags are answered in one place so a future write
+/// path cannot forget one of them.
 fn write_opts(cli: &Cli) -> write::Opts {
-    write::Opts { dry_run: cli.dry_run, yes: cli.yes, expect_checksum: cli.expect_checksum.clone() }
+    write::Opts {
+        dry_run: cli.dry_run || cli.count,
+        yes: cli.yes,
+        expect_checksum: cli.expect_checksum.clone(),
+    }
 }
 
 fn cli_write_opts(cli: &Cli) -> write::Opts {
@@ -403,7 +492,7 @@ fn find_model(explicit: Option<&Path>) -> Result<PathBuf, CliError> {
                 return Err(CliError::new(
                     Code::Ambiguous,
                     "ambiguous",
-                    format!("{} models in {}", found.len(), dir.display()),
+                    format!("{} models in `{}`", found.len(), dir.display()),
                 )
                 .hint("pass -m to choose one")
                 .rows(

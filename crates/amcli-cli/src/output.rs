@@ -198,6 +198,12 @@ pub struct Printer {
 impl Printer {
     pub fn print(&self, mut out: Output, stdout: &mut impl Write, stderr: &mut impl Write) {
         if let Some(f) = &self.fields {
+            // A field spelled wrongly used to project to nothing and say nothing,
+            // so `--fields name,view` printed an empty column and read as "this
+            // model has no view information". Name the miss and the alternatives.
+            if let Some(note) = unmatched_fields(&out.rows, f) {
+                out.notes.push(note);
+            }
             for r in &mut out.rows {
                 r.project(f);
             }
@@ -224,7 +230,23 @@ impl Printer {
     }
 
     fn print_text(&self, out: &Output, stdout: &mut impl Write, stderr: &mut impl Write) {
+        // The column names go to stderr, not stdout. Naming them on stdout
+        // would put a line that is not a record into the stream `cut -f2` reads,
+        // which is the one promise this format makes; leaving them out entirely
+        // is how `<id> <name> <type> <n> <n> <n>` becomes a guessing game.
+        //
+        // Re-emitted whenever the shape changes, because some commands return
+        // more than one record shape — `trace` returns nodes and then edges, and
+        // one header over both would mislabel half the output.
+        let mut labelled: Option<Vec<&str>> = None;
         for r in &out.rows {
+            if !self.quiet {
+                let names: Vec<&str> = r.0.iter().map(|(k, _)| *k).collect();
+                if labelled.as_deref() != Some(names.as_slice()) {
+                    let _ = writeln!(stderr, "# {}", names.join("\t"));
+                    labelled = Some(names);
+                }
+            }
             let line: Vec<String> = r.0.iter().map(|(_, v)| v.to_text()).collect();
             let _ = writeln!(stdout, "{}", line.join("\t"));
         }
@@ -288,6 +310,34 @@ impl Printer {
             }
         }
     }
+}
+
+/// Which `--fields` names no record has, and what it could have been instead.
+///
+/// Only the additive form is checked: `-folder` asking to drop a field that is
+/// not there has already got what it wanted.
+fn unmatched_fields(rows: &[Row], fields: &[String]) -> Option<String> {
+    if rows.is_empty() || fields.iter().all(|f| f.starts_with('-')) {
+        return None;
+    }
+    let mut available: Vec<&str> = rows.iter().flat_map(|r| r.0.iter().map(|(k, _)| *k)).collect();
+    available.sort_unstable();
+    available.dedup();
+
+    let missing: Vec<&str> = fields
+        .iter()
+        .filter(|f| !f.starts_with('-'))
+        .filter(|f| !available.contains(&f.as_str()))
+        .map(String::as_str)
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "no such field: {} — this record has: {}",
+        missing.join(", "),
+        available.join(" ")
+    ))
 }
 
 fn json_rows(rows: &[Row]) -> String {

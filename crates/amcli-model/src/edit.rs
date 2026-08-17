@@ -12,7 +12,7 @@
 use amcli_xml::{NodeBuilder, NodeId};
 
 use crate::model::{Concept, ConceptId, ConceptKind, FolderId, ViewId};
-use crate::{ElementType, FolderType, Model, ModelError, RelType, ids, matrix};
+use crate::{ElementType, FolderType, Model, ModelError, RelType, matrix};
 
 /// Why an edit was refused.
 #[derive(Debug, thiserror::Error)]
@@ -105,7 +105,7 @@ impl Model {
                 .top_folder(ty.info().home)
                 .ok_or_else(|| EditError::NoSuchFolder(ty.info().home.as_str().to_string()))?,
         };
-        let id = ids::new_id();
+        let id = self.fresh_id(&["element", ty.info().xsi, name]);
         let folder_node = self.folder(folder).node;
         // Attribute order matches what Archi writes: xsi:type, name, id. Not a
         // correctness issue, but the wrong order makes every diff noisier, and
@@ -147,8 +147,8 @@ impl Model {
         let folder = self
             .top_folder(FolderType::Relations)
             .ok_or_else(|| EditError::NoSuchFolder("relations".to_string()))?;
-        let id = ids::new_id();
         let (src_id, tgt_id) = (self.concept(source).id.clone(), self.concept(target).id.clone());
+        let id = self.fresh_id(&["relation", ty.info().xsi, &src_id, &tgt_id]);
 
         let mut b = NodeBuilder::new("element")
             .attr("xsi:type", ty.info().xsi)
@@ -231,7 +231,8 @@ impl Model {
     }
 
     pub fn add_folder(&mut self, parent: FolderId, name: &str) -> Result<FolderId, EditError> {
-        let id = ids::new_id();
+        let parent_path = self.folder(parent).path.clone();
+        let id = self.fresh_id(&["folder", &parent_path, name]);
         let parent_node = self.folder(parent).node;
         // Folders come before elements in a folder's children, as Archi writes
         // them; inserting at the end would still load, but the diff would move
@@ -365,11 +366,8 @@ impl Model {
         let gone: std::collections::HashSet<&str> =
             doomed_concepts.iter().map(String::as_str).collect();
 
-        // Now the visuals, view by view, iterating until nothing new falls: a
-        // removed diagram object takes its connections, which may in turn be
-        // the last thing holding another object's connection.
+        // Now the visuals, view by view.
         for view in self.views() {
-            let mut touched = false;
             let mut dead_visuals: std::collections::HashSet<String> = Default::default();
 
             for n in self.doc.descendants(view.node) {
@@ -387,49 +385,13 @@ impl Model {
                 }
             }
 
-            // Connections whose endpoint object is going, and anything nested
-            // inside a doomed object.
-            loop {
-                let before = dead_visuals.len();
-                for n in self.doc.descendants(view.node) {
-                    let id = self.doc.attr(n, "id").unwrap_or_default();
-                    if id.is_empty() || dead_visuals.contains(&id) {
-                        continue;
-                    }
-                    let local = self.doc.local_name(n);
-                    let doomed_parent = self
-                        .doc
-                        .parent(n)
-                        .and_then(|p| self.doc.attr(p, "id"))
-                        .is_some_and(|p| dead_visuals.contains(&p));
-                    let endpoint_gone = local == "sourceConnection"
-                        && ["source", "target"].iter().any(|a| {
-                            self.doc.attr(n, a).is_some_and(|v| dead_visuals.contains(&v))
-                        });
-                    if doomed_parent || endpoint_gone {
-                        dead_visuals.insert(id);
-                    }
-                }
-                if dead_visuals.len() == before {
-                    break;
-                }
-            }
-
-            for n in self.doc.descendants(view.node) {
-                let Some(id) = self.doc.attr(n, "id") else { continue };
-                if !dead_visuals.contains(&id) {
-                    continue;
-                }
-                touched = true;
-                match self.doc.local_name(n) {
-                    "child" => plan.diagram_objects.push(id),
-                    "sourceConnection" => plan.connections.push(id),
-                    _ => {}
-                }
-            }
-            if touched {
+            self.expand_dead_visuals(view.node, &mut dead_visuals);
+            let (objects, connections) = self.classify_visuals(view.node, &dead_visuals);
+            if !objects.is_empty() || !connections.is_empty() {
                 plan.views.push(view.id.clone());
             }
+            plan.diagram_objects.extend(objects);
+            plan.connections.extend(connections);
         }
 
         // A junction left with fewer than two connections no longer joins
@@ -455,6 +417,60 @@ impl Model {
         }
 
         plan
+    }
+
+    /// Grow a set of doomed visuals to its fixpoint inside one view.
+    ///
+    /// Iterating rather than sweeping once is the point: a removed diagram
+    /// object takes its connections, and one of those may have been the last
+    /// thing holding another object's connection.
+    fn expand_dead_visuals(&self, view_node: NodeId, dead: &mut std::collections::HashSet<String>) {
+        loop {
+            let before = dead.len();
+            for n in self.doc.descendants(view_node) {
+                let id = self.doc.attr(n, "id").unwrap_or_default();
+                if id.is_empty() || dead.contains(&id) {
+                    continue;
+                }
+                let doomed_parent = self
+                    .doc
+                    .parent(n)
+                    .and_then(|p| self.doc.attr(p, "id"))
+                    .is_some_and(|p| dead.contains(&p));
+                let endpoint_gone = self.doc.local_name(n) == "sourceConnection"
+                    && ["source", "target"]
+                        .iter()
+                        .any(|a| self.doc.attr(n, a).is_some_and(|v| dead.contains(&v)));
+                if doomed_parent || endpoint_gone {
+                    dead.insert(id);
+                }
+            }
+            if dead.len() == before {
+                return;
+            }
+        }
+    }
+
+    /// Split a set of doomed visual ids into (objects, connections), in
+    /// document order.
+    fn classify_visuals(
+        &self,
+        view_node: NodeId,
+        dead: &std::collections::HashSet<String>,
+    ) -> (Vec<String>, Vec<String>) {
+        let (mut objects, mut connections) = (Vec::new(), Vec::new());
+        for n in self.doc.descendants(view_node) {
+            let Some(id) = self.doc.attr(n, "id") else { continue };
+            if !dead.contains(&id) {
+                continue;
+            }
+            match self.doc.local_name(n) {
+                "child" => objects.push(id),
+                "sourceConnection" => connections.push(id),
+                _ => {}
+            }
+        }
+        (objects, connections)
     }
 
     /// Delete a concept and everything the plan says goes with it.
@@ -543,7 +559,7 @@ impl Model {
         let folder = self
             .top_folder(FolderType::Diagrams)
             .ok_or_else(|| EditError::NoSuchFolder("diagrams".to_string()))?;
-        let id = ids::new_id();
+        let id = self.fresh_id(&["view", name]);
         let mut b = NodeBuilder::new("element")
             .attr("xsi:type", "archimate:ArchimateDiagramModel")
             .attr("name", name)
@@ -572,8 +588,9 @@ impl Model {
         w: i32,
         h: i32,
     ) -> Result<String, EditError> {
-        let id = ids::new_id();
         let concept_id = self.concept(concept).id.clone();
+        let view_id = self.view(view).id.clone();
+        let id = self.fresh_id(&["object", &view_id, &concept_id]);
         let view_node = self.view(view).node;
         let obj = self.doc.append_child(
             view_node,
@@ -612,8 +629,9 @@ impl Model {
         target_object: &str,
         bendpoints: &[(i32, i32, i32, i32)],
     ) -> Result<String, EditError> {
-        let id = ids::new_id();
         let rel_id = self.concept(relationship).id.clone();
+        let view_id = self.view(view).id.clone();
+        let id = self.fresh_id(&["connection", &view_id, &rel_id, source_object, target_object]);
         let view_node = self.view(view).node;
         let src = self
             .doc
@@ -669,6 +687,113 @@ impl Model {
             self.doc.set_attr(b, "y", &y.to_string());
         }
         Ok(())
+    }
+
+    pub fn rename_view(&mut self, view: ViewId, name: &str) {
+        let node = self.view(view).node;
+        self.doc.set_attr(node, "name", name);
+        self.reindex();
+    }
+
+    /// Objects on *other* views that point at this one, as (view id, object id).
+    ///
+    /// A `DiagramModelReference` is a box on one view standing for another view.
+    /// Deleting the target without dealing with these leaves `model="…"`
+    /// pointing at nothing, which is a load error in Archi rather than a
+    /// cosmetic problem — the same class of breakage as a dangling
+    /// `archimateElement`.
+    pub fn view_references(&self, view: ViewId) -> Vec<(String, String)> {
+        let target = self.view(view).id.clone();
+        let mut out = Vec::new();
+        for v in self.views() {
+            if v.id == target {
+                continue;
+            }
+            for n in self.doc.descendants(v.node) {
+                if self.doc.local_name(n) == "child"
+                    && self.doc.attr(n, "model").as_deref() == Some(target.as_str())
+                    && let Some(id) = self.doc.attr(n, "id")
+                {
+                    out.push((v.id.clone(), id));
+                }
+            }
+        }
+        out
+    }
+
+    /// Delete a view, and any box on another view that stood for it.
+    ///
+    /// No concept is touched: a view is a drawing of the model, not part of it.
+    /// What the returned cascade counts is therefore visual only.
+    pub fn delete_view(&mut self, view: ViewId) -> Result<Cascade, EditError> {
+        let mut plan = Cascade::default();
+        let view_node = self.view(view).node;
+        plan.views.push(self.view(view).id.clone());
+
+        // Everything drawn on the view goes with it, and is worth reporting:
+        // "deleted a view" and "deleted a view holding sixty boxes" deserve
+        // different reactions.
+        let (objects, connections) = {
+            let all: std::collections::HashSet<String> = self
+                .doc
+                .descendants(view_node)
+                .into_iter()
+                .filter_map(|n| self.doc.attr(n, "id"))
+                .collect();
+            self.classify_visuals(view_node, &all)
+        };
+        plan.diagram_objects.extend(objects);
+        plan.connections.extend(connections);
+
+        // References from elsewhere, expanded the same way a deleted concept's
+        // visuals are: the reference box may itself be an endpoint.
+        let referring = self.view_references(view);
+        let mut dead_elsewhere: Vec<(ViewId, Vec<String>, Vec<String>)> = Vec::new();
+        for v in self.views() {
+            let seeds: std::collections::HashSet<String> = referring
+                .iter()
+                .filter(|(vid, _)| *vid == v.id)
+                .map(|(_, oid)| oid.clone())
+                .collect();
+            if seeds.is_empty() {
+                continue;
+            }
+            let mut dead = seeds;
+            self.expand_dead_visuals(v.node, &mut dead);
+            let (objects, connections) = self.classify_visuals(v.node, &dead);
+            dead_elsewhere.push((
+                self.view_by_id(&v.id).expect("iterating live views"),
+                objects,
+                connections,
+            ));
+            plan.views.push(v.id.clone());
+        }
+
+        let mut doomed_nodes = vec![view_node];
+        for (v, objects, connections) in &dead_elsewhere {
+            let node = self.view(*v).node;
+            let ids: std::collections::HashSet<&str> =
+                objects.iter().chain(connections.iter()).map(String::as_str).collect();
+            for n in self.doc.descendants(node) {
+                if self.doc.attr(n, "id").is_some_and(|id| ids.contains(id.as_str())) {
+                    doomed_nodes.push(n);
+                }
+            }
+            plan.diagram_objects.extend(objects.iter().cloned());
+            plan.connections.extend(connections.iter().cloned());
+        }
+
+        for n in doomed_nodes {
+            self.doc.remove_subtree(n);
+        }
+        // The mirror is recomputed, never patched — the same reason as in
+        // `delete_concept`.
+        let affected: Vec<ViewId> = dead_elsewhere.iter().map(|(v, _, _)| *v).collect();
+        for v in affected {
+            self.recompute_target_connections(v);
+        }
+        self.reindex();
+        Ok(plan)
     }
 
     /// Every diagram object on a view, as (object id, concept id).

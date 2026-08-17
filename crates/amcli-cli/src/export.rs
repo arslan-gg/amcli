@@ -32,7 +32,7 @@ pub fn run(g: &Graph<'_>, format: &str, out_path: Option<&str>) -> Result<Output
     match out_path {
         Some(p) => {
             std::fs::write(p, &body)
-                .map_err(|e| CliError::new(Code::Io, "io", format!("{p}: {e}")))?;
+                .map_err(|e| CliError::new(Code::Io, "io", format!("`{p}`: {e}")))?;
             Ok(Output::one(Row::new().s("path", p.to_string()).n("bytes", body.len() as i64)))
         }
         None => {

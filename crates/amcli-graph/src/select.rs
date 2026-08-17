@@ -173,6 +173,10 @@ pub enum Key {
     Id,
     Name,
     Type,
+    /// `element` or `relation`. A query for "everything in the Application
+    /// layer" otherwise comes back with relationships mixed in, and those
+    /// render as rows with an empty name.
+    Kind,
     Layer,
     Folder,
     Doc,
@@ -199,6 +203,11 @@ pub enum Op {
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct ParseError(pub String);
+
+/// The filter vocabulary, in one place so the parser's complaint and the CLI's
+/// hint cannot drift apart.
+pub const FIELDS: &str =
+    "id name type kind layer folder doc deg view prop:KEY in:RelType out:RelType";
 
 impl Expr {
     pub fn parse(s: &str) -> Result<Expr, ParseError> {
@@ -234,21 +243,12 @@ fn eval_term(
     let m: &Model = g.model();
     let concept = m.concept(c);
 
-    // Degree is the one numeric field, so it gets the comparison operators and
-    // the string ones do not.
+    // Degree is the one purely numeric field, so it gets the comparison
+    // operators and the string ones do not.
     if *key == Key::Degree {
         let (i, o) = g.degree(c);
-        let deg = (i + o) as i64;
         let Ok(want) = value.parse::<i64>() else { return false };
-        return match op {
-            Op::Eq => deg == want,
-            Op::Ne => deg != want,
-            Op::Gt => deg > want,
-            Op::Lt => deg < want,
-            Op::Ge => deg >= want,
-            Op::Le => deg <= want,
-            _ => false,
-        };
+        return num_op(op, (i + o) as i64, want);
     }
 
     // Relationship-shaped keys ask about the neighbourhood, not this concept.
@@ -265,15 +265,16 @@ fn eval_term(
             });
         }
         Key::View => {
-            let on_view = m.views().any(|v| {
-                let refs = m.doc.descendants(v.node).into_iter().any(|n| {
-                    m.doc.attr(n, "archimateElement").as_deref() == Some(concept.id.as_str())
-                        || m.doc.attr(n, "archimateRelationship").as_deref()
-                            == Some(concept.id.as_str())
-                });
-                refs && (value.is_empty() || str_op(op, &v.name, value, re))
-            });
-            return on_view;
+            let on = g.views_of(c);
+            // A bare integer asks how many views, a string asks which. Without
+            // the numeric reading there is no way to ask the one question a
+            // "draw everything at least once" invariant depends on — which
+            // concepts are on no view at all — and `view=0` silently matched
+            // nothing instead of saying so.
+            if let Ok(want) = value.parse::<i64>() {
+                return num_op(op, on.len() as i64, want);
+            }
+            return on.iter().any(|v| value.is_empty() || str_op(op, &m.view(*v).name, value, re));
         }
         _ => {}
     }
@@ -282,6 +283,9 @@ fn eval_term(
         Key::Id => concept.id.clone(),
         Key::Name => concept.name.clone(),
         Key::Type => concept.kind.name().to_string(),
+        Key::Kind => {
+            if concept.kind.is_relationship() { "relation" } else { "element" }.to_string()
+        }
         Key::Layer => concept.kind.layer().map(Layer::as_str).unwrap_or("").to_string(),
         Key::Folder => m.folder_path_of(concept).to_string(),
         Key::Doc => m.documentation(concept.node).unwrap_or_default(),
@@ -295,7 +299,45 @@ fn eval_term(
         }
         Key::Degree | Key::InRel(_) | Key::OutRel(_) | Key::View => unreachable!(),
     };
+
+    // `Triggering` and `TriggeringRelationship` name the same type. `relation
+    // add Triggering` takes the first, so a query that only takes the second is
+    // a second vocabulary to learn — and one that answers 0 rather than saying
+    // so. Only the type field is translated: `name=Access` must keep meaning an
+    // element called Access.
+    let value = match key {
+        Key::Type => canonical_type_name(value).unwrap_or(value),
+        _ => value,
+    };
     str_op(op, &haystack, value, re)
+}
+
+/// How a type is spelled in the file and in output, given any spelling a caller
+/// might reasonably use.
+///
+/// `Triggering`, `TriggeringRelationship` and `archimate:TriggeringRelationship`
+/// all answer `TriggeringRelationship`; an element type answers its own name.
+/// `None` means the string is not a type this build knows.
+pub fn canonical_type_name(s: &str) -> Option<&'static str> {
+    if let Some(e) = ElementType::from_str(s) {
+        return Some(e.info().short);
+    }
+    // The relationship's own name, as written in the file: `info().short` is
+    // the bare `Triggering`, but every row amcli prints says
+    // `TriggeringRelationship`, so that is what a comparison has to use.
+    RelType::from_str(s).map(|r| r.info().xsi.trim_start_matches("archimate:"))
+}
+
+fn num_op(op: Op, have: i64, want: i64) -> bool {
+    match op {
+        Op::Eq => have == want,
+        Op::Ne => have != want,
+        Op::Gt => have > want,
+        Op::Lt => have < want,
+        Op::Ge => have >= want,
+        Op::Le => have <= want,
+        Op::Contains | Op::Prefix | Op::Regex => false,
+    }
 }
 
 fn str_op(op: Op, haystack: &str, value: &str, re: Option<&regex::Regex>) -> bool {
@@ -379,15 +421,16 @@ impl Parser {
                 "id" => Key::Id,
                 "name" => Key::Name,
                 "type" => Key::Type,
+                "kind" => Key::Kind,
                 "layer" => Key::Layer,
                 "folder" => Key::Folder,
                 "doc" | "documentation" => Key::Doc,
                 "deg" | "degree" => Key::Degree,
-                "view" => Key::View,
+                // Plural too, because that is what the output column is called.
+                "view" | "views" => Key::View,
                 other => {
                     return Err(ParseError(format!(
-                        "unknown field `{other}`; try one of \
-                         id name type layer folder doc deg view prop:KEY in:RelType out:RelType"
+                        "unknown field `{other}`; try one of {FIELDS}"
                     )));
                 }
             },
@@ -528,6 +571,33 @@ pub fn known_type_names() -> Vec<&'static str> {
     let mut v: Vec<&'static str> = ElementType::ALL.iter().map(|e| e.info().short).collect();
     v.extend(RelType::ALL.iter().map(|r| r.info().short));
     v
+}
+
+/// Does this model contain concepts of a type this build does not know?
+///
+/// A `-t` filter naming one of those is legitimate — the concepts are there and
+/// searchable — so it must not be rejected along with the typos.
+pub fn model_knows_type(m: &Model, name: &str) -> bool {
+    unknown_type_names(m).iter().any(|t| t.eq_ignore_ascii_case(name))
+}
+
+/// Type names close enough to a rejected one to be worth suggesting.
+pub fn similar_type_names(name: &str) -> Vec<&'static str> {
+    let needle = name.to_lowercase();
+    let mut scored: Vec<(usize, &'static str)> = known_type_names()
+        .into_iter()
+        .filter_map(|t| {
+            let lower = t.to_lowercase();
+            if lower.contains(&needle) || needle.contains(&lower) {
+                return Some((0, t));
+            }
+            let d = edit_distance(&needle, &lower);
+            (d <= needle.len().div_ceil(2)).then_some((d, t))
+        })
+        .collect();
+    scored.sort_by_key(|(d, t)| (*d, *t));
+    scored.truncate(5);
+    scored.into_iter().map(|(_, t)| t).collect()
 }
 
 /// Types that are neither an element nor a relationship we know about.

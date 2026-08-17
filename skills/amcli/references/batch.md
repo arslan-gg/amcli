@@ -38,6 +38,27 @@ attempt, or against a second model.
 Without it, adding the same relationship twice is refused, because a duplicate
 relationship of the same type between the same pair adds nothing to the model.
 
+## Rebuilding a model from its batches
+
+Keeping the batches in the repository and regenerating the model from them is a
+good workflow, but by default every rebuild mints fresh random ids, so a model
+that is semantically unchanged produces a whole-file diff.
+
+Pass the same seed on every command that writes — `init`, `apply`, `view auto` —
+or set it once in the environment:
+
+    export AMCLI_ID_SEED=monetech
+    amcli init "Monetech" -o model.archimate
+    amcli apply 01-capabilities.jsonl
+    amcli apply 02-applications.jsonl
+
+Ids are then a function of what they name: an element's from its type and name, a
+relationship's from its type and endpoints, a view's from its name. Rebuild
+twice and the files are byte-identical, so the diff shows only what changed.
+
+One seed per model, chosen once. Changing it reissues every id, and two models
+sharing a seed will give the same id to two elements that share a type and name.
+
 ## Checking before writing
 
     amcli apply ops.jsonl --dry-run      # reports, writes nothing

@@ -577,6 +577,418 @@ fn an_unknown_subcommand_blames_the_binary_not_the_skill() {
     assert!(err.contains("scripts/install.sh"), "gives a runnable recovery: {err}");
 }
 
+/// `--count` is documented as printing how many results there would be and
+/// nothing else. On `view auto` it also created the view, so the command
+/// documented as the safe way to ask a question was the one that left duplicate
+/// views behind.
+#[test]
+fn count_answers_the_question_without_writing() {
+    let m = Model::new("testmodel1.archimate");
+    let before = m.text();
+
+    let (code, out, _) = m.run(&["view", "auto", "probe", "--from", "Business Actor", "--count"]);
+    assert_eq!(code, 0);
+    assert!(out.trim().parse::<usize>().is_ok(), "a count and nothing else: {out}");
+    assert_eq!(m.text(), before, "--count wrote to the model");
+    assert!(!m.text().contains("probe"), "the view was created anyway");
+
+    // Every other write path answers it the same way.
+    for args in [
+        &["element", "add", "BusinessActor", "Counted", "--count"][..],
+        &["view", "create", "Counted", "--count"][..],
+        &["element", "delete", "Business Actor", "-y", "--count"][..],
+    ] {
+        let (code, _, _) = m.run(args);
+        assert_eq!(code, 0, "{args:?}");
+        assert_eq!(m.text(), before, "{args:?} wrote to the model");
+    }
+}
+
+/// Two views with the same name are indistinguishable to every selector, and
+/// there used to be no way to remove either one.
+#[test]
+fn a_view_name_cannot_be_taken_twice_and_can_be_given_back() {
+    let m = Model::new("testmodel1.archimate");
+    assert_eq!(m.run(&["view", "create", "Flow"]).0, 0);
+
+    let (code, _, err) = m.run(&["view", "create", "Flow"]);
+    assert_eq!(code, 6, "conflict");
+    assert!(err.contains("already called `Flow`"), "{err}");
+    assert!(err.contains("--replace"), "the way forward is named: {err}");
+
+    // `view auto` is the one that actually bit, and it answers the same way.
+    let (code, _, _) = m.run(&["view", "auto", "Flow", "--from", "Business Actor"]);
+    assert_eq!(code, 6);
+    let (code, _, _) = m.run(&["view", "auto", "Flow", "--from", "Business Actor", "--replace"]);
+    assert_eq!(code, 0);
+    assert_eq!(named_views(&m, "Flow"), 1, "--replace replaced rather than added");
+
+    // Renaming refuses the same clash, and then works.
+    assert_eq!(m.run(&["view", "create", "Other"]).0, 0);
+    assert_eq!(m.run(&["view", "rename", "Other", "Flow"]).0, 6);
+    assert_eq!(m.run(&["view", "rename", "Other", "Renamed"]).0, 0);
+    assert_eq!(named_views(&m, "Renamed"), 1);
+
+    // And a stray view can be removed, which is what forced whole-model rebuilds.
+    assert_eq!(m.run(&["view", "delete", "Renamed"]).0, 0);
+    assert_eq!(named_views(&m, "Renamed"), 0);
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}
+
+fn named_views(m: &Model, name: &str) -> usize {
+    let (_, out, _) = m.run(&["view", "list", "-q"]);
+    rows(&out).iter().filter(|r| r.get(1) == Some(&name)).count()
+}
+
+/// Deleting a view drawn as a reference box on another view has to take the box
+/// with it: `model="…"` pointing at nothing is a file Archi will not open.
+#[test]
+fn deleting_a_referenced_view_refuses_until_told_and_leaves_nothing_dangling() {
+    let m = Model::new("testDeleteHandler.archimate");
+    let before = m.text();
+
+    let (code, _, err) = m.run(&["view", "delete", "id:12917bec"]);
+    assert_eq!(code, 5);
+    assert!(err.contains("drawn as a reference"), "{err}");
+    assert_eq!(m.text(), before, "a refused delete writes nothing");
+
+    let (code, out, _) = m.run(&["view", "delete", "id:12917bec", "-y"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!m.text().contains("12917bec"), "the view survived");
+    assert!(!m.text().contains("99a52921"), "the reference box now dangles");
+
+    // The fixture carries two matrix violations of its own, so integrity is
+    // compared against the baseline rather than to zero.
+    let (_, out, _) = m.run(&["validate", "--level", "integrity", "-q"]);
+    assert!(!out.contains("99a52921"), "a dangling visual was reported: {out}");
+}
+
+/// An added concept used to stay a floating box even when the thing it relates
+/// to was already on the same view, and no amount of re-laying-out could fix
+/// that because the connection was never written.
+#[test]
+fn adding_a_concept_to_a_view_draws_the_relationships_it_brings() {
+    let m = Model::new("modelimporter_test.archimate");
+    assert_eq!(m.run(&["element", "add", "ApplicationComponent", "Svc"]).0, 0);
+    assert_eq!(m.run(&["relation", "add", "Serving", "Svc", "BA1"]).0, 0);
+    assert_eq!(m.run(&["view", "create", "Wired"]).0, 0);
+
+    let edges = |m: &Model| {
+        let (_, out, _) = m.run(&["view", "render", "Wired", "--as", "json", "-q"]);
+        out.matches(r#""relationship":"#).count()
+    };
+
+    // The first box has nothing to connect to yet.
+    let (code, out, _) = m.run(&["view", "add", "Wired", "Svc"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(edges(&m), 0);
+
+    // The second completes a relationship that is already in the model.
+    let (code, _, err) = m.run(&["view", "add", "Wired", "BA1"]);
+    assert_eq!(code, 0);
+    assert_eq!(edges(&m), 1, "the Serving relationship was not drawn: {err}");
+
+    // Re-adding does not draw it twice.
+    assert_eq!(m.run(&["view", "add", "Wired", "BA1"]).0, 0);
+    assert_eq!(edges(&m), 1, "a second copy of the connection was written");
+
+    // Opting out still works, and the model stays loadable throughout.
+    assert_eq!(m.run(&["element", "add", "DataObject", "Rec"]).0, 0);
+    assert_eq!(m.run(&["relation", "add", "Access", "Svc", "Rec"]).0, 0);
+    assert_eq!(m.run(&["view", "add", "Wired", "Rec", "--no-connect"]).0, 0);
+    assert_eq!(edges(&m), 1, "--no-connect drew a connection anyway");
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}
+
+/// The write side takes `Triggering`; the query side took only
+/// `TriggeringRelationship` and answered 0 for the other, which reads as a fact
+/// about the model rather than as a vocabulary mismatch.
+#[test]
+fn type_filters_take_the_archimate_name_and_reject_what_is_not_a_type() {
+    let m = Model::new("testmodel1.archimate");
+    let count = |args: &[&str]| -> String {
+        let (_, out, _) = m.run(args);
+        out.trim().to_string()
+    };
+    assert_eq!(count(&["query", "type=AssignmentRelationship", "--count"]), "1");
+    assert_eq!(count(&["query", "type=Assignment", "--count"]), "1", "the ArchiMate spelling");
+    assert_eq!(count(&["list", "-t", "Assignment", "--count"]), "1", "and on -t too");
+
+    // A type that does not exist is a mistake, not an empty result set.
+    let (code, _, err) = m.run(&["list", "-t", "NotAType", "--count"]);
+    assert_eq!(code, 2, "usage");
+    assert!(err.contains("is not a concept type"), "{err}");
+    assert!(err.contains("AssignmentRelationship"), "the model's own types are listed: {err}");
+
+    // `-t element` is the category mistake, and there is now a field for it.
+    let (code, _, err) = m.run(&["list", "-t", "element", "--count"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("kind=element"), "points at the filter field: {err}");
+
+    // Which is what separates relationships from elements in a query.
+    assert_eq!(count(&["query", "kind=relation", "--count"]), "1");
+    assert_eq!(count(&["query", "kind=element", "--count"]), "2");
+}
+
+/// `view~"Name"` filtered but the column was always empty and `view=0` matched
+/// nothing, so "which concepts are on no view" — the invariant a model built
+/// this way depends on — could not be asked at all.
+#[test]
+fn the_view_field_reports_how_many_and_which() {
+    let m = Model::new("testmodel1.archimate");
+    assert_eq!(m.run(&["element", "add", "Goal", "Undrawn"]).0, 0);
+
+    let count = |args: &[&str]| -> String {
+        let (_, out, _) = m.run(args);
+        out.trim().to_string()
+    };
+    assert_eq!(count(&["query", "view=0", "--count"]), "1", "the element on no view");
+    assert_eq!(count(&["query", "view<1", "--count"]), "1");
+    assert_eq!(count(&["query", "name=Undrawn", "--fields", "name,views"]), "Undrawn\t0");
+
+    // A field that does not exist projected to nothing and said nothing, so a
+    // near-miss spelling read as "this model has no view information".
+    let (_, out, err) = m.run(&["list", "-l", "1", "--fields", "name,view"]);
+    assert!(err.contains("no such field: view"), "{err}");
+    assert!(err.contains("views"), "the real column is named: {err}");
+    assert!(!out.contains('\t'), "only the field that exists was printed: {out}");
+
+    // A name still filters by view, and the count column agrees with it.
+    let (_, out, _) = m.run(&["query", "view~\"2 Test\"", "--fields", "name,views", "-q"]);
+    assert!(!out.is_empty(), "the view name filter stopped working");
+    for row in rows(&out) {
+        assert_ne!(row[1], "0", "on a view but counted as on none: {row:?}");
+    }
+}
+
+/// An unknown flag used to end with "this amcli is older than that document",
+/// which sent a reader off to reinstall a current binary over a misremembered
+/// flag name. An unknown *subcommand* is the case that footer is for.
+#[test]
+fn an_unknown_flag_names_the_flags_instead_of_blaming_the_binary() {
+    let m = Model::new("testmodel1.archimate");
+    let (code, _, err) = m.run(&["view", "layout", "0 Blank View", "--bogus"]);
+    assert_eq!(code, 2);
+    assert!(!err.contains("older"), "an unknown flag is not version skew: {err}");
+    assert!(err.contains("--relayout-all"), "the command's own flags are listed: {err}");
+    assert!(err.contains("--model"), "and the global ones: {err}");
+
+    // A missing file is not version skew either.
+    let out = Command::cargo_bin("amcli")
+        .unwrap()
+        .args(["-m", " /nope.archimate", "info"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("older"), "{err}");
+    // Quoted, or a leading space from an unsplit shell variable is invisible.
+    assert!(err.contains("` /nope.archimate`"), "the path is not quoted: {err}");
+}
+
+/// `view auto --layout` and `view layout --algorithm` named the same concept two
+/// ways, and guessing wrong produced an error that looked like a missing command.
+#[test]
+fn either_spelling_of_the_layout_flag_is_accepted() {
+    let m = Model::new("modelimporter_test.archimate");
+    for args in [
+        &["view", "auto", "A", "--from", "BA1", "--layout", "grid"][..],
+        &["view", "auto", "B", "--from", "BA1", "--algorithm", "grid"][..],
+    ] {
+        assert_eq!(m.run(args).0, 0, "{args:?}");
+    }
+    for flag in ["--algorithm", "--layout"] {
+        let (code, out, err) = m.run(&["view", "layout", "A", flag, "grid", "--relayout-all"]);
+        assert_eq!(code, 0, "{flag}: {err}");
+        assert!(out.contains("grid"), "the algorithm used is reported: {out}");
+    }
+
+    // And a name that is not an algorithm lists the ones that are.
+    let (code, _, err) = m.run(&["view", "layout", "A", "--layout", "spiral"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("grid"), "{err}");
+}
+
+/// Two builds that both say `0.1.0` cannot be told apart, which is what made a
+/// stale binary earlier in PATH look like a broken skill.
+#[test]
+fn the_version_says_which_build_it_is() {
+    let out = Command::cargo_bin("amcli").unwrap().arg("--version").output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("amcli 0.1.0"), "{text}");
+    assert!(text.contains('('), "no build identifier: {text}");
+    // Whatever it is, it is not empty parentheses.
+    let build = text.split('(').nth(1).unwrap().trim_end_matches([')', '\n']);
+    assert!(build.len() > 3, "the build identifier is empty: {text}");
+}
+
+/// The columns were `<id> <name> <type?> <n> <n> <n>` and had to be guessed at.
+/// Naming them on stdout would break `cut -f2`, so they are named on stderr.
+#[test]
+fn records_carry_a_column_header_on_stderr() {
+    let m = Model::new("testmodel1.archimate");
+    let (code, out, err) = m.run(&["view", "list"]);
+    assert_eq!(code, 0);
+    assert!(err.contains("# id\tname"), "the columns are named: {err}");
+    for line in out.lines() {
+        assert!(!line.starts_with('#'), "the header leaked into the data: {line}");
+    }
+
+    // -q is still nothing but records.
+    let (_, _, err) = m.run(&["view", "list", "-q"]);
+    assert!(!err.contains('#'), "-q asked for no envelope: {err}");
+
+    // A command returning two record shapes labels both.
+    let (_, _, err) = m.run(&["trace", "Business Actor", "-n", "2"]);
+    assert_eq!(err.matches('#').count(), 2, "nodes and edges are labelled separately: {err}");
+}
+
+/// Creating a model meant hand-writing XML, which is the one thing the skill
+/// tells an agent never to do.
+#[test]
+fn init_creates_a_model_the_rest_of_the_tool_can_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("new.archimate");
+    let amcli = |args: &[&str]| Command::cargo_bin("amcli").unwrap().args(args).output().unwrap();
+
+    let out = amcli(&["init", "Monetech & Co", "-o", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(path.exists());
+
+    let p = path.to_str().unwrap();
+    // Every folder a write needs is there, so the normal loop works immediately.
+    for args in [
+        &["-m", p, "element", "add", "ApplicationComponent", "Svc"][..],
+        &["-m", p, "element", "add", "DataObject", "Rec"][..],
+        &["-m", p, "relation", "add", "Access", "Svc", "Rec", "--access", "rw"][..],
+        &["-m", p, "view", "auto", "V", "--from", "Svc"][..],
+        &["-m", p, "validate"][..],
+    ] {
+        let out = amcli(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // The name survived escaping, which is why this is not a format! template.
+    let out = amcli(&["-m", p, "info", "-F", "json", "-q"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Monetech & Co"));
+
+    // An existing file is not silently overwritten.
+    assert_eq!(amcli(&["init", "Other", "-o", p]).status.code(), Some(6), "conflict");
+    assert_eq!(amcli(&["init", "Other", "-o", p, "--force"]).status.code(), Some(0));
+}
+
+/// Found by rebuilding a real model twice: same size, same content, different
+/// property order. `HashMap` iteration is randomised per process, so a batch
+/// applied twice wrote the properties in a different order each time and the
+/// rebuild still produced a diff — deterministic ids do not help if the lines
+/// around them move.
+#[test]
+fn properties_from_a_batch_are_written_in_a_stable_order() {
+    let m = Model::new("modelimporter_test.archimate");
+    let ops = m.dir.path().join("ops.jsonl");
+    let keys = ["owner", "tier", "zone", "cost", "sla", "team"];
+    std::fs::write(
+        &ops,
+        concat!(
+            r#"{"op":"element.add","type":"ApplicationComponent","name":"Svc","props":"#,
+            r#"{"owner":"a","tier":"1","zone":"eu","cost":"9","sla":"gold","team":"x"}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    assert_eq!(m.run(&["apply", ops.to_str().unwrap()]).0, 0);
+
+    // Key order, which is a property of one run rather than a comparison between
+    // two: a comparison would pass by luck one time in 720.
+    let text = m.text();
+    let at = |k: &str| text.find(&format!(r#"key="{k}""#)).unwrap_or_else(|| panic!("no {k}"));
+    let mut sorted = keys;
+    sorted.sort_unstable();
+    let positions: Vec<usize> = sorted.iter().map(|k| at(k)).collect();
+    assert!(
+        positions.windows(2).all(|w| w[0] < w[1]),
+        "properties are not in key order: {positions:?}"
+    );
+}
+
+/// Rebuilding from identical batches regenerated every id, so a semantically
+/// unchanged model produced a whole-file diff.
+#[test]
+fn a_seed_makes_a_rebuild_byte_identical() {
+    let dir = tempfile::tempdir().unwrap();
+    let amcli = |args: &[&str]| Command::cargo_bin("amcli").unwrap().args(args).output().unwrap();
+
+    let build = |name: &str, seed: Option<&str>| -> Vec<u8> {
+        let path = dir.path().join(name);
+        let p = path.to_str().unwrap().to_string();
+        let mut steps: Vec<Vec<String>> = vec![
+            vec!["init".into(), "Seeded".into(), "-o".into(), p.clone()],
+            vec![
+                "-m".into(),
+                p.clone(),
+                "element".into(),
+                "add".into(),
+                "ApplicationComponent".into(),
+                "Svc".into(),
+            ],
+            vec![
+                "-m".into(),
+                p.clone(),
+                "element".into(),
+                "add".into(),
+                "DataObject".into(),
+                "Rec".into(),
+            ],
+            vec![
+                "-m".into(),
+                p.clone(),
+                "relation".into(),
+                "add".into(),
+                "Access".into(),
+                "Svc".into(),
+                "Rec".into(),
+            ],
+            vec![
+                "-m".into(),
+                p.clone(),
+                "view".into(),
+                "auto".into(),
+                "V".into(),
+                "--from".into(),
+                "Svc".into(),
+            ],
+        ];
+        for step in &mut steps {
+            if let Some(s) = seed {
+                step.push("--id-seed".into());
+                step.push(s.into());
+            }
+            let args: Vec<&str> = step.iter().map(String::as_str).collect();
+            let out = amcli(&args);
+            assert_eq!(
+                out.status.code(),
+                Some(0),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        std::fs::read(&path).unwrap()
+    };
+
+    assert_eq!(
+        build("a.archimate", Some("demo")),
+        build("b.archimate", Some("demo")),
+        "the same model built twice with the same seed differs"
+    );
+    // Random stays the default: deriving an id from a name would give the same
+    // id to two models that both contain "Payment API".
+    assert_ne!(build("c.archimate", None), build("d.archimate", None));
+}
+
 /// The layout's whole job, asserted end to end on a graph that admits a clean
 /// drawing: no bendpoints, no segment through a box, and no two segments
 /// crossing each other.

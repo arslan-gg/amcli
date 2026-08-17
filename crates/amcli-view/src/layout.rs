@@ -46,8 +46,11 @@ pub struct Item {
     pub h: i32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum Algorithm {
+    /// Layered, unless that degenerates — see [`MAX_ASPECT`].
+    #[default]
+    Auto,
     /// Rows by dependency, straight lines wherever they fit.
     Sugiyama,
     /// Sorted into a square grid. Never pretty, never fails.
@@ -57,12 +60,39 @@ pub enum Algorithm {
 impl Algorithm {
     pub fn parse(s: &str) -> Option<Algorithm> {
         Some(match s {
-            "sugiyama" | "auto" | "layered" => Algorithm::Sugiyama,
+            "auto" => Algorithm::Auto,
+            "sugiyama" | "layered" => Algorithm::Sugiyama,
             "grid" => Algorithm::Grid,
             _ => return None,
         })
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Algorithm::Auto => "auto",
+            Algorithm::Sugiyama => "layered",
+            Algorithm::Grid => "grid",
+        }
+    }
+
+    /// What a caller may pass, for the error that says they did not.
+    pub const NAMES: &'static str = "auto, layered (or sugiyama), grid";
 }
+
+/// How many times wider than tall a drawing may get before `auto` gives up on
+/// layering.
+///
+/// A wide, shallow graph — a hundred motivation elements two ranks deep — gives
+/// layering nothing to stack, so it puts them all in one row and the view comes
+/// out thousands of pixels wide and a few hundred tall. Nothing about that is
+/// incorrect; it simply cannot be read, printed or scrolled, and a grid of the
+/// same content can.
+///
+/// The test is deliberately one-sided. Tall and narrow is what a correctly
+/// layered dependency chain *looks* like, and it reads fine — you scroll down a
+/// diagram far more readily than across one. Treating "far from square" as the
+/// fault would throw away the layering on exactly the graphs it suits best.
+pub const MAX_WIDTH_RATIO: f64 = 4.0;
 
 /// Where everything goes, and how the long edges get there.
 #[derive(Clone, Debug, Default)]
@@ -72,13 +102,40 @@ pub struct Placement {
     /// Absolute waypoints for an edge, by its index in the input. Only edges
     /// that need routing appear here.
     pub routes: HashMap<usize, Vec<Pt>>,
+    /// Which algorithm actually ran. Under [`Algorithm::Auto`] this is what the
+    /// fallback chose, so a caller can say so rather than leaving the user to
+    /// wonder why the diagram looks like a grid.
+    pub algorithm: Algorithm,
 }
 
 pub fn place(items: &[Item], edges: &[(usize, usize)], algo: Algorithm) -> Placement {
     match algo {
-        Algorithm::Grid => Placement { rects: grid(items), routes: HashMap::new() },
+        Algorithm::Grid => grid_placement(items),
         Algorithm::Sugiyama => sugiyama(items, edges),
+        Algorithm::Auto => {
+            let layered = sugiyama(items, edges);
+            let ratio = wideness(&layered.rects);
+            if ratio <= MAX_WIDTH_RATIO {
+                return layered;
+            }
+            // Only swap if the grid is actually narrower: on a graph that is
+            // genuinely one long row of siblings it is not, and falling back
+            // would lose the layering for nothing.
+            let squared = grid_placement(items);
+            if wideness(&squared.rects) < ratio { squared } else { layered }
+        }
     }
+}
+
+fn grid_placement(items: &[Item]) -> Placement {
+    Placement { rects: grid(items), routes: HashMap::new(), algorithm: Algorithm::Grid }
+}
+
+/// Width of the bounding box over its height, so 1.0 is square and 10.0 is a
+/// letterbox.
+fn wideness(rects: &[Rect]) -> f64 {
+    let Some(bbox) = rects.iter().copied().reduce(|a, b| a.union(b)) else { return 1.0 };
+    bbox.w.max(1) as f64 / bbox.h.max(1) as f64
 }
 
 fn snap(v: i32) -> i32 {
@@ -208,7 +265,7 @@ fn sugiyama(items: &[Item], edges: &[(usize, usize)]) -> Placement {
     let g = build(items, edges, &ranks, &reversed.iter().copied().collect::<Vec<_>>());
     let rects = g.finish(items);
     let routes = g.routes(items, edges, &rects);
-    Placement { rects, routes }
+    Placement { rects, routes, algorithm: Algorithm::Sugiyama }
 }
 
 /// Squeeze out empty rows so a sparse ranking does not leave gaps.
@@ -804,6 +861,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The reported case: a wide, shallow graph. Layering has nothing to stack,
+    /// so it produces one enormous row; `auto` notices and lays out a grid
+    /// instead, and says which it used.
+    #[test]
+    fn auto_falls_back_to_grid_when_layering_degenerates() {
+        let it = items(60);
+        // Two ranks, sixty nodes: every edge goes from one of the first thirty
+        // to its partner in the second thirty.
+        let edges: Vec<(usize, usize)> = (0..30).map(|i| (i, i + 30)).collect();
+
+        let layered = place(&it, &edges, Algorithm::Sugiyama);
+        assert_eq!(layered.algorithm, Algorithm::Sugiyama, "explicit layered is never overridden");
+        assert!(
+            wideness(&layered.rects) > MAX_WIDTH_RATIO,
+            "the case only holds if layering degenerates"
+        );
+
+        let auto = place(&it, &edges, Algorithm::Auto);
+        assert_eq!(auto.algorithm, Algorithm::Grid, "auto swapped to the readable one");
+        assert!(wideness(&auto.rects) < wideness(&layered.rects));
+
+        // A deep chain is tall and narrow, which is what a layered drawing of a
+        // chain should be — the fallback must not touch it.
+        let deep: Vec<(usize, usize)> = (0..11).map(|i| (i, i + 1)).collect();
+        let tall = place(&items(12), &deep, Algorithm::Auto);
+        assert_eq!(tall.algorithm, Algorithm::Sugiyama, "a chain still gets layered");
     }
 
     #[test]

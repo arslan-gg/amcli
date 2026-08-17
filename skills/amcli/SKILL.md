@@ -92,12 +92,15 @@ Subjects are positional, never flags:
 ## Output and token economy
 
 The default output is tab-separated records, one per line — cheap to read and
-easy to `cut -f2`. Counts and hints go to stderr. Add `-F json` only when you
+easy to `cut -f2`. Counts, hints and a `# id<TAB>name<TAB>…` column header go to
+stderr, so read stderr to learn what the columns are. Add `-F json` only when you
 need nested structure, such as the relationship ids inside `get`.
 
     amcli query 'layer=Application' --count    # ask "how many" FIRST, always
     amcli search auth -l 10 --fields id,name   # project down
     amcli list --fields -documentation         # or drop a field
+
+`--count` and `--dry-run` never write, on any command.
 
 Never run an unfiltered `list` on an unfamiliar model. Run `amcli stats` first.
 
@@ -114,10 +117,22 @@ Filter expressions, quoted as one argument:
     amcli query 'prop:owner=team-a and not folder^=/Technology'
     amcli query 'layer=Application and deg>10'
     amcli query 'out:Access~Customer'    # everything that accesses something matching
+    amcli query 'kind=element and view=0'  # in the model but on no diagram
 
 Operators: `=` exact · `~` contains · `^=` prefix · `=~` regex · `!=` · `>` `<`
-on `deg`. Fields: `id name type layer folder doc deg view prop:KEY in:RelType
-out:RelType`.
+on `deg` and `view`. Fields: `id name type kind layer folder doc deg view
+prop:KEY in:RelType out:RelType`.
+
+Two of those are easy to get wrong:
+
+- `kind` is `element` or `relation`. Without it, filters like `layer!=none`
+  return relationships mixed in with elements, and relationships have no name.
+- `type` takes one ArchiMate type and accepts either spelling — `Triggering` and
+  `TriggeringRelationship` are the same thing. So does `-t`. A type that does not
+  exist is exit 2 with the model's own types listed, never an empty result.
+- `view` compares as a **number** against how many views a concept is drawn on
+  (`view=0`, `view>1`), and as a **name** otherwise (`view~"Payments"`). The
+  `views` column on every concept row is that same count.
 
 ## Exit codes — branch on these, do not parse messages
 
@@ -138,11 +153,15 @@ another search. On **4**, it lists candidates, each with a ready-to-paste
 
 ## Editing
 
+    amcli init "Model Name" -o model.archimate   # a new, empty model
     amcli element  add ApplicationComponent "Refund Service" --doc "…"
     amcli element  rename id:c40a19b7 "Refunds Service"
     amcli relation add Access "Refunds Service" "Refund Record" --access rw
     amcli prop set id:c40a19b7 owner team-payments
     amcli element  delete id:c40a19b7 -y
+
+Never hand-write the XML skeleton for a new model — `amcli init` writes it with
+the nine folders Archi expects.
 
 Every write is checked against the ArchiMate relationship matrix first and
 refused (exit 5) if the standard forbids it — and the refusal names what *is*
@@ -169,6 +188,13 @@ an earlier turn and are writing now:
 exists. `if_absent` makes the batch safe to re-run. If any line fails, nothing
 is written and the file is byte-identical.
 
+**If the model is regenerated from batches you keep in the repository**, pass the
+same `--id-seed` every time (or set `$AMCLI_ID_SEED`). Ids are then derived from
+what they name instead of drawn at random, so rebuilding an unchanged model
+produces an unchanged file and the diff shows only what you meant to change.
+Without a seed every rebuild reissues every id and the whole file appears to
+change. Use one seed per model and do not change it afterwards.
+
 ## Before you finish any edit
 
     amcli validate
@@ -180,10 +206,26 @@ mirrors — and never deletes anyone's modelling.
 
 ## Views and diagrams
 
-    amcli view list
-    amcli view auto "Refund Flow" --from "Refund Service" -n 2 --layout layered
-    amcli view render "Refund Flow" -o refund.svg
+    amcli view list                            # columns are named on stderr
+    amcli view auto "Refund Flow" --from "Refund Service" -n 2
+    amcli view add "Refund Flow" "Fraud Check" # drawn *and* wired to what is there
+    amcli view layout "Refund Flow" --relayout-all
+    amcli view rename "Refund Flow" "Refunds"
+    amcli view delete "Refunds"                # removes the drawing, no concept
+    amcli view render "Refunds" -o refund.svg
     amcli export mermaid                       # a quick inline diagram for chat
+
+A view name is unique: creating a second view with a name already in use is exit
+6. Pass `--replace` to overwrite the old one, which is what makes a
+regenerate-everything script re-runnable:
+
+    amcli view auto "Refund Flow" --from "Refund Service" --replace
+
+`--layout` takes `auto` (the default), `layered` or `grid`; `view layout` spells
+the same flag `--algorithm` and both commands accept both names. `auto` layers
+the graph unless that comes out absurdly wide — a hundred elements two ranks deep
+has nothing to stack — and then lays out a grid instead and says so. The row
+reports which algorithm actually ran.
 
 `view render` draws the geometry the model actually stores. `export mermaid`
 and `export dot` re-lay-out, so they are for a quick look, not for reproducing

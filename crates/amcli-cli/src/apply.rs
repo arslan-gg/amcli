@@ -75,7 +75,7 @@ pub fn run(opts: &Opts, m: &mut Model, file: Option<&str>) -> Result<Output, Cli
             s
         }
         Some(p) => std::fs::read_to_string(p)
-            .map_err(|e| CliError::new(Code::Io, "io", format!("{p}: {e}")))?,
+            .map_err(|e| CliError::new(Code::Io, "io", format!("`{p}`: {e}")))?,
     };
 
     let mut refs: HashMap<String, String> = HashMap::new();
@@ -147,6 +147,14 @@ fn apply_one(m: &mut Model, op: &Op, refs: &mut HashMap<String, String>) -> Resu
                     (c, true)
                 }
             };
+            // By key, not in `HashMap` order. A JSON object has no order to
+            // preserve, and `HashMap` iteration is randomised per process — so
+            // applying the same batch twice wrote the same properties in a
+            // different order, and a rebuild that changed nothing still produced
+            // a diff. Deterministic ids do not help if the lines around them
+            // move.
+            let mut props: Vec<(&String, &String)> = props.iter().collect();
+            props.sort();
             for (k, v) in props {
                 m.set_property(c, k, v)
                     .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;

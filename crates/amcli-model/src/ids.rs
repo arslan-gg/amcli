@@ -1,5 +1,7 @@
 //! Identifier generation, matching what Archi writes.
 
+use std::sync::OnceLock;
+
 /// A fresh id in Archi's own format: `UUIDFactory.java` produces
 /// `"id-" + UUID.randomUUID().toString().replace("-", "")`.
 ///
@@ -8,9 +10,13 @@
 /// integers (`650`) and dashed UUIDs, so nothing in amcli validates an id
 /// against this shape — only the generator uses it.
 pub fn new_id() -> String {
+    hex_id(random_bytes())
+}
+
+fn hex_id(bytes: [u8; 16]) -> String {
     let mut out = String::with_capacity(35);
     out.push_str("id-");
-    for byte in random_bytes() {
+    for byte in bytes {
         out.push(HEX[(byte >> 4) as usize] as char);
         out.push(HEX[(byte & 0xf) as usize] as char);
     }
@@ -18,6 +24,56 @@ pub fn new_id() -> String {
 }
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
+
+/// The seed that makes ids derived rather than random, set once per process.
+static SEED: OnceLock<Option<String>> = OnceLock::new();
+
+/// Switch id generation from random to derived-from-content.
+///
+/// Random is the right default: an id only has to be unique, and deriving one
+/// from a name means two models that both contain "Payment API" give it the
+/// same id — which is wrong the moment anyone merges them. But a batch-driven
+/// rebuild regenerates every id, so a model that is semantically unchanged
+/// produces a whole-file diff and there is nothing left to review. A seed buys
+/// that back for the workflow that needs it, without changing the default for
+/// the workflow that does not.
+///
+/// Calling this twice is a no-op after the first: the seed is process-wide
+/// because [`new_id`] is called from deep inside the edit layer, where
+/// threading a parameter through would touch every signature for a flag almost
+/// nobody sets.
+pub fn set_seed(seed: Option<String>) {
+    let _ = SEED.set(seed.filter(|s| !s.is_empty()));
+}
+
+/// True when ids are derived from content rather than drawn from the OS.
+pub fn is_seeded() -> bool {
+    SEED.get().is_some_and(Option::is_some)
+}
+
+/// An id determined entirely by the seed, what the thing is, and `attempt`.
+///
+/// `attempt` exists because deriving from content cannot promise uniqueness:
+/// two elements may legitimately share a type and a name. The caller walks it
+/// upwards until the id is free, which keeps the *first* of a set of twins on
+/// the id it had last time — the property that makes the diff small.
+pub fn derived_id(parts: &[&str], attempt: u32) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    // A separator that cannot occur in the parts, so ["ab", "c"] and ["a",
+    // "bc"] cannot hash the same.
+    h.update(SEED.get().and_then(Option::as_deref).unwrap_or_default().as_bytes());
+    for p in parts {
+        h.update([0u8]);
+        h.update(p.as_bytes());
+    }
+    h.update([0u8]);
+    h.update(attempt.to_be_bytes());
+    let digest = h.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    hex_id(bytes)
+}
 
 /// 16 random bytes from the OS.
 ///
@@ -85,6 +141,25 @@ mod tests {
         assert_eq!(id.len(), 35, "`id-` plus 32 hex characters");
         assert!(id.starts_with("id-"));
         assert!(id[3..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn a_derived_id_looks_like_an_archi_id_and_depends_on_every_part() {
+        let id = derived_id(&["element", "archimate:BusinessActor", "Payment API"], 0);
+        assert_eq!(id.len(), 35);
+        assert!(id.starts_with("id-"));
+        assert!(id[3..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+
+        // Same input, same id: that is the whole point.
+        assert_eq!(id, derived_id(&["element", "archimate:BusinessActor", "Payment API"], 0));
+        // A different type, a different name or a different attempt is a
+        // different id.
+        assert_ne!(id, derived_id(&["element", "archimate:BusinessRole", "Payment API"], 0));
+        assert_ne!(id, derived_id(&["element", "archimate:BusinessActor", "Payment APIs"], 0));
+        assert_ne!(id, derived_id(&["element", "archimate:BusinessActor", "Payment API"], 1));
+        // And the parts cannot be run together: ["ab","c"] must not equal
+        // ["a","bc"].
+        assert_ne!(derived_id(&["ab", "c"], 0), derived_id(&["a", "bc"], 0));
     }
 
     #[test]

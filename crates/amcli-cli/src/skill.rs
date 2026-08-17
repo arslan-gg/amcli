@@ -133,7 +133,7 @@ fn claude_link(project: bool) -> Result<PathBuf, CliError> {
 fn install(project: bool, force: bool, copy: bool) -> Result<Output, CliError> {
     let root = target(project)?;
     let io = |e: std::io::Error, p: &Path| {
-        CliError::new(Code::Io, "io", format!("{}: {e}", p.display()))
+        CliError::new(Code::Io, "io", format!("`{}`: {e}", p.display()))
     };
 
     if !force && !project && managed_by_skills_cli() {
@@ -248,7 +248,7 @@ fn uninstall(project: bool) -> Result<Output, CliError> {
     }
     if root.exists() {
         std::fs::remove_dir_all(&root)
-            .map_err(|e| CliError::new(Code::Io, "io", format!("{}: {e}", root.display())))?;
+            .map_err(|e| CliError::new(Code::Io, "io", format!("`{}`: {e}", root.display())))?;
         removed.push(root.display().to_string());
     }
     if removed.is_empty() {

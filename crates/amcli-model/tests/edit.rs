@@ -195,6 +195,45 @@ fn a_junction_left_with_one_connection_is_flagged_not_removed() {
     assert!(m.concept_by_id(&m.concept(j).id.clone()).is_some());
 }
 
+/// Deleting a view takes the drawing and nothing else — but a box on *another*
+/// view standing for this one has to go too, or `model="…"` points at nothing
+/// and Archi refuses to open the file.
+#[test]
+fn deleting_a_view_takes_its_drawing_and_any_reference_to_it() {
+    let mut m = open("testDeleteHandler.archimate");
+    let concepts_before = m.concepts().count();
+
+    let v = m.view_by_id("12917bec").expect("the fixture's second view");
+    let refs = m.view_references(v);
+    assert_eq!(refs.len(), 1, "one view draws a reference to this one");
+    assert_eq!(refs[0].1, "99a52921");
+
+    let plan = m.delete_view(v).unwrap();
+    assert!(plan.diagram_objects.len() > 1, "the objects on it are reported: {plan:?}");
+
+    let after = text(&m);
+    assert!(!after.contains("12917bec"), "the view survived");
+    assert!(!after.contains("99a52921"), "the reference box survived and now dangles");
+    assert!(m.view_by_id("12917bec").is_none());
+
+    // A view is a drawing of the model, not part of it.
+    assert_eq!(m.concepts().count(), concepts_before, "no concept was touched");
+
+    // And the file still parses as a model.
+    Model::from_bytes(after.into_bytes(), "x.archimate").unwrap();
+}
+
+#[test]
+fn renaming_a_view_changes_one_attribute_and_nothing_else() {
+    let mut m = open("testmodel1.archimate");
+    let before = text(&m);
+    let v = m.view_by_id("17cdf396").unwrap();
+
+    m.rename_view(v, "Renamed View");
+    assert_eq!(m.view(v).name, "Renamed View");
+    assert_eq!(text(&m), before.replace(r#"name="0 Blank View""#, r#"name="Renamed View""#));
+}
+
 #[test]
 fn documentation_and_properties_round_trip_through_edits() {
     let mut m = open("testmodel1.archimate");

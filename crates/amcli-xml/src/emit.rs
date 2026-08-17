@@ -193,7 +193,12 @@ fn escape_text(s: &str) -> String {
     out
 }
 
-fn escape_attr(s: &str) -> String {
+/// Escape a string for use inside a double-quoted attribute value.
+///
+/// Public because anything that writes an Archi file from scratch has to escape
+/// exactly the way this emitter does; a second copy of these rules elsewhere is
+/// a file that Archi mis-reads waiting to happen.
+pub fn escape_attr(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
