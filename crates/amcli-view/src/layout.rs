@@ -5,13 +5,18 @@
 //! *within* a layer, so ranking by layer puts them all in one row and turns each
 //! into a horizontal line slicing through whatever sits between its ends.
 //!
-//! Three things do the work.
+//! Four things do the work.
 //!
 //! **Tight ranking.** Longest-path layering alone shoves every node as high as
 //! it can go, which stretches edges for no reason — a node whose only successor
 //! is four rows down gets dragged to the top. Each node is then pulled back down
 //! to sit directly above its earliest successor, so most edges span exactly one
 //! row.
+//!
+//! **Folding a rank that will not fit.** A hundred motivation elements two
+//! ranks deep give layering nothing to stack, and the rank runs off the side of
+//! any screen. Such a rank is folded onto several lines, which keeps the
+//! ranking that a fallback to a grid would throw away.
 //!
 //! **Lanes, not bends.** An edge crossing several rows reserves a corridor in
 //! each one, which keeps other boxes out of its way.
@@ -48,7 +53,7 @@ pub struct Item {
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum Algorithm {
-    /// Layered, unless that degenerates — see [`MAX_ASPECT`].
+    /// Layered, unless that degenerates — see [`MAX_WIDTH_RATIO`].
     #[default]
     Auto,
     /// Rows by dependency, straight lines wherever they fit.
@@ -79,14 +84,17 @@ impl Algorithm {
     pub const NAMES: &'static str = "auto, layered (or sugiyama), grid";
 }
 
-/// How many times wider than tall a drawing may get before `auto` gives up on
-/// layering.
+/// How many times wider than tall a drawing may get before it is judged
+/// unreadable.
 ///
 /// A wide, shallow graph — a hundred motivation elements two ranks deep — gives
-/// layering nothing to stack, so it puts them all in one row and the view comes
-/// out thousands of pixels wide and a few hundred tall. Nothing about that is
-/// incorrect; it simply cannot be read, printed or scrolled, and a grid of the
-/// same content can.
+/// layering nothing to stack, so left to itself it puts them all in one row and
+/// the view comes out thousands of pixels wide and a few hundred tall. Nothing
+/// about that is incorrect; it simply cannot be read, printed or scrolled.
+///
+/// This bound is used twice: the layering folds an over-wide rank so the
+/// drawing stays inside it, and `auto` checks it afterwards in case a rank
+/// could not be folded.
 ///
 /// The test is deliberately one-sided. Tall and narrow is what a correctly
 /// layered dependency chain *looks* like, and it reads fine — you scroll down a
@@ -118,6 +126,9 @@ pub fn place(items: &[Item], edges: &[(usize, usize)], algo: Algorithm) -> Place
             if ratio <= MAX_WIDTH_RATIO {
                 return layered;
             }
+            // Folding wide rows normally keeps layering inside the bound on its
+            // own, so reaching here means a row could not be folded — it was
+            // holding a corridor for an edge passing through.
             // Only swap if the grid is actually narrower: on a graph that is
             // genuinely one long row of siblings it is not, and falling back
             // would lose the layering for nothing.
@@ -140,6 +151,67 @@ fn wideness(rects: &[Rect]) -> f64 {
 
 fn snap(v: i32) -> i32 {
     (v as f64 / GRID as f64).round() as i32 * GRID
+}
+
+/// How wide a row runs once its slots are laid end to end.
+fn row_width(row: &[Slot], width: &HashMap<Slot, i32>) -> i32 {
+    row.iter().map(|s| width[s] + HGAP).sum::<i32>().saturating_sub(HGAP).max(0)
+}
+
+/// The drawing a set of rows would come out as, before any of it is placed.
+///
+/// Height is counted exactly as [`Layered::assign_y`] will count it, so the
+/// ratio the fold is judged against is the one the drawing actually gets.
+fn extent(
+    rows: &[Vec<Slot>],
+    width: &HashMap<Slot, i32>,
+    height: &HashMap<Slot, i32>,
+) -> (i32, i32) {
+    let w = rows.iter().map(|r| row_width(r, width)).max().unwrap_or(0);
+    let mut h = 0;
+    for (i, row) in rows.iter().enumerate() {
+        h += row.iter().map(|s| height[s]).max().unwrap_or(55).max(55);
+        if i + 1 < rows.len() {
+            h += VGAP;
+        }
+    }
+    (w, h)
+}
+
+/// Break rows wider than `budget` into lines, leaving the rest untouched.
+///
+/// Returns the new rows, and the indices of those that are lines of a folded
+/// rank rather than ranks in their own right.
+///
+/// A row holding a dummy is never broken. That dummy is one row of a corridor
+/// reserved for an edge passing through, and [`Layered::routes`] reads the
+/// corridor off one row per rank; splitting the row would leave the edge with
+/// two lanes at the same rank and nothing to say which it runs down.
+fn fold_rows(
+    rows: &[Vec<Slot>],
+    budget: i32,
+    width: &HashMap<Slot, i32>,
+) -> (Vec<Vec<Slot>>, HashSet<usize>) {
+    let mut out: Vec<Vec<Slot>> = Vec::with_capacity(rows.len());
+    let mut folded: HashSet<usize> = HashSet::new();
+    for row in rows {
+        let holds_a_corridor = row.iter().any(|s| matches!(s, Slot::Dummy(..)));
+        if row.len() < 2 || holds_a_corridor || row_width(row, width) <= budget {
+            out.push(row.clone());
+            continue;
+        }
+        // Take the number of lines first and the share per line from it, so the
+        // fold comes out balanced. Filling each line to the budget instead
+        // would leave the last one holding a single box.
+        let budget = budget.max(1);
+        let lines = ((row_width(row, width) + budget - 1) / budget) as usize;
+        let per = row.len().div_ceil(lines.max(1)).max(1);
+        for chunk in row.chunks(per) {
+            folded.insert(out.len());
+            out.push(chunk.to_vec());
+        }
+    }
+    (out, folded)
 }
 
 fn grid(items: &[Item]) -> Vec<Rect> {
@@ -297,6 +369,9 @@ struct Layered {
     links: Vec<(Slot, Slot)>,
     x: HashMap<Slot, i32>,
     y: Vec<i32>,
+    /// Rows that are lines of a folded rank rather than ranks in their own
+    /// right. See [`Self::assign_x`] for why they are held still.
+    folded: HashSet<usize>,
 }
 
 fn build(items: &[Item], edges: &[(usize, usize)], ranks: &[usize], reversed: &[usize]) -> Layered {
@@ -342,8 +417,19 @@ fn build(items: &[Item], edges: &[(usize, usize)], ranks: &[usize], reversed: &[
         links.push((prev, to));
     }
 
-    let mut g = Layered { rows, width, height, links, x: HashMap::new(), y: Vec::new() };
+    let mut g = Layered {
+        rows,
+        width,
+        height,
+        links,
+        x: HashMap::new(),
+        y: Vec::new(),
+        folded: HashSet::new(),
+    };
     g.order(items);
+    // After ordering, so a fold inherits the sequence that crossed least, and
+    // before placement, so the folded lines are packed like any other row.
+    g.fold_to_fit();
     g.assign_x(items);
     g.assign_y();
     g
@@ -461,6 +547,43 @@ impl Layered {
         total
     }
 
+    /// Fold over-wide rows until the drawing fits [`MAX_WIDTH_RATIO`].
+    ///
+    /// A rank of a hundred siblings is not wrong, it is just unreadable:
+    /// nothing stacks, so the row runs off the side of any screen or page. The
+    /// fold keeps the ranking — every line of a folded row still sits above the
+    /// rank below it — where falling back to a grid throws the ranking away and
+    /// sorts the whole diagram by name instead.
+    ///
+    /// The bound is on the drawing rather than on any one row, and a fold moves
+    /// both terms at once: it narrows the drawing and makes it taller. So the
+    /// two are searched together, fewest lines first, and the first fold that
+    /// fits wins. That is what leaves an ordinary diagram alone — five boxes
+    /// over two ranks are already well inside the bound, so the search stops
+    /// before folding anything.
+    ///
+    /// If no fold fits, the rows are left as they were. Only a row pinned by a
+    /// corridor can get there, and an unfoldable row is exactly what `auto`'s
+    /// fallback to a grid is still holding for.
+    fn fold_to_fit(&mut self) {
+        let (w, h) = extent(&self.rows, &self.width, &self.height);
+        if w as f64 <= h as f64 * MAX_WIDTH_RATIO {
+            return;
+        }
+        let widest = self.rows.iter().map(|r| row_width(r, &self.width)).max().unwrap_or(0);
+        let most = self.rows.iter().map(Vec::len).max().unwrap_or(1);
+        for lines in 2..=most {
+            let budget = (widest + lines as i32 - 1) / lines as i32;
+            let (rows, folded) = fold_rows(&self.rows, budget, &self.width);
+            let (w, h) = extent(&rows, &self.width, &self.height);
+            if w as f64 <= h as f64 * MAX_WIDTH_RATIO {
+                self.rows = rows;
+                self.folded = folded;
+                return;
+            }
+        }
+    }
+
     /// Place each slot near the median of what it connects to, then push apart.
     ///
     /// Aligning a node with its neighbours is what makes an edge vertical
@@ -483,6 +606,20 @@ impl Layered {
                     (0..self.rows.len().saturating_sub(1)).rev().collect()
                 };
                 for r in sequence {
+                    // A folded line is held where the first pass left it, so
+                    // the lines of one rank stay stacked as a block.
+                    //
+                    // Letting them sweep runs away instead: the lines of a fold
+                    // have no links to each other, so a line takes its position
+                    // from the rank below, packs its slots rightward from that
+                    // one spot, and the rank below then recentres on where they
+                    // landed — which is to the right of where it was. Each
+                    // sweep repeats the shove and the fan walks off the page.
+                    // Held still, the block is what the neighbouring rank
+                    // centres itself on, which is the way round that settles.
+                    if self.folded.contains(&r) {
+                        continue;
+                    }
                     let other = if down { r - 1 } else { r + 1 };
                     let want: Vec<(Slot, i32)> = self.rows[r]
                         .iter()
@@ -598,12 +735,43 @@ impl Layered {
     ) -> HashMap<usize, Vec<Pt>> {
         // Where each long edge's corridor runs, kept aside until we know
         // whether it is needed.
-        let mut lanes: HashMap<usize, Vec<(usize, Pt)>> = HashMap::new();
+        //
+        // A corridor is entered above the row it crosses and left below it,
+        // rather than being marked with a single point at the row's middle.
+        // One point leaves the edge approaching it diagonally from the source,
+        // and that diagonal is drawn across the row it was supposed to bypass —
+        // on a crowded rank it clips the corner of whatever it passes, so the
+        // lane stays clear and the edge goes through a box anyway. Bracketing
+        // the row keeps the run *through* the rank vertical and inside the
+        // lane, and leaves the diagonals in the gaps between rows, where by
+        // construction there is nothing to hit.
+        // Row heights, counted as `assign_y` counted them, and which row each
+        // item landed in — a corridor is bracketed against its row's band
+        // rather than against any one box in it, so a row holding a tall box
+        // brackets every lane in it the same way.
+        let row_h: Vec<i32> = self
+            .rows
+            .iter()
+            .map(|row| row.iter().map(|s| self.height[s]).max().unwrap_or(55).max(55))
+            .collect();
+        let mut row_of: HashMap<usize, usize> = HashMap::new();
         for (r, row) in self.rows.iter().enumerate() {
             for s in row {
+                if let Slot::Item(i) = s {
+                    row_of.insert(*i, r);
+                }
+            }
+        }
+
+        let mut lanes: HashMap<usize, Vec<(usize, Pt, Pt)>> = HashMap::new();
+        for (r, row) in self.rows.iter().enumerate() {
+            let h = row_h[r];
+            for s in row {
                 let Slot::Dummy(ei, seg) = s else { continue };
-                let p = Pt { x: self.x[s] + DUMMY_W / 2, y: self.y[r] + 27 };
-                lanes.entry(*ei).or_default().push((*seg, p));
+                let x = self.x[s] + DUMMY_W / 2;
+                let enter = Pt { x, y: self.y[r] - VGAP / 2 };
+                let leave = Pt { x, y: self.y[r] + h + VGAP / 2 };
+                lanes.entry(*ei).or_default().push((*seg, enter, leave));
             }
         }
 
@@ -639,9 +807,52 @@ impl Layered {
             }
 
             let Some(lane) = lanes.get(&ei) else { continue };
-            let mut pts: Vec<(usize, Pt)> = lane.clone();
-            pts.sort_by_key(|(seg, _)| *seg);
-            let mut pts: Vec<Pt> = pts.into_iter().map(|(_, p)| p).collect();
+            let mut lane: Vec<(usize, Pt, Pt)> = lane.clone();
+            lane.sort_by_key(|(seg, _, _)| *seg);
+
+            // Leave the upper box straight down and come into the lower one
+            // straight from above, so that both ends clear their own rank the
+            // way the corridor clears the ranks between. Coming out of a centre
+            // at whatever angle the first corridor happens to sit at is the
+            // same mistake as the single mid-row waypoint, moved to the ends:
+            // the diagonal crosses the row the box itself is in and clips its
+            // neighbours.
+            let (upper, lower) = if ra.y <= rb.y { (*a, *b) } else { (*b, *a) };
+            let (ur, lr) = (row_of[&upper], row_of[&lower]);
+            let mut pts = vec![Pt {
+                x: rects[upper].x + rects[upper].w / 2,
+                y: self.y[ur] + row_h[ur] + VGAP / 2,
+            }];
+            // Where one row's corridor runs down the same column as the next,
+            // leaving that row and entering the following one are the same
+            // point, and the edge should carry one bend there rather than two.
+            for (_, enter, leave) in lane {
+                if pts.last() != Some(&enter) {
+                    pts.push(enter);
+                }
+                pts.push(leave);
+            }
+            pts.push(Pt { x: rects[lower].x + rects[lower].w / 2, y: self.y[lr] - VGAP / 2 });
+
+            // Every leg of that route is either vertical inside a reserved
+            // column or horizontal along a gap between rows, so it is clear —
+            // but it is also more bends than most edges need. Drop each one
+            // that the drawing does not actually depend on, earliest first, so
+            // an edge keeps only the kinks that are holding it off a box.
+            let ends = (rects[*a].center(), rects[*b].center());
+            let mut i = 0;
+            while i < pts.len() {
+                let trial: Vec<Pt> = std::iter::once(ends.0)
+                    .chain(pts.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, p)| *p))
+                    .chain(std::iter::once(ends.1))
+                    .collect();
+                if path_is_clear(&trial, rects, *a, *b) {
+                    pts.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+
             // The chain was built from the upper end downwards; an edge drawn
             // upward needs it the other way round.
             if ra.y > rb.y {
@@ -657,21 +868,24 @@ impl Layered {
     }
 }
 
-/// Does the line between two boxes' centres pass through any other box?
-fn straight_is_clear(from: Rect, to: Rect, all: &[Rect], a: usize, b: usize) -> bool {
-    let p = from.center();
-    let q = to.center();
+/// Does a drawn line pass through any box other than the two it joins?
+fn path_is_clear(path: &[Pt], all: &[Rect], a: usize, b: usize) -> bool {
     for (i, other) in all.iter().enumerate() {
         if i == a || i == b || other.w == 0 {
             continue;
         }
         // A small inset, so an edge grazing a corner is not counted as a hit.
         let box_ = Rect { x: other.x + 2, y: other.y + 2, w: other.w - 4, h: other.h - 4 };
-        if segment_hits(p, q, box_) {
+        if path.windows(2).any(|s| segment_hits(s[0], s[1], box_)) {
             return false;
         }
     }
     true
+}
+
+/// Does the line between two boxes' centres pass through any other box?
+fn straight_is_clear(from: Rect, to: Rect, all: &[Rect], a: usize, b: usize) -> bool {
+    path_is_clear(&[from.center(), to.center()], all, a, b)
 }
 
 fn segment_hits(p: Pt, q: Pt, b: Rect) -> bool {
@@ -780,18 +994,54 @@ mod tests {
         }
     }
 
+    /// The whole polyline an edge is drawn as: one centre, any waypoints, the
+    /// other centre.
+    fn drawn_path(p: &Placement, edges: &[(usize, usize)], ei: usize) -> Vec<Pt> {
+        let (a, b) = edges[ei];
+        let mut path = vec![p.rects[a].center()];
+        path.extend(p.routes.get(&ei).into_iter().flatten().copied());
+        path.push(p.rects[b].center());
+        path
+    }
+
+    /// A long edge skips a rank, so by construction something shares that rank.
+    /// Whether the corridor clears the line by moving the box aside or the edge
+    /// bends around it is the layout's business; what it may never do is cross
+    /// it.
     #[test]
-    fn a_long_edge_is_routed_rather_than_drawn_over_a_box() {
-        // 0 -> 1 -> 2 with an extra 0 -> 2 that must skip a rank.
+    fn a_long_edge_never_crosses_the_rank_it_skips() {
+        // 0 -> 1 -> 2 with an extra 0 -> 2 that skips a rank. The lane pushes
+        // box 1 aside, so the edge comes out straight — and a straight line
+        // that misses beats a bend that also misses.
         let it = items(3);
         let edges = vec![(0, 1), (1, 2), (0, 2)];
         let p = place(&it, &edges, Algorithm::Sugiyama);
+        let path = drawn_path(&p, &edges, 2);
+        assert!(
+            !path.windows(2).any(|s| segment_hits(s[0], s[1], p.rects[1])),
+            "the skipping edge crosses box 1: {path:?} vs {:?}",
+            p.rects[1]
+        );
 
-        let long = p.routes.get(&2).expect("the skipping edge gets waypoints");
-        assert!(!long.is_empty());
-        // The waypoint sits beside the box it passes, not on top of it.
-        for w in long {
-            assert!(!p.rects[1].contains(*w), "waypoint {w:?} is inside box 1");
+        // Crowd the middle rank and there is nowhere to move aside to, so the
+        // edge has to bend instead — and the bends have to miss as well.
+        let it = items(8);
+        let mut edges = vec![(0, 1), (1, 7), (0, 7)];
+        for i in 2..7 {
+            edges.push((0, i));
+            edges.push((i, 7));
+        }
+        let p = place(&it, &edges, Algorithm::Sugiyama);
+        assert!(!p.routes[&2].is_empty(), "a crowded rank leaves the long edge no straight line");
+        let path = drawn_path(&p, &edges, 2);
+        for (k, other) in p.rects.iter().enumerate() {
+            if k == 0 || k == 7 {
+                continue;
+            }
+            assert!(
+                !path.windows(2).any(|s| segment_hits(s[0], s[1], *other)),
+                "the routed edge crosses box {k}: {path:?} vs {other:?}"
+            );
         }
     }
 
@@ -864,31 +1114,105 @@ mod tests {
     }
 
     /// The reported case: a wide, shallow graph. Layering has nothing to stack,
-    /// so it produces one enormous row; `auto` notices and lays out a grid
-    /// instead, and says which it used.
+    /// so the rank would be one enormous row — it gets folded onto several
+    /// lines instead, and the drawing stays readable without giving up the
+    /// ranking.
     #[test]
-    fn auto_falls_back_to_grid_when_layering_degenerates() {
+    fn a_wide_rank_is_folded_rather_than_drawn_off_the_page() {
         let it = items(60);
         // Two ranks, sixty nodes: every edge goes from one of the first thirty
         // to its partner in the second thirty.
         let edges: Vec<(usize, usize)> = (0..30).map(|i| (i, i + 30)).collect();
 
         let layered = place(&it, &edges, Algorithm::Sugiyama);
-        assert_eq!(layered.algorithm, Algorithm::Sugiyama, "explicit layered is never overridden");
+        assert_eq!(layered.algorithm, Algorithm::Sugiyama);
         assert!(
-            wideness(&layered.rects) > MAX_WIDTH_RATIO,
-            "the case only holds if layering degenerates"
+            wideness(&layered.rects) <= MAX_WIDTH_RATIO,
+            "the fold should have brought it inside the bound, got {:?}",
+            wideness(&layered.rects)
         );
 
-        let auto = place(&it, &edges, Algorithm::Auto);
-        assert_eq!(auto.algorithm, Algorithm::Grid, "auto swapped to the readable one");
-        assert!(wideness(&auto.rects) < wideness(&layered.rects));
+        // The fold must not cost the ranking: every source still sits above
+        // every target, which is the whole reason not to fall back to a grid.
+        let lowest_source = (0..30).map(|i| layered.rects[i].y).max().unwrap();
+        let highest_target = (30..60).map(|i| layered.rects[i].y).min().unwrap();
+        assert!(lowest_source < highest_target, "the fold broke the ranking");
+
+        // And it beats the grid it used to fall back to.
+        let squared = place(&it, &edges, Algorithm::Grid);
+        assert!(wideness(&layered.rects) < wideness(&squared.rects) * 2.0);
+
+        // `auto` now keeps the layering, because there is nothing left to
+        // rescue it from.
+        assert_eq!(place(&it, &edges, Algorithm::Auto).algorithm, Algorithm::Sugiyama);
 
         // A deep chain is tall and narrow, which is what a layered drawing of a
-        // chain should be — the fallback must not touch it.
+        // chain should be — neither the fold nor the fallback may touch it.
         let deep: Vec<(usize, usize)> = (0..11).map(|i| (i, i + 1)).collect();
         let tall = place(&items(12), &deep, Algorithm::Auto);
         assert_eq!(tall.algorithm, Algorithm::Sugiyama, "a chain still gets layered");
+        assert_eq!(tall.rects.len(), 12);
+        let rows: HashSet<i32> = tall.rects.iter().map(|r| r.y).collect();
+        assert_eq!(rows.len(), 12, "a chain is one node per row, unfolded");
+    }
+
+    /// The fold is bounded by width, so it must not fire on a row that fits —
+    /// otherwise every ordinary diagram would start stacking for no reason.
+    #[test]
+    fn a_row_that_fits_is_left_alone() {
+        let it = items(8);
+        let edges: Vec<(usize, usize)> = (0..4).map(|i| (i, i + 4)).collect();
+        let p = place(&it, &edges, Algorithm::Sugiyama);
+        let rows: HashSet<i32> = p.rects.iter().map(|r| r.y).collect();
+        assert_eq!(rows.len(), 2, "eight boxes in two ranks stay in two rows");
+    }
+
+    /// The invariant behind every routing decision, over a spread of shapes
+    /// rather than one hand-picked graph.
+    ///
+    /// A single case is easy to satisfy by accident — the first attempt at this
+    /// bracketed the crossed rank and fixed the reported drawing while still
+    /// cutting a corner off a box on a hundred and thirty-six others, because
+    /// the legs into the source and out of the target cross their own ranks
+    /// too. The sweep is what caught that.
+    #[test]
+    fn no_routed_edge_is_drawn_through_a_box() {
+        // A fixed sequence, so a failure here is reproducible rather than
+        // something that shows up one run in ten.
+        let mut seed = 12345u64;
+        let mut rnd = |m: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize % m.max(1)
+        };
+
+        let mut routed = 0;
+        for trial in 0..400 {
+            let n = 4 + trial % 20;
+            let mut edges: Vec<(usize, usize)> = Vec::new();
+            for _ in 0..(n + trial % 12) {
+                let (a, b) = (rnd(n), rnd(n));
+                if a != b {
+                    edges.push((a, b));
+                }
+            }
+            if edges.is_empty() {
+                continue;
+            }
+
+            let p = place(&items(n), &edges, Algorithm::Sugiyama);
+            for (ei, (a, b)) in edges.iter().enumerate() {
+                if !p.routes.contains_key(&ei) {
+                    continue;
+                }
+                routed += 1;
+                let path = drawn_path(&p, &edges, ei);
+                assert!(
+                    path_is_clear(&path, &p.rects, *a, *b),
+                    "trial {trial}: edge {ei} ({a} -> {b}) is drawn through a box: {path:?}"
+                );
+            }
+        }
+        assert!(routed > 500, "only {routed} edges needed routing; the sweep proves little");
     }
 
     #[test]
