@@ -293,24 +293,41 @@ fn extent(rows: &[Vec<Slot>], width: &HashMap<Slot, i32>, pitch: i32) -> (i32, i
     (w, h)
 }
 
+/// What a fold produces: the rows, which folded rank each is a line of, and
+/// where each box of a folded rank stood before.
+struct Folded {
+    rows: Vec<Vec<Slot>>,
+    fold_of: Vec<Option<usize>>,
+    proj: HashMap<Slot, f64>,
+}
+
 /// Break rows wider than `budget` into lines, leaving the rest untouched.
 ///
-/// Returns the new rows, and the indices of those that are lines of a folded
-/// rank rather than ranks in their own right.
+/// The lines nest. The first keeps the row's two ends and the last gets its
+/// middle, so seen from above the lines still read in the row's order, with
+/// the inner lines' boxes standing between the outer lines' — that order was
+/// chosen to keep edges from crossing, and it is kept. It is also what
+/// keeps the drawing clean: an edge from above to a box on an inner line
+/// crosses the outer lines where that box would have stood, which is between
+/// the outer boxes and not through them, and the corridors of all the inner
+/// boxes lie together in one block that the outer boxes flank. Cut the row
+/// into consecutive chunks instead and every inner box's corridor lands
+/// among the outer boxes wherever the interpolation puts it; a fan of
+/// thirteen was folded into two lines of six and seven with the far six
+/// scattered across the near seven, and half their lines went through a
+/// box.
 ///
 /// This runs before any corridor exists, so every row is free to fold; the
 /// corridors are laid afterwards, by row, and thread through the lines like
 /// any other row.
-fn fold_rows(
-    rows: &[Vec<Slot>],
-    budget: i32,
-    width: &HashMap<Slot, i32>,
-) -> (Vec<Vec<Slot>>, HashSet<usize>) {
+fn fold_rows(rows: &[Vec<Slot>], budget: i32, width: &HashMap<Slot, i32>) -> Folded {
     let mut out: Vec<Vec<Slot>> = Vec::with_capacity(rows.len());
-    let mut folded: HashSet<usize> = HashSet::new();
-    for row in rows {
+    let mut fold_of: Vec<Option<usize>> = Vec::with_capacity(rows.len());
+    let mut proj: HashMap<Slot, f64> = HashMap::new();
+    for (rank, row) in rows.iter().enumerate() {
         if row.len() < 2 || row_width(row, width) <= budget {
             out.push(row.clone());
+            fold_of.push(None);
             continue;
         }
         // Take the number of lines first and the share per line from it, so the
@@ -319,12 +336,26 @@ fn fold_rows(
         let budget = budget.max(1);
         let lines = ((row_width(row, width) + budget - 1) / budget) as usize;
         let per = row.len().div_ceil(lines.max(1)).max(1);
-        for chunk in row.chunks(per) {
-            folded.insert(out.len());
-            out.push(chunk.to_vec());
+        let n = row.len() as f64;
+        for (i, s) in row.iter().enumerate() {
+            proj.insert(*s, (i as f64 + 0.5) / n);
         }
+        // Peel `per` off the two ends for each outer line; what is left in
+        // the middle is the innermost.
+        let mut rest: &[Slot] = row;
+        while rest.len() > per {
+            let left = per.div_ceil(2);
+            let right = per - left;
+            let mut line = rest[..left].to_vec();
+            line.extend_from_slice(&rest[rest.len() - right..]);
+            out.push(line);
+            fold_of.push(Some(rank));
+            rest = &rest[left..rest.len() - right];
+        }
+        out.push(rest.to_vec());
+        fold_of.push(Some(rank));
     }
-    (out, folded)
+    Folded { rows: out, fold_of, proj }
 }
 
 fn grid(items: &[Item]) -> Vec<Rect> {
@@ -836,12 +867,218 @@ fn components(n: usize, edges: &[(usize, usize)]) -> Vec<Vec<usize>> {
 
 /// One connected component, laid out. `min_pitch` is the row height the
 /// whole drawing uses, so components packed side by side share it.
+///
+/// Several layerings are tried and the least tangled drawing is kept. The
+/// first follows the arrows: every edge points down, ranks by network
+/// simplex. The others ignore direction and grow rings out from a hub —
+/// see [`radial_layers`] — which is what makes a hub's fan sit on both
+/// sides of it, a chain lie along one row, and two hubs sharing a crowd
+/// take opposite sides of it, none of which a drawing that must point every
+/// arrow down can do. Direction is a reading aid; a line through a box or
+/// across another line is a reading obstacle, so the obstacle count decides
+/// and the arrows are kept only when they cost nothing. On a tie the drawing
+/// with fewer long edges wins, then the smaller one, then the directed one.
 fn sugiyama_connected(items: &[Item], edges: &[(usize, usize)], min_pitch: i32) -> Placement {
-    let (raw_rank, reversed) = rank_by_dependency(items.len(), edges);
-    let ranks = compact(&raw_rank);
-    let g = build(items, edges, &ranks, &reversed.iter().copied().collect::<Vec<_>>(), min_pitch);
-    let rects = g.finish(items);
-    Placement { rects, algorithm: Algorithm::Sugiyama }
+    let n = items.len();
+    let (raw_rank, _) = rank_by_dependency(n, edges);
+    let mut candidates: Vec<Vec<usize>> = vec![compact(&raw_rank)];
+    for root in radial_roots(items, edges) {
+        let layers = compact(&radial_layers(items, edges, root));
+        if !candidates.contains(&layers) {
+            candidates.push(layers);
+        }
+    }
+
+    let mut best: Option<(Placement, (usize, usize, i64))> = None;
+    for layers in &candidates {
+        let g = build(items, edges, layers, min_pitch);
+        let rects = g.finish(items);
+        let p = Placement { rects, algorithm: Algorithm::Sugiyama };
+        let long = g.rows.iter().flatten().filter(|s| matches!(s, Slot::Dummy(..))).count();
+        let bbox = p.rects.iter().copied().reduce(|a, b| a.union(b)).unwrap_or_default();
+        let score = (tangles(&p, edges), long, bbox.w as i64 * bbox.h as i64);
+        if best.as_ref().is_none_or(|(_, s)| score < *s) {
+            best = Some((p, score));
+        }
+    }
+    best.map(|(p, _)| p).unwrap_or_default()
+}
+
+/// The hubs worth growing rings from: the three of highest degree, ties by
+/// name and id so the choice is the graph's and not the input order's.
+fn radial_roots(items: &[Item], edges: &[(usize, usize)]) -> Vec<usize> {
+    let mut degree = vec![0usize; items.len()];
+    for (a, b) in edges {
+        if a != b {
+            degree[*a] += 1;
+            degree[*b] += 1;
+        }
+    }
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by(|a, b| {
+        degree[*b].cmp(&degree[*a]).then_with(|| key(items, *a).cmp(&key(items, *b)))
+    });
+    order.truncate(3);
+    order
+}
+
+/// Layers by distance from `root`, on both sides of it.
+///
+/// Rings of a breadth-first search: the root is layer zero, its neighbours
+/// are one ring out, theirs two, and so on. Each node then takes the ring
+/// on the side most of its already-placed neighbours are on — the side of
+/// its parent, so a subtree stays together — and, when that is a tie, the
+/// side that is currently narrower at that ring, so a hub's fan splits in
+/// half above and below it rather than running along one row.
+///
+/// Two nodes in the same ring on the same side share a row, and an edge
+/// between them is drawn along the row, between adjacent boxes. That only
+/// works while such edges form paths — a box has two sides — so a node
+/// whose arrival would give a same-row neighbour a third such edge, or
+/// close a cycle, is moved one ring further out instead: its edge to its
+/// parent then crosses one row, which the corridors handle.
+///
+/// The result is direction-blind, which is the point: an arrow read upward
+/// costs nothing next to a line drawn through a box.
+fn radial_layers(items: &[Item], edges: &[(usize, usize)], root: usize) -> Vec<usize> {
+    let n = items.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (a, b) in edges {
+        if a != b {
+            adj[*a].push(*b);
+            adj[*b].push(*a);
+        }
+    }
+    for (v, list) in adj.iter_mut().enumerate() {
+        list.sort_by(|a, b| key(items, *a).cmp(&key(items, *b)));
+        list.dedup();
+        list.retain(|w| *w != v);
+    }
+
+    // Breadth-first distance, visiting neighbours by name so the order is
+    // the graph's.
+    let mut dist = vec![usize::MAX; n];
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    dist[root] = 0;
+    let mut queue: VecDeque<usize> = VecDeque::from([root]);
+    while let Some(v) = queue.pop_front() {
+        order.push(v);
+        for &w in &adj[v] {
+            if dist[w] == usize::MAX {
+                dist[w] = dist[v] + 1;
+                queue.push_back(w);
+            }
+        }
+    }
+
+    // Signed layer per node; the root is zero. `same_deg` counts a node's
+    // edges drawn along its own row, and `path_root` finds the path it is on,
+    // so a third such edge or a cycle is refused.
+    let mut layer: Vec<Option<i64>> = vec![None; n];
+    layer[root] = Some(0);
+    let mut same_deg = vec![0usize; n];
+    let mut path_root: Vec<usize> = (0..n).collect();
+    fn find(p: &mut [usize], mut v: usize) -> usize {
+        while p[v] != v {
+            p[v] = p[p[v]];
+            v = p[v];
+        }
+        v
+    }
+    // Width placed so far on each signed layer, for the balance.
+    let mut width: HashMap<i64, i32> = HashMap::new();
+    let deepest = order.last().map(|v| dist[*v]).unwrap_or(0);
+
+    for d in 1..=deepest {
+        // The ring, and within it the groups that belong together: nodes
+        // joined by an edge of their own — a chain reached from a hub — and
+        // nodes with a common neighbour further out — the crowd a second hub
+        // shares with the first. A group takes one side together, the side
+        // most of its parents are on, so a chain is not cut in two by the
+        // hub it hangs from and the second hub's crowd is not split across
+        // the first, which would send half its fan through the root's row;
+        // balance decides only when the parents do not.
+        let ring: Vec<usize> = order.iter().copied().filter(|v| dist[*v] == d).collect();
+        let mut grouped = vec![false; n];
+        for &start in &ring {
+            if grouped[start] {
+                continue;
+            }
+            let mut group = vec![start];
+            grouped[start] = true;
+            let mut i = 0;
+            while i < group.len() {
+                let v = group[i];
+                for &w in &adj[v] {
+                    if dist[w] == d && !grouped[w] {
+                        grouped[w] = true;
+                        group.push(w);
+                    }
+                    if dist[w] == d + 1 {
+                        for &u in &adj[w] {
+                            if dist[u] == d && !grouped[u] {
+                                grouped[u] = true;
+                                group.push(u);
+                            }
+                        }
+                    }
+                }
+                i += 1;
+            }
+            let votes: i64 = group
+                .iter()
+                .flat_map(|v| adj[*v].iter())
+                .filter(|w| dist[**w] < d)
+                .filter_map(|w| layer[*w])
+                .map(|l| l.signum())
+                .sum();
+            let sd = d as i64;
+            let side = if votes != 0 {
+                votes.signum()
+            } else if width.get(&sd).copied().unwrap_or(0) <= width.get(&-sd).copied().unwrap_or(0)
+            {
+                1
+            } else {
+                -1
+            };
+            for v in group {
+                // The nearest ring on that side where the along-the-row edges
+                // still form paths.
+                let mut ring = sd;
+                let chosen = loop {
+                    let l = side * ring;
+                    let same: Vec<usize> =
+                        adj[v].iter().copied().filter(|w| layer[*w] == Some(l)).collect();
+                    let mut roots: Vec<usize> =
+                        same.iter().map(|w| find(&mut path_root, *w)).collect();
+                    roots.sort_unstable();
+                    roots.dedup();
+                    let ok = same.len() <= 2
+                        && same.iter().all(|w| same_deg[*w] < 2)
+                        && roots.len() == same.len();
+                    if ok {
+                        break l;
+                    }
+                    ring += 1;
+                };
+                layer[v] = Some(chosen);
+                for w in
+                    adj[v].iter().copied().filter(|w| layer[*w] == Some(chosen)).collect::<Vec<_>>()
+                {
+                    same_deg[w] += 1;
+                    same_deg[v] += 1;
+                    let (a, b) = (find(&mut path_root, v), find(&mut path_root, w));
+                    path_root[a] = b;
+                }
+                *width.entry(chosen).or_insert(0) += items[v].w + HGAP;
+            }
+        }
+    }
+
+    // Unreached nodes cannot happen on a connected component; give any a
+    // layer anyway rather than panic.
+    let min = layer.iter().flatten().copied().min().unwrap_or(0);
+    layer.iter().map(|l| (l.unwrap_or(0) - min) as usize).collect()
 }
 
 /// Squeeze out empty rows so a sparse ranking does not leave gaps.
@@ -873,9 +1110,8 @@ struct Layered {
     links: Vec<(Slot, Slot)>,
     x: HashMap<Slot, i32>,
     y: Vec<i32>,
-    /// Rows that are lines of a folded rank rather than ranks in their own
-    /// right.
-    folded: HashSet<usize>,
+    /// For each row, the rank it is a line of if that rank was folded.
+    fold_of: Vec<Option<usize>>,
     /// The height every row is given. At least the tallest box here, and
     /// when this is one component of several, the tallest box in any of
     /// them — so rows line up across the packed drawing.
@@ -887,34 +1123,38 @@ struct Layered {
     gaps: Vec<i32>,
     /// The two boxes each corridor belongs to, upper end first.
     lane_ends: HashMap<usize, (usize, usize)>,
+    /// Boxes joined by an edge along their own row: (path, index along it).
+    /// The members of a path stay side by side, in order, through every
+    /// reordering, so the edge between two of them is a short line between
+    /// neighbours and never runs through a third box.
+    glue: HashMap<Slot, (usize, usize)>,
+    /// Where a box of a folded rank stood in the rank before it was folded,
+    /// as a fraction of the rank. A corridor through one line for an edge
+    /// to a box on another line of the same rank takes that box's place, so
+    /// the lines of a fold read as one row seen from above.
+    proj: HashMap<Slot, f64>,
 }
 
-fn build(
-    items: &[Item],
-    edges: &[(usize, usize)],
-    ranks: &[usize],
-    reversed: &[usize],
-    min_pitch: i32,
-) -> Layered {
-    let depth = ranks.iter().copied().max().unwrap_or(0) + 1;
+fn build(items: &[Item], edges: &[(usize, usize)], layers: &[usize], min_pitch: i32) -> Layered {
+    let depth = layers.iter().copied().max().unwrap_or(0) + 1;
     let mut rows: Vec<Vec<Slot>> = vec![Vec::new(); depth];
     let mut width = HashMap::new();
     let mut height = HashMap::new();
 
     for (i, item) in items.iter().enumerate() {
-        rows[ranks[i]].push(Slot::Item(i));
+        rows[layers[i]].push(Slot::Item(i));
         width.insert(Slot::Item(i), item.w);
         height.insert(Slot::Item(i), item.h);
     }
 
-    // The edges as they will be drawn: every one pointing down, self-loops
-    // out. Cycle-breaking reversed some, and a reversed edge is built the
-    // other way up so its corridor descends like everyone else's.
+    // The edges as they will be drawn: upper end first, self-loops out. An
+    // edge whose arrow points up is built the other way round so its
+    // corridor descends like everyone else's; one along a row stays as it is
+    // and gets no corridor at all.
     let drawn: Vec<Option<(usize, usize)>> = edges
         .iter()
-        .enumerate()
-        .map(|(ei, (a, b))| {
-            let (a, b) = if reversed.contains(&ei) { (*b, *a) } else { (*a, *b) };
+        .map(|(a, b)| {
+            let (a, b) = if layers[*a] > layers[*b] { (*b, *a) } else { (*a, *b) };
             (a != b).then_some((a, b))
         })
         .collect();
@@ -923,14 +1163,22 @@ fn build(
         rows,
         width,
         height,
-        links: drawn.iter().flatten().map(|&(a, b)| (Slot::Item(a), Slot::Item(b))).collect(),
+        links: drawn
+            .iter()
+            .flatten()
+            .filter(|(a, b)| layers[*a] != layers[*b])
+            .map(|&(a, b)| (Slot::Item(a), Slot::Item(b)))
+            .collect(),
         x: HashMap::new(),
         y: Vec::new(),
-        folded: HashSet::new(),
+        fold_of: Vec::new(),
         pitch: min_pitch.max(items.iter().map(|i| i.h).max().unwrap_or(55)).max(55),
         gaps: Vec::new(),
         lane_ends: HashMap::new(),
+        glue: HashMap::new(),
+        proj: HashMap::new(),
     };
+    g.glue_paths(items, edges, layers);
 
     // Order on the boxes alone, then fold. Folding wants an ordering to cut
     // into lines, and wants to be free to cut any row: corridors do not exist
@@ -974,6 +1222,115 @@ fn drawn_edges(drawn: &[Option<(usize, usize)>]) -> Vec<(usize, usize)> {
 }
 
 impl Layered {
+    /// Find the paths that edges along a row form, and glue their members.
+    ///
+    /// The layering promises that such edges form paths; if a layering ever
+    /// breaks that promise the offending group is simply not glued, and its
+    /// edges are drawn through whatever lies between — which the tangle
+    /// count then sees, so that layering loses.
+    fn glue_paths(&mut self, items: &[Item], edges: &[(usize, usize)], layers: &[usize]) {
+        let n = layers.len();
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (a, b) in edges {
+            if a != b && layers[*a] == layers[*b] && !adj[*a].contains(b) {
+                adj[*a].push(*b);
+                adj[*b].push(*a);
+            }
+        }
+        // Walk each path from the end with the smaller name, so which end
+        // is "first" is the graph's choice and not the input order's.
+        let mut ends: Vec<usize> = (0..n).filter(|v| adj[*v].len() == 1).collect();
+        ends.sort_by(|a, b| key(items, *a).cmp(&key(items, *b)));
+        let mut seen = vec![false; n];
+        let mut path_id = 0;
+        for start in ends {
+            if seen[start] {
+                continue;
+            }
+            // Walk from one end of a path to the other. A component with a
+            // node of degree three, or a cycle, has no end of degree one to
+            // start from, or branches on the way; either leaves it unglued.
+            let mut path = vec![start];
+            seen[start] = true;
+            let (mut prev, mut cur) = (start, adj[start][0]);
+            let mut simple = true;
+            loop {
+                if seen[cur] || adj[cur].len() > 2 {
+                    simple = false;
+                    break;
+                }
+                seen[cur] = true;
+                path.push(cur);
+                let next = adj[cur].iter().copied().find(|w| *w != prev);
+                match next {
+                    Some(w) => {
+                        prev = cur;
+                        cur = w;
+                    }
+                    None => break,
+                }
+            }
+            if simple {
+                for (i, v) in path.iter().enumerate() {
+                    self.glue.insert(Slot::Item(*v), (path_id, i));
+                }
+                path_id += 1;
+            }
+        }
+    }
+
+    /// The groups a row is reordered as: each glued path's members that lie
+    /// in this row and are consecutive along the path, side by side and in
+    /// path order — reversed if the row currently has them that way — and
+    /// every other slot on its own.
+    ///
+    /// The row is repaired on the way: members that had drifted apart are
+    /// gathered at the first of them.
+    fn groups(&self, row: &[Slot]) -> Vec<Vec<Slot>> {
+        let mut out: Vec<Vec<Slot>> = Vec::with_capacity(row.len());
+        let mut done: HashSet<Slot> = HashSet::new();
+        for s in row {
+            if done.contains(s) {
+                continue;
+            }
+            let Some(&(path, _)) = self.glue.get(s) else {
+                out.push(vec![*s]);
+                continue;
+            };
+            // Every member of this path in this row, by index along the path.
+            let mut members: Vec<(usize, Slot)> = row
+                .iter()
+                .filter_map(|t| match self.glue.get(t) {
+                    Some(&(p, i)) if p == path => Some((i, *t)),
+                    _ => None,
+                })
+                .collect();
+            members.sort_unstable();
+            // The run that contains `s`: consecutive indices around it.
+            let at = members.iter().position(|(_, t)| t == s).unwrap();
+            let (mut lo, mut hi) = (at, at);
+            while lo > 0 && members[lo - 1].0 + 1 == members[lo].0 {
+                lo -= 1;
+            }
+            while hi + 1 < members.len() && members[hi].0 + 1 == members[hi + 1].0 {
+                hi += 1;
+            }
+            let mut run: Vec<Slot> = members[lo..=hi].iter().map(|(_, t)| *t).collect();
+            // Keep the direction the row has them in, if it has one.
+            if run.len() > 1 {
+                let pos = |t: &Slot| row.iter().position(|u| u == t).unwrap();
+                if pos(&run[0]) > pos(&run[run.len() - 1]) {
+                    run.reverse();
+                }
+            }
+            for t in &run {
+                done.insert(*t);
+            }
+            out.push(run);
+        }
+        out
+    }
+
     /// Lay a corridor for every edge that crosses a row: one dummy per row
     /// crossed, chained by links, and a direct link for the rest.
     fn lay_corridors(&mut self, drawn: &[Option<(usize, usize)>]) {
@@ -1052,12 +1409,17 @@ impl Layered {
     /// removes crossings, and runs to a fixed point. Sweeps continue while
     /// they help and stop at the first that does not.
     ///
+    /// Every pass moves *groups*, not slots — see [`Self::groups`] — so the
+    /// members of a path drawn along its row stay side by side and in order.
+    ///
     /// Everything here is decided by counts of crossings and by `(name, id)`
     /// on a tie, so the result cannot depend on how many sweeps happen to run
     /// or on the order links were pushed in.
     fn order(&mut self, items: &[Item]) {
-        for row in self.rows.iter_mut() {
-            row.sort_by_key(|s| slot_key(items, *s));
+        for r in 0..self.rows.len() {
+            let mut gs = self.groups(&self.rows[r]);
+            gs.sort_by_cached_key(|g| g.iter().map(|s| slot_key(items, *s)).min());
+            self.rows[r] = gs.concat();
         }
         let nb = self.neighbours();
         let mut best = self.rows.clone();
@@ -1104,10 +1466,88 @@ impl Layered {
         }
     }
 
-    /// Try every slot at every position in its row, keeping the best.
+    /// Crossings two slots of one row contribute, `u` left of `v`, counted
+    /// against the rows above and below. `pos` is every slot's index in its
+    /// row; only the neighbouring rows' entries are read.
+    fn pair_crossings(
+        &self,
+        nb: &HashMap<Slot, Vec<Slot>>,
+        row_of: &HashMap<Slot, usize>,
+        pos: &HashMap<Slot, usize>,
+        u: Slot,
+        v: Slot,
+    ) -> usize {
+        let depth = self.rows.len();
+        let r = row_of[&u];
+        let mut c = 0;
+        for other_row in [r.wrapping_sub(1), r + 1] {
+            if other_row >= depth {
+                continue;
+            }
+            let us: Vec<usize> = nb
+                .get(&u)
+                .into_iter()
+                .flatten()
+                .filter(|o| row_of[o] == other_row)
+                .map(|o| pos[o])
+                .collect();
+            let vs: Vec<usize> = nb
+                .get(&v)
+                .into_iter()
+                .flatten()
+                .filter(|o| row_of[o] == other_row)
+                .map(|o| pos[o])
+                .collect();
+            // With u left of v, a crossing is any u-neighbour to the right
+            // of a v-neighbour.
+            for pu in &us {
+                for pv in &vs {
+                    if pu > pv {
+                        c += 1;
+                    }
+                }
+            }
+        }
+        c
+    }
+
+    /// Crossings between two groups of one row, the first left of the second.
+    fn group_crossings(
+        &self,
+        nb: &HashMap<Slot, Vec<Slot>>,
+        row_of: &HashMap<Slot, usize>,
+        pos: &HashMap<Slot, usize>,
+        left: &[Slot],
+        right: &[Slot],
+    ) -> usize {
+        left.iter()
+            .map(|u| {
+                right.iter().map(|v| self.pair_crossings(nb, row_of, pos, *u, *v)).sum::<usize>()
+            })
+            .sum()
+    }
+
+    /// Crossings a group's own members make with each other in this order.
+    fn inner_crossings(
+        &self,
+        nb: &HashMap<Slot, Vec<Slot>>,
+        row_of: &HashMap<Slot, usize>,
+        pos: &HashMap<Slot, usize>,
+        group: &[Slot],
+    ) -> usize {
+        let mut c = 0;
+        for i in 0..group.len() {
+            for j in i + 1..group.len() {
+                c += self.pair_crossings(nb, row_of, pos, group[i], group[j]);
+            }
+        }
+        c
+    }
+
+    /// Try every group at every position in its row, keeping the best.
     ///
-    /// A slot's crossings are counted against the rows above and below only,
-    /// which is exact for a swap within one row. Repeated while it helps, to a
+    /// A group's crossings are counted against the rows above and below only,
+    /// which is exact for a move within one row. Repeated while it helps, to a
     /// fixed point.
     fn sift(&mut self, nb: &HashMap<Slot, Vec<Slot>>) {
         let depth = self.rows.len();
@@ -1116,108 +1556,107 @@ impl Layered {
         for _round in 0..4 {
             let mut improved = false;
             for r in 0..depth {
-                let n = self.rows[r].len();
-                if n < 3 {
+                let mut groups = self.groups(&self.rows[r]);
+                if groups.len() < 3 {
                     continue;
                 }
                 // Positions in the neighbouring rows, fixed for this row.
-                let pos_other: HashMap<Slot, usize> = [r.wrapping_sub(1), r + 1]
+                let pos: HashMap<Slot, usize> = [r.wrapping_sub(1), r + 1]
                     .into_iter()
                     .filter(|&o| o < depth)
                     .flat_map(|o| self.rows[o].iter().enumerate().map(move |(i, s)| (*s, i)))
                     .collect();
-                // Only slots that actually link to a neighbouring row can
+                // Only groups that actually link to a neighbouring row can
                 // change the count.
-                let touched: Vec<usize> = (0..n)
-                    .filter(|&i| {
-                        nb.get(&self.rows[r][i])
-                            .is_some_and(|ns| ns.iter().any(|o| pos_other.contains_key(o)))
+                let touched: Vec<Vec<Slot>> = groups
+                    .iter()
+                    .filter(|g| {
+                        g.iter().any(|s| {
+                            nb.get(s).is_some_and(|ns| ns.iter().any(|o| pos.contains_key(o)))
+                        })
                     })
+                    .cloned()
                     .collect();
                 if touched.len() < 2 {
                     continue;
                 }
 
-                // Crossings between two slots u (left) and v (right) of this
-                // row, against both neighbouring rows.
-                let cross_uv = |u: Slot, v: Slot| -> usize {
-                    let mut c = 0;
-                    for o in [r.wrapping_sub(1), r + 1] {
-                        if o >= depth {
-                            continue;
-                        }
-                        let us: Vec<usize> = nb
-                            .get(&u)
-                            .into_iter()
-                            .flatten()
-                            .filter(|s| row_of.get(s) == Some(&o))
-                            .map(|s| pos_other[s])
-                            .collect();
-                        let vs: Vec<usize> = nb
-                            .get(&v)
-                            .into_iter()
-                            .flatten()
-                            .filter(|s| row_of.get(s) == Some(&o))
-                            .map(|s| pos_other[s])
-                            .collect();
-                        for pu in &us {
-                            for pv in &vs {
-                                if pu > pv {
-                                    c += 1;
-                                }
-                            }
-                        }
-                    }
-                    c
-                };
-
-                let mut row = self.rows[r].clone();
-                let touched: Vec<Slot> = touched.iter().map(|&i| row[i]).collect();
-                for s in touched {
+                for g in touched {
                     // Where it is *now* — earlier moves in this pass have
                     // shifted the indices.
-                    let orig_i = row.iter().position(|t| *t == s).unwrap();
-                    // Crossings this slot contributes at its current spot.
-                    let score = |row: &[Slot], at: usize| -> usize {
-                        let mut c = 0;
-                        for (j, &t) in row.iter().enumerate() {
+                    let orig_i = groups.iter().position(|t| *t == g).unwrap();
+                    // Crossings this group contributes at a position, in the
+                    // orientation given.
+                    let score = |groups: &[Vec<Slot>], at: usize, g: &[Slot]| -> usize {
+                        let mut c = self.inner_crossings(nb, &row_of, &pos, g);
+                        for (j, t) in groups.iter().enumerate() {
                             if j == at {
                                 continue;
                             }
-                            c += if j < at { cross_uv(t, s) } else { cross_uv(s, t) };
+                            c += if j < at {
+                                self.group_crossings(nb, &row_of, &pos, t, g)
+                            } else {
+                                self.group_crossings(nb, &row_of, &pos, g, t)
+                            };
                         }
                         c
                     };
                     let mut best_at = orig_i;
-                    let mut best_c = score(&row, orig_i);
-                    // Try every other position. Strictly better only, and the
-                    // earliest such position wins, so the result is fixed.
-                    let without: Vec<Slot> = row.iter().copied().filter(|t| *t != s).collect();
+                    let mut best_g = g.clone();
+                    let mut best_c = score(&groups, orig_i, &g);
+                    // Try every other position, and both ways round. Strictly
+                    // better only, and the earliest such position wins, so
+                    // the result is fixed.
+                    let without: Vec<Vec<Slot>> =
+                        groups.iter().filter(|t| **t != g).cloned().collect();
+                    let mut flipped = g.clone();
+                    flipped.reverse();
                     for at in 0..=without.len() {
-                        if at == orig_i {
-                            continue;
-                        }
-                        let mut trial = without.clone();
-                        trial.insert(at, s);
-                        let c = score(&trial, at);
-                        if c < best_c {
-                            best_c = c;
-                            best_at = at;
+                        for cand in [&g, &flipped] {
+                            if at == orig_i && *cand == g {
+                                continue;
+                            }
+                            let mut trial = without.clone();
+                            trial.insert(at, cand.clone());
+                            let c = score(&trial, at, cand);
+                            if c < best_c {
+                                best_c = c;
+                                best_at = at;
+                                best_g = cand.clone();
+                            }
                         }
                     }
-                    if best_at != orig_i {
+                    if best_at != orig_i || best_g != g {
                         let mut next = without;
-                        next.insert(best_at, s);
-                        row = next;
+                        next.insert(best_at, best_g);
+                        groups = next;
                         improved = true;
                     }
                 }
-                self.rows[r] = row;
+                self.rows[r] = groups.concat();
             }
             if !improved {
                 break;
             }
         }
+    }
+
+    /// Where a slot stands across its row, from 0 to 1.
+    ///
+    /// For a box on a line of a folded rank it is where the box stood in the
+    /// rank before the fold, so the lines of one fold share a scale; for any
+    /// other box it is its position among the boxes of its row, corridors
+    /// not counted, so a row's scale does not stretch with the corridors
+    /// laid through it.
+    fn frac(&self, s: Slot) -> f64 {
+        if let Some(f) = self.proj.get(&s) {
+            return *f;
+        }
+        let row = self.rows.iter().find(|r| r.contains(&s)).map(Vec::as_slice).unwrap_or(&[]);
+        let boxes: Vec<&Slot> = row.iter().filter(|t| matches!(t, Slot::Item(_))).collect();
+        let n = boxes.len().max(1) as f64;
+        let i = boxes.iter().position(|t| **t == s).unwrap_or(0) as f64;
+        (i + 0.5) / n
     }
 
     /// Move each corridor to where its edge's straight line will run, in the
@@ -1229,8 +1668,11 @@ impl Layered {
     /// touching it, as on a star. Sorted by name it then lands at the end of
     /// the row, and the edge, which is a straight line, slants right across
     /// the row's boxes to reach it. Here each corridor is put where the line
-    /// between its ends crosses the row: at the position that interpolates
-    /// its two ends' positions in their rows, so that a vertical edge gets a
+    /// between its ends crosses the row. Through a line of the fold its own
+    /// end belongs to, that is where the end stood before the fold — the
+    /// lines of a fold read as one row, and the corridor takes its box's
+    /// place in it. Anywhere else it is the position that interpolates the
+    /// two ends' positions in their rows, so that a vertical edge gets a
     /// vertical corridor and the boxes part around it. The move is kept only
     /// if the crossing count does not rise; the ordering's objective still
     /// comes first.
@@ -1238,43 +1680,41 @@ impl Layered {
         let before = self.crossings();
         let saved = self.rows.clone();
         let row_of = self.row_index();
-        // Ordinal position of every slot, as a fraction of its row, so rows
-        // of different lengths interpolate sensibly.
-        let frac = |rows: &Vec<Vec<Slot>>, s: Slot| -> f64 {
-            let r = row_of[&s];
-            let n = rows[r].len().max(1) as f64;
-            let i = rows[r].iter().position(|t| *t == s).unwrap_or(0) as f64;
-            (i + 0.5) / n
-        };
         let mut wanted: HashMap<Slot, f64> = HashMap::new();
         for (ei, (upper, lower)) in &self.lane_ends {
             let (u, l) = (Slot::Item(*upper), Slot::Item(*lower));
             let (Some(&ru), Some(&rl)) = (row_of.get(&u), row_of.get(&l)) else { continue };
-            let (fu, fl) = (frac(&self.rows, u), frac(&self.rows, l));
+            let (fu, fl) = (self.frac(u), self.frac(l));
             let span = (rl - ru) as f64;
             for seg in 0..(rl - ru - 1) {
                 let dm = Slot::Dummy(*ei, seg);
-                if row_of.contains_key(&dm) {
-                    let t = (seg as f64 + 1.0) / span;
-                    wanted.insert(dm, fu + (fl - fu) * t);
-                }
+                let Some(&r) = row_of.get(&dm) else { continue };
+                let fold = self.fold_of.get(r).copied().flatten();
+                let f = match fold {
+                    Some(k) if self.fold_of.get(rl).copied().flatten() == Some(k) => fl,
+                    Some(k) if self.fold_of.get(ru).copied().flatten() == Some(k) => fu,
+                    _ => {
+                        let t = (seg as f64 + 1.0) / span;
+                        fu + (fl - fu) * t
+                    }
+                };
+                wanted.insert(dm, f);
             }
         }
         if wanted.is_empty() {
             return;
         }
-        for row in &mut self.rows {
-            let n = row.len().max(1) as f64;
-            let key = |s: &Slot, i: usize| -> f64 {
-                match wanted.get(s) {
-                    Some(f) => *f,
-                    None => (i as f64 + 0.5) / n,
-                }
+        for r in 0..self.rows.len() {
+            let groups = self.groups(&self.rows[r]);
+            let key = |g: &[Slot]| -> f64 {
+                let sum: f64 =
+                    g.iter().map(|s| wanted.get(s).copied().unwrap_or_else(|| self.frac(*s))).sum();
+                sum / g.len().max(1) as f64
             };
-            let mut keyed: Vec<(f64, usize, Slot)> =
-                row.iter().enumerate().map(|(i, s)| (key(s, i), i, *s)).collect();
+            let mut keyed: Vec<(f64, usize, Vec<Slot>)> =
+                groups.into_iter().enumerate().map(|(i, g)| (key(&g), i, g)).collect();
             keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
-            *row = keyed.into_iter().map(|(_, _, s)| s).collect();
+            self.rows[r] = keyed.into_iter().flat_map(|(_, _, g)| g).collect();
         }
         // The move can add crossings — a fan of long edges from one hub to
         // boxes spread across a lower rank cannot all be straight and
@@ -1293,6 +1733,15 @@ impl Layered {
         }
     }
 
+    /// One median pass, down or up the rows.
+    ///
+    /// Each group takes the mean of its members' medians in the row it is
+    /// aligned against and the groups with one are sorted by it into the
+    /// places left by those without; a group with nothing to align with
+    /// holds its place, as `dot` has it, rather than being sorted on its own
+    /// index against the others' medians, which are positions in a different
+    /// row and not comparable. A group of several is turned round when its
+    /// two ends' medians say so.
     fn median_pass(&mut self, items: &[Item], nb: &HashMap<Slot, Vec<Slot>>, down: bool) {
         let sequence: Vec<usize> = if down {
             (1..self.rows.len()).collect()
@@ -1304,48 +1753,65 @@ impl Layered {
             let neighbour_row = if down { r - 1 } else { r + 1 };
             let pos: HashMap<Slot, usize> =
                 self.rows[neighbour_row].iter().enumerate().map(|(i, s)| (*s, i)).collect();
+            let median = |s: &Slot| -> Option<f64> {
+                let mut ps: Vec<usize> =
+                    nb.get(s).into_iter().flatten().filter_map(|o| pos.get(o).copied()).collect();
+                ps.sort_unstable();
+                if ps.is_empty() {
+                    None
+                } else if ps.len() % 2 == 1 {
+                    Some(ps[ps.len() / 2] as f64)
+                } else {
+                    Some((ps[ps.len() / 2 - 1] + ps[ps.len() / 2]) as f64 / 2.0)
+                }
+            };
 
-            let mut keyed: Vec<(f64, usize, Slot)> = self.rows[r]
-                .iter()
-                .enumerate()
-                .map(|(i, &s)| {
-                    let mut ps: Vec<usize> = nb
-                        .get(&s)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|o| pos.get(o).copied())
-                        .collect();
-                    ps.sort_unstable();
-                    let median = if ps.is_empty() {
-                        // Nothing to align with: hold position, so an
-                        // unconnected node does not wander between runs.
-                        i as f64
-                    } else if ps.len() % 2 == 1 {
-                        ps[ps.len() / 2] as f64
-                    } else {
-                        (ps[ps.len() / 2 - 1] + ps[ps.len() / 2]) as f64 / 2.0
-                    };
-                    (median, i, s)
-                })
-                .collect();
-
+            let groups = self.groups(&self.rows[r]);
+            let mut movable: Vec<(f64, usize, Vec<Slot>)> = Vec::new();
+            let mut fixed: Vec<Option<Vec<Slot>>> = vec![None; groups.len()];
+            for (i, g) in groups.into_iter().enumerate() {
+                let ms: Vec<f64> = g.iter().filter_map(median).collect();
+                if ms.is_empty() {
+                    fixed[i] = Some(g);
+                    continue;
+                }
+                let value = ms.iter().sum::<f64>() / ms.len() as f64;
+                let mut g = g;
+                if g.len() > 1
+                    && let (Some(a), Some(b)) = (median(&g[0]), median(&g[g.len() - 1]))
+                    && b < a
+                {
+                    g.reverse();
+                }
+                movable.push((value, i, g));
+            }
             // Ties keep their current order first, so an unconnected slot that
             // was held in place stays there relative to its neighbours, and
             // fall back to the name only when two slots are genuinely
             // interchangeable.
-            keyed.sort_by(|a, b| {
+            movable.sort_by(|a, b| {
                 a.0.partial_cmp(&b.0)
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then_with(|| a.1.cmp(&b.1))
-                    .then_with(|| slot_key(items, a.2).cmp(&slot_key(items, b.2)))
+                    .then_with(|| slot_key(items, a.2[0]).cmp(&slot_key(items, b.2[0])))
             });
-            self.rows[r] = keyed.into_iter().map(|(_, _, s)| s).collect();
+            let mut moving = movable.into_iter().map(|(_, _, g)| g);
+            let mut row: Vec<Slot> = Vec::with_capacity(self.rows[r].len());
+            for slot in fixed {
+                match slot {
+                    Some(g) => row.extend(g),
+                    None => row.extend(moving.next().unwrap_or_default()),
+                }
+            }
+            row.extend(moving.flatten());
+            self.rows[r] = row;
         }
     }
 
-    /// Swap adjacent slots wherever that removes crossings, until it does not.
+    /// Swap adjacent groups wherever that removes crossings, and turn a group
+    /// round wherever that does, until neither does.
     ///
-    /// Each swap is judged locally: only the crossings between the two slots
+    /// Each swap is judged locally: only the crossings between the two groups
     /// being swapped and the rows above and below can change, so those are
     /// what is counted, and the whole-drawing count is not recomputed per swap.
     fn transpose_pass(&mut self, nb: &HashMap<Slot, Vec<Slot>>) {
@@ -1357,49 +1823,7 @@ impl Layered {
                 pos.insert(*s, i);
             }
         }
-        let row_of: HashMap<Slot, usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .flat_map(|(r, row)| row.iter().map(move |s| (*s, r)))
-            .collect();
-
-        // Crossings that a pair of slots in one row contribute, given the
-        // order they are in: `u` left of `v`. Counted against the row above
-        // and the row below together.
-        let count = |u: Slot, v: Slot, pos: &HashMap<Slot, usize>| -> usize {
-            let r = row_of[&u];
-            let mut c = 0;
-            for other_row in [r.wrapping_sub(1), r + 1] {
-                if other_row >= depth {
-                    continue;
-                }
-                let us: Vec<usize> = nb
-                    .get(&u)
-                    .into_iter()
-                    .flatten()
-                    .filter(|o| row_of[o] == other_row)
-                    .map(|o| pos[o])
-                    .collect();
-                let vs: Vec<usize> = nb
-                    .get(&v)
-                    .into_iter()
-                    .flatten()
-                    .filter(|o| row_of[o] == other_row)
-                    .map(|o| pos[o])
-                    .collect();
-                // With u left of v, a crossing is any u-neighbour to the right
-                // of a v-neighbour.
-                for pu in &us {
-                    for pv in &vs {
-                        if pu > pv {
-                            c += 1;
-                        }
-                    }
-                }
-            }
-            c
-        };
+        let row_of: HashMap<Slot, usize> = self.row_index();
 
         let mut improved = true;
         let mut rounds = 0;
@@ -1407,20 +1831,40 @@ impl Layered {
             improved = false;
             rounds += 1;
             for r in 0..depth {
+                let mut groups = self.groups(&self.rows[r]);
+                let mut changed = false;
+                for g in groups.iter_mut() {
+                    if g.len() < 2 {
+                        continue;
+                    }
+                    let mut flipped = g.clone();
+                    flipped.reverse();
+                    if self.inner_crossings(nb, &row_of, &pos, &flipped)
+                        < self.inner_crossings(nb, &row_of, &pos, g)
+                    {
+                        *g = flipped;
+                        changed = true;
+                    }
+                }
                 let mut i = 0;
-                while i + 1 < self.rows[r].len() {
-                    let (u, v) = (self.rows[r][i], self.rows[r][i + 1]);
-                    let before = count(u, v, &pos);
-                    let after = count(v, u, &pos);
+                while i + 1 < groups.len() {
+                    let before =
+                        self.group_crossings(nb, &row_of, &pos, &groups[i], &groups[i + 1]);
+                    let after = self.group_crossings(nb, &row_of, &pos, &groups[i + 1], &groups[i]);
                     // Strictly fewer, never equal: an equal swap would flip
                     // back on the next round and the pass would never settle.
                     if after < before {
-                        self.rows[r].swap(i, i + 1);
-                        pos.insert(u, i + 1);
-                        pos.insert(v, i);
-                        improved = true;
+                        groups.swap(i, i + 1);
+                        changed = true;
                     }
                     i += 1;
+                }
+                if changed {
+                    self.rows[r] = groups.concat();
+                    for (i, s) in self.rows[r].iter().enumerate() {
+                        pos.insert(*s, i);
+                    }
+                    improved = true;
                 }
             }
         }
@@ -1489,11 +1933,12 @@ impl Layered {
         let most = self.rows.iter().map(Vec::len).max().unwrap_or(1);
         for lines in 2..=most {
             let budget = (widest + lines as i32 - 1) / lines as i32;
-            let (rows, folded) = fold_rows(&self.rows, budget, &self.width);
-            let (w, h) = extent(&rows, &self.width, self.pitch);
+            let folded = fold_rows(&self.rows, budget, &self.width);
+            let (w, h) = extent(&folded.rows, &self.width, self.pitch);
             if w as f64 <= h as f64 * MAX_WIDTH_RATIO {
-                self.rows = rows;
-                self.folded = folded;
+                self.rows = folded.rows;
+                self.fold_of = folded.fold_of;
+                self.proj = folded.proj;
                 return;
             }
         }
@@ -2539,10 +2984,10 @@ mod tests {
                 }
             }
         }
-        assert!(adjacent > 3000 && long > 1000, "the sweep proves little: {adjacent} / {long}");
+        assert!(adjacent > 3000 && long > 100, "the sweep proves little: {adjacent} / {long}");
         let share = long_through as f64 / long as f64;
         eprintln!("long edges through a box: {long_through} of {long} ({share:.3})");
-        assert!(share < 0.20, "{long_through} of {long} long edges through a box ({share:.2})");
+        assert!(share < 0.10, "{long_through} of {long} long edges through a box ({share:.2})");
     }
 
     #[test]
