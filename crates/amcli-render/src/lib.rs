@@ -187,10 +187,20 @@ fn node(s: &mut String, n: &Node, o: &Options) {
 /// honest about the fidelity contract: exact text metrics would still not match
 /// Archi, whose own output differs by platform, so an approximation that is
 /// deterministic beats one that is merely more elaborate.
+///
+/// Where the line *breaks* is not an approximation, though, because that is
+/// geometry rather than typography: Archi gives a label the box less its
+/// margin, and less the type icon's width off both sides when the icon shows.
+/// Wrapping inside the same width is what makes this drawing agree with the
+/// one in Archi about how many lines a name takes.
 fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
     let r = n.abs;
     let pad = 5.0;
-    let usable = (r.w as f64 - 2.0 * pad).max(10.0);
+    let inset = match n.figure {
+        Figure::Note | Figure::Tabbed => pad,
+        _ => amcli_view::layout::ICON_INSET as f64,
+    };
+    let usable = (r.w as f64 - 2.0 * inset).max(10.0);
     let per_char = o.font_size * 0.52;
     let max_chars = (usable / per_char).floor().max(1.0) as usize;
     let lines = wrap(text, max_chars);
