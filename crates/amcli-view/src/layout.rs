@@ -3198,23 +3198,9 @@ mod tests {
         assert_eq!(tangle_count(&p, &edges), (0, 0));
         let ys: HashSet<i32> = p.rects[1..].iter().map(|r| r.y).collect();
         assert_eq!(ys.len(), 1, "the chain is one row: {ys:?}");
-        for i in 1..7 {
-            assert!(p.rects[i].x < p.rects[i + 1].x || p.rects[i].x > p.rects[i + 1].x);
-        }
-        let mut xs: Vec<i32> = p.rects[1..].iter().map(|r| r.x).collect();
-        let sorted = {
-            let mut s = xs.clone();
-            s.sort_unstable();
-            s
-        };
-        xs.reverse();
-        assert!(
-            xs == sorted || {
-                xs.reverse();
-                xs == sorted
-            },
-            "the chain is in order along the row"
-        );
+        let xs: Vec<i32> = p.rects[1..].iter().map(|r| r.x).collect();
+        let in_order = xs.windows(2).all(|w| w[0] < w[1]) || xs.windows(2).all(|w| w[0] > w[1]);
+        assert!(in_order, "the chain is in order along the row: {xs:?}");
     }
 
     /// A fan too wide for one row on each side is folded, and the fold
