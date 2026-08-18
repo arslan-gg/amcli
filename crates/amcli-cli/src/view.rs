@@ -669,6 +669,10 @@ fn relayout(
     Ok(fallback_note(out, algo, placed.algorithm))
 }
 
+/// A connection on the view: its id, and its endpoints as indices into the
+/// items being laid out.
+type Connection = (String, usize, usize);
+
 /// The connections drawn among the given diagram objects, as index pairs into
 /// `items` — one edge per connection, in document order — with each
 /// connection's id and endpoints alongside so its routing can be written back.
@@ -676,11 +680,7 @@ fn relayout(
 /// Read from the view rather than from the model graph: what is drawn is the
 /// view's connections, and a concept placed twice on one view has two objects
 /// and two sets of lines.
-fn edges_between(
-    m: &Model,
-    v: ViewId,
-    items: &[Item],
-) -> (Vec<(usize, usize)>, Vec<(String, usize, usize)>) {
+fn edges_between(m: &Model, v: ViewId, items: &[Item]) -> (Vec<(usize, usize)>, Vec<Connection>) {
     let index: std::collections::HashMap<&str, usize> =
         items.iter().enumerate().map(|(i, it)| (it.id.as_str(), i)).collect();
     let mut edges = Vec::new();
