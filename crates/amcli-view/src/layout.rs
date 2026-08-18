@@ -127,6 +127,16 @@ impl Algorithm {
 /// fault would throw away the layering on exactly the graphs it suits best.
 pub const MAX_WIDTH_RATIO: f64 = 4.0;
 
+/// Below this width nothing is folded, whatever the ratio: a hub over a
+/// chain of seven is a wide, shallow drawing and it fits any screen; folding
+/// it would only make the chain snake.
+pub const MIN_FOLD_WIDTH: i32 = 1440;
+
+/// Does a drawing of this size read, or does it run off the page?
+fn fits(w: i32, h: i32) -> bool {
+    w <= MIN_FOLD_WIDTH || w as f64 <= h as f64 * MAX_WIDTH_RATIO
+}
+
 /// A box sized so its label fits.
 ///
 /// Archi draws the label inside the box, wrapped by word, at its default 9pt
@@ -187,7 +197,8 @@ pub fn place(items: &[Item], edges: &[(usize, usize)], algo: Algorithm) -> Place
         Algorithm::Auto => {
             let layered = sugiyama(items, edges);
             let ratio = wideness(&layered.rects);
-            if ratio <= MAX_WIDTH_RATIO {
+            let bbox = layered.rects.iter().copied().reduce(|a, b| a.union(b)).unwrap_or_default();
+            if fits(bbox.w, bbox.h) {
                 return layered;
             }
             // Folding keeps the layering inside the bound in almost every
@@ -279,7 +290,24 @@ fn snap(v: i32) -> i32 {
 
 /// How wide a row runs once its slots are laid end to end.
 fn row_width(row: &[Slot], width: &HashMap<Slot, i32>) -> i32 {
-    row.iter().map(|s| width[s] + HGAP).sum::<i32>().saturating_sub(HGAP).max(0)
+    let mut w = row.first().map(|s| width[s]).unwrap_or(0);
+    for pair in row.windows(2) {
+        w += width[&pair[1]] + gap_between(&pair[0], &pair[1]);
+    }
+    w
+}
+
+/// The room left between two slots side by side. Boxes get the full gap;
+/// a corridor beside a box half of it; two corridors none — a corridor is
+/// already as wide as its line's sweep plus a lane, so lines in adjacent
+/// corridors are a lane apart, and a fan of twenty long edges through a row
+/// costs the row twenty lanes rather than twenty gaps.
+fn gap_between(a: &Slot, b: &Slot) -> i32 {
+    match (matches!(a, Slot::Dummy(..)), matches!(b, Slot::Dummy(..))) {
+        (false, false) => HGAP,
+        (true, true) => 0,
+        _ => HGAP / 2,
+    }
 }
 
 /// The drawing a set of rows would come out as, before any of it is placed.
@@ -320,7 +348,12 @@ struct Folded {
 /// This runs before any corridor exists, so every row is free to fold; the
 /// corridors are laid afterwards, by row, and thread through the lines like
 /// any other row.
-fn fold_rows(rows: &[Vec<Slot>], budget: i32, width: &HashMap<Slot, i32>) -> Folded {
+fn fold_rows(
+    rows: &[Vec<Slot>],
+    budget: i32,
+    width: &HashMap<Slot, i32>,
+    far_below: &[bool],
+) -> Folded {
     let mut out: Vec<Vec<Slot>> = Vec::with_capacity(rows.len());
     let mut fold_of: Vec<Option<usize>> = Vec::with_capacity(rows.len());
     let mut proj: HashMap<Slot, f64> = HashMap::new();
@@ -341,19 +374,28 @@ fn fold_rows(rows: &[Vec<Slot>], budget: i32, width: &HashMap<Slot, i32>) -> Fol
             proj.insert(*s, (i as f64 + 0.5) / n);
         }
         // Peel `per` off the two ends for each outer line; what is left in
-        // the middle is the innermost.
+        // the middle is the innermost. The outer line goes nearest the rows
+        // this rank's edges lead to and the inner lines away from them, so
+        // an inner box's edge crosses the outer lines where the box would
+        // have stood — between the outer boxes — and never through them.
+        let mut lines: Vec<Vec<Slot>> = Vec::new();
         let mut rest: &[Slot] = row;
         while rest.len() > per {
             let left = per.div_ceil(2);
             let right = per - left;
             let mut line = rest[..left].to_vec();
             line.extend_from_slice(&rest[rest.len() - right..]);
-            out.push(line);
-            fold_of.push(Some(rank));
+            lines.push(line);
             rest = &rest[left..rest.len() - right];
         }
-        out.push(rest.to_vec());
-        fold_of.push(Some(rank));
+        lines.push(rest.to_vec());
+        if !far_below.get(rank).copied().unwrap_or(true) {
+            lines.reverse();
+        }
+        for line in lines {
+            out.push(line);
+            fold_of.push(Some(rank));
+        }
     }
     Folded { rows: out, fold_of, proj }
 }
@@ -877,7 +919,9 @@ fn components(n: usize, edges: &[(usize, usize)]) -> Vec<Vec<usize>> {
 /// arrow down can do. Direction is a reading aid; a line through a box or
 /// across another line is a reading obstacle, so the obstacle count decides
 /// and the arrows are kept only when they cost nothing. On a tie the drawing
-/// with fewer long edges wins, then the smaller one, then the directed one.
+/// with fewer long edges wins, then the one with fewer rows — a chain along
+/// a row under its hub rather than snaked over three — then the smaller,
+/// then the directed one.
 fn sugiyama_connected(items: &[Item], edges: &[(usize, usize)], min_pitch: i32) -> Placement {
     let n = items.len();
     let (raw_rank, _) = rank_by_dependency(n, edges);
@@ -889,14 +933,14 @@ fn sugiyama_connected(items: &[Item], edges: &[(usize, usize)], min_pitch: i32) 
         }
     }
 
-    let mut best: Option<(Placement, (usize, usize, i64))> = None;
+    let mut best: Option<(Placement, (usize, usize, usize, i64))> = None;
     for layers in &candidates {
         let g = build(items, edges, layers, min_pitch);
         let rects = g.finish(items);
         let p = Placement { rects, algorithm: Algorithm::Sugiyama };
         let long = g.rows.iter().flatten().filter(|s| matches!(s, Slot::Dummy(..))).count();
         let bbox = p.rects.iter().copied().reduce(|a, b| a.union(b)).unwrap_or_default();
-        let score = (tangles(&p, edges), long, bbox.w as i64 * bbox.h as i64);
+        let score = (tangles(&p, edges), long, g.rows.len(), bbox.w as i64 * bbox.h as i64);
         if best.as_ref().is_none_or(|(_, s)| score < *s) {
             best = Some((p, score));
         }
@@ -1200,7 +1244,7 @@ fn build(items: &[Item], edges: &[(usize, usize)], layers: &[usize], min_pitch: 
     for round in 0..3 {
         g.lay_corridors(&drawn);
         let (w, h) = extent(&g.rows, &g.width, g.pitch);
-        if round == 2 || w as f64 <= h as f64 * MAX_WIDTH_RATIO {
+        if round == 2 || fits(w, h) {
             break;
         }
         g.strip_corridors();
@@ -1926,16 +1970,32 @@ impl Layered {
     /// box per line, which does not happen — the rows are left as they were.
     fn fold_to_fit(&mut self) {
         let (w, h) = extent(&self.rows, &self.width, self.pitch);
-        if w as f64 <= h as f64 * MAX_WIDTH_RATIO {
+        if fits(w, h) {
             return;
         }
         let widest = self.rows.iter().map(|r| row_width(r, &self.width)).max().unwrap_or(0);
         let most = self.rows.iter().map(Vec::len).max().unwrap_or(1);
+        // Which way each row's edges mostly lead: a row whose edges go up
+        // is a crowd under a hub, and its far lines go below.
+        let row_of = self.row_index();
+        let mut up = vec![0usize; self.rows.len()];
+        let mut down = vec![0usize; self.rows.len()];
+        for (a, b) in &self.links {
+            let (Some(&ra), Some(&rb)) = (row_of.get(a), row_of.get(b)) else { continue };
+            if ra < rb {
+                down[ra] += 1;
+                up[rb] += 1;
+            } else if rb < ra {
+                down[rb] += 1;
+                up[ra] += 1;
+            }
+        }
+        let far_below: Vec<bool> = up.iter().zip(&down).map(|(u, d)| u >= d).collect();
         for lines in 2..=most {
             let budget = (widest + lines as i32 - 1) / lines as i32;
-            let folded = fold_rows(&self.rows, budget, &self.width);
+            let folded = fold_rows(&self.rows, budget, &self.width, &far_below);
             let (w, h) = extent(&folded.rows, &self.width, self.pitch);
-            if w as f64 <= h as f64 * MAX_WIDTH_RATIO {
+            if fits(w, h) {
                 self.rows = folded.rows;
                 self.fold_of = folded.fold_of;
                 self.proj = folded.proj;
@@ -2095,44 +2155,90 @@ impl Layered {
             } else {
                 self.rows[r].iter().rev().copied().collect()
             };
-            slots.sort_by_key(|s| !matches!(s, Slot::Dummy(..)));
-            // Alignments made in this row, as (upper index, lower index).
-            let mut made: Vec<(usize, usize)> = Vec::new();
-            for v in slots {
-                let vj = pos[&v].1;
-                // Neighbours in the row already done, in row order.
+            // What each slot would align with, in order of preference: a
+            // corridor neighbour first, before any median. For a corridor
+            // slot that is what makes the chain a column; for a box it is
+            // what puts the end of a long edge on the column, so the whole
+            // edge — a straight line — runs down it. Brandes and Köpf align
+            // by median only, because their edges bend at the corridor and
+            // only the chain need be straight; here the ends must sit on it
+            // too. A box with long edges in two columns can sit on one; the
+            // median decides which is tried first.
+            let candidates = |v: &Slot| -> Vec<(usize, Slot)> {
                 let mut ups: Vec<(usize, Slot)> = nb
-                    .get(&v)
+                    .get(v)
                     .into_iter()
                     .flatten()
                     .filter_map(|u| pos.get(u).filter(|(ru, _)| *ru == prev).map(|(_, i)| (*i, *u)))
                     .collect();
                 if ups.is_empty() {
-                    continue;
+                    return Vec::new();
                 }
                 ups.sort_unstable();
                 ups.dedup();
                 let d = ups.len();
-                let mut candidates: Vec<(usize, Slot)> = Vec::new();
-                // A corridor neighbour first, before any median. For a
-                // corridor slot that is what makes the chain a column; for a
-                // box it is what puts the end of a long edge on the column,
-                // so the whole edge — a straight line — runs down it. Brandes
-                // and Köpf align by median only, because their edges bend at
-                // the corridor and only the chain need be straight; here the
-                // ends must sit on it too. A box with long edges in two
-                // columns can sit on one; the median decides which is tried
-                // first.
-                let mut lanes: Vec<(usize, Slot)> =
-                    ups.iter().copied().filter(|(_, u)| matches!(u, Slot::Dummy(..))).collect();
-                if !left {
-                    lanes.reverse();
-                }
-                candidates.extend(lanes);
+                let mut out: Vec<(usize, Slot)> = Vec::new();
                 let (m1, m2) = ((d - 1) / 2, d / 2);
                 let medians = if left { [m1, m2] } else { [m2, m1] };
+                // Nearest the median first, so a hub with long edges in
+                // several columns stands over the middle one.
+                let mut lanes: Vec<(usize, Slot)> =
+                    ups.iter().copied().filter(|(_, u)| matches!(u, Slot::Dummy(..))).collect();
+                let mid = ups[medians[0]].0 as i64;
+                lanes.sort_by_key(|(i, _)| {
+                    ((*i as i64 - mid).abs(), if left { *i as i64 } else { -(*i as i64) })
+                });
+                out.extend(lanes);
                 for m in medians {
-                    candidates.push(ups[m]);
+                    out.push(ups[m]);
+                }
+                out
+            };
+            // Slots whose first choice is the same neighbour — the fan a hub
+            // throws into this row, boxes and corridors alike — are taken
+            // middle one first, so the hub stands over the middle of its fan.
+            // Taken in row order, the fan's first slot would claim the hub
+            // and the rest would hang off one side of it. A corridor
+            // continuing a corridor still goes before everything: that is
+            // the inner segment of a long edge, and it is a column at any
+            // cost. Other corridors go before boxes.
+            let mut first_choice: HashMap<Slot, Vec<Slot>> = HashMap::new();
+            for v in &slots {
+                if let Some((_, u)) = candidates(v).first() {
+                    first_choice.entry(*u).or_default().push(*v);
+                }
+            }
+            let mut middles: Vec<Slot> = first_choice
+                .into_iter()
+                .filter(|(_, fan)| fan.len() > 1)
+                .map(|(_, fan)| fan[(fan.len() - 1) / 2])
+                .collect();
+            middles.sort_by_key(|s| pos[s].1);
+            let rank = |s: &Slot| -> (u8, usize) {
+                let dummy = matches!(s, Slot::Dummy(..));
+                let inner = dummy
+                    && candidates(s).first().is_some_and(|(_, u)| matches!(u, Slot::Dummy(..)));
+                let class = if inner {
+                    0
+                } else if middles.contains(s) {
+                    1
+                } else if dummy {
+                    2
+                } else {
+                    3
+                };
+                (class, pos[s].1)
+            };
+            slots.sort_by_key(|s| {
+                (rank(s).0, if left { rank(s).1 } else { usize::MAX - rank(s).1 })
+            });
+            // Alignments made in this row, as (upper index, lower index).
+            let mut made: Vec<(usize, usize)> = Vec::new();
+            for v in slots {
+                let vj = pos[&v].1;
+                let candidates = candidates(&v);
+                if candidates.is_empty() {
+                    continue;
                 }
                 for (i, u) in candidates {
                     if align[&v] != v {
@@ -2183,7 +2289,7 @@ impl Layered {
                 if left { row.clone() } else { row.iter().rev().copied().collect() };
             for w in seq.windows(2) {
                 let (u, v) = (root[&w[0]], root[&w[1]]);
-                let sep = self.width[&w[0]] / 2 + self.width[&w[1]] / 2 + HGAP;
+                let sep = self.width[&w[0]] / 2 + self.width[&w[1]] / 2 + gap_between(&w[0], &w[1]);
                 let list = succ.entry(u).or_default();
                 match list.iter_mut().find(|(t, _)| *t == v) {
                     Some(e) => e.1 = e.1.max(sep),
@@ -2301,19 +2407,25 @@ impl Layered {
         }
     }
 
-    /// Grow each row gap until no straight edge across it cuts through a box
-    /// in either of its two rows.
+    /// Grow each row gap until no straight edge cuts through a box in either
+    /// of the rows it ends in.
     ///
-    /// A line from one row to the next leaves its box through the bottom if
-    /// it is steep and through the side if it is shallow, and a shallow one
-    /// then runs along the row band through the neighbours before it drops.
-    /// How shallow is shallow depends on the gap: the further apart the rows,
-    /// the steeper every line. So each gap is the one number that makes every
-    /// edge across it clear its rows — computed exactly, not tuned — and
-    /// capped at six times the stock gap, so one edge that spans the width of
-    /// the drawing costs one tall gap and not an absurd one. Per gap rather
-    /// than per drawing: a ten-rank chain with one shallow edge at the bottom
-    /// should not be three thousand pixels tall for it.
+    /// A line leaves its box through the bottom if it is steep and through
+    /// the side if it is shallow, and a shallow one then runs along the row
+    /// band through the neighbours before it drops. How shallow is shallow
+    /// depends on the gap: the further apart the rows, the steeper every
+    /// line. So each gap is the one number that makes every edge across it
+    /// clear its rows — computed exactly, not tuned — and capped at six
+    /// times the stock gap, so one edge that spans the width of the drawing
+    /// costs one tall gap and not an absurd one. Per gap rather than per
+    /// drawing: a ten-rank chain with one shallow edge at the bottom should
+    /// not be three thousand pixels tall for it.
+    ///
+    /// A long edge is looked after in the rows it crosses by its corridor,
+    /// but its two end rows are like any other edge's: it arrives at its box
+    /// at some slant, and the box beside that one is in the way if the slant
+    /// is shallow. Its drop is the sum of the gaps it spans, and it is the
+    /// gap next to the end row that grows.
     fn fit_gap(&mut self, edges: &[(usize, usize)]) {
         let row_of = self.row_index();
         let mut need = vec![VGAP; self.rows.len()];
@@ -2323,16 +2435,17 @@ impl Layered {
             }
             let (sa, sb) = (Slot::Item(a), Slot::Item(b));
             let (Some(&ra), Some(&rb)) = (row_of.get(&sa), row_of.get(&sb)) else { continue };
-            if ra.abs_diff(rb) != 1 {
+            if ra == rb {
                 continue;
             }
             let (up, dn) = if ra < rb { (sa, sb) } else { (sb, sa) };
             let (ux, dx) = (self.x[&up] + self.width[&up] / 2, self.x[&dn] + self.width[&dn] / 2);
             let (upper_row, lower_row) = (row_of[&up], row_of[&dn]);
-            // Every other box in the two rows that lies between the ends
+            // Every other box in the two end rows that lies between the ends
             // horizontally: the line must be past the row band by the time
             // it reaches the box's near edge.
             for (row, from_top) in [(upper_row, true), (lower_row, false)] {
+                let grows = if from_top { upper_row } else { lower_row - 1 };
                 for o in &self.rows[row] {
                     if *o == up || *o == dn || !matches!(o, Slot::Item(_)) {
                         continue;
@@ -2349,11 +2462,28 @@ impl Layered {
                     let run_to_box = (near - start).abs() as f64;
                     let run = (dx - ux).abs().max(1) as f64;
                     // Half box height plus inset: the line must have dropped
-                    // this far by `run_to_box`. Its total drop is pitch+gap
-                    // over `run`; solve for the gap.
+                    // this far by `run_to_box`. Its total drop is the rows
+                    // and gaps it spans; whatever is short is added to the
+                    // gap by this end.
                     let half = (self.height[o].max(1) as f64) / 2.0 + 2.0;
-                    let g = (half * run / run_to_box.max(1.0) - self.pitch as f64).ceil() as i32;
-                    need[upper_row] = need[upper_row].max(g);
+                    let drop = half * run / run_to_box.max(1.0);
+                    let rows = (lower_row - upper_row) as f64;
+                    let have: f64 = rows * self.pitch as f64
+                        + (upper_row..lower_row).map(|r| need[r] as f64).sum::<f64>();
+                    let mut short = (drop - have).ceil() as i32;
+                    // The gap by this end first, then the others it spans,
+                    // nearest first, each up to the cap.
+                    let mut order: Vec<usize> = (upper_row..lower_row).collect();
+                    order.sort_by_key(|r| r.abs_diff(grows));
+                    for r in order {
+                        if short <= 0 {
+                            break;
+                        }
+                        let room = (VGAP * 6 - need[r]).max(0);
+                        let add = short.min(room);
+                        need[r] += add;
+                        short -= add;
+                    }
                 }
             }
         }
@@ -2988,6 +3118,117 @@ mod tests {
         let share = long_through as f64 / long as f64;
         eprintln!("long edges through a box: {long_through} of {long} ({share:.3})");
         assert!(share < 0.10, "{long_through} of {long} long edges through a box ({share:.2})");
+    }
+
+    /// Crossings and lines through boxes in a placement, as the user sees it.
+    fn tangle_count(p: &Placement, edges: &[(usize, usize)]) -> (usize, usize) {
+        let through = edges
+            .iter()
+            .filter(|(a, b)| {
+                a != b && !straight_is_clear(p.rects[*a], p.rects[*b], &p.rects, *a, *b)
+            })
+            .count();
+        (drawn_crossings(p, edges), through)
+    }
+
+    /// The reported case: a hub with thirteen leaves was folded into two
+    /// lines under it, and three of the far line's edges ran through the
+    /// near line's boxes. Direction is not what the drawing is for: the
+    /// leaves go on both sides of the hub, half above and half below, and
+    /// nothing crosses anything.
+    #[test]
+    fn a_hub_and_its_fan_sit_on_both_sides_of_it() {
+        let it = items(15);
+        let edges: Vec<(usize, usize)> = (1..15).map(|i| (0, i)).collect();
+        let p = place(&it, &edges, Algorithm::Sugiyama);
+        assert_eq!(tangle_count(&p, &edges), (0, 0));
+        let hub = p.rects[0].y;
+        let above = p.rects[1..].iter().filter(|r| r.y < hub).count();
+        let below = p.rects[1..].iter().filter(|r| r.y > hub).count();
+        assert_eq!((above, below), (7, 7), "the fan splits evenly around the hub");
+        assert!(wideness(&p.rects) <= MAX_WIDTH_RATIO, "{}", wideness(&p.rects));
+        // And the hub stands over the middle of each half, not at its end.
+        let centre = |r: &Rect| r.x + r.w / 2;
+        let (lo, hi) = (
+            p.rects[1..].iter().map(centre).min().unwrap(),
+            p.rects[1..].iter().map(centre).max().unwrap(),
+        );
+        let mid = (lo + hi) / 2;
+        assert!(
+            (centre(&p.rects[0]) - mid).abs() <= 2 * GRID,
+            "hub at {}, fan spans {lo}..{hi}",
+            centre(&p.rects[0])
+        );
+    }
+
+    /// Two hubs sharing a crowd — a K(2,n) — cross about n² times with both
+    /// hubs above the crowd, and never with one above and one below. The
+    /// arrows all point the same way; the drawing does not have to.
+    #[test]
+    fn two_hubs_sharing_a_crowd_take_opposite_sides_of_it() {
+        let it = items(8);
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        for leaf in 2..8 {
+            edges.push((0, leaf));
+            edges.push((1, leaf));
+        }
+        let p = place(&it, &edges, Algorithm::Sugiyama);
+        assert_eq!(tangle_count(&p, &edges), (0, 0));
+        let crowd: HashSet<i32> = p.rects[2..].iter().map(|r| r.y).collect();
+        assert_eq!(crowd.len(), 1, "the crowd is one row");
+        let row = *crowd.iter().next().unwrap();
+        assert!(
+            (p.rects[0].y < row) != (p.rects[1].y < row),
+            "the hubs take opposite sides: {} / {row} / {}",
+            p.rects[0].y,
+            p.rects[1].y
+        );
+    }
+
+    /// A chain hung from a hub — a value stream and the lifecycle that
+    /// composes it — lies along one row, in order, and the hub sits over
+    /// the middle of it. Ranked by the arrows the chain would be a
+    /// staircase and the hub's fan would cross every step.
+    #[test]
+    fn a_chain_hung_from_a_hub_lies_along_one_row() {
+        let it = items(8);
+        let mut edges: Vec<(usize, usize)> = (1..8).map(|i| (0, i)).collect();
+        edges.extend((1..7).map(|i| (i, i + 1)));
+        let p = place(&it, &edges, Algorithm::Sugiyama);
+        assert_eq!(tangle_count(&p, &edges), (0, 0));
+        let ys: HashSet<i32> = p.rects[1..].iter().map(|r| r.y).collect();
+        assert_eq!(ys.len(), 1, "the chain is one row: {ys:?}");
+        for i in 1..7 {
+            assert!(p.rects[i].x < p.rects[i + 1].x || p.rects[i].x > p.rects[i + 1].x);
+        }
+        let mut xs: Vec<i32> = p.rects[1..].iter().map(|r| r.x).collect();
+        let sorted = {
+            let mut s = xs.clone();
+            s.sort_unstable();
+            s
+        };
+        xs.reverse();
+        assert!(
+            xs == sorted || {
+                xs.reverse();
+                xs == sorted
+            },
+            "the chain is in order along the row"
+        );
+    }
+
+    /// A fan too wide for one row on each side is folded, and the fold
+    /// nests: the far line's boxes stand between the near line's, so their
+    /// edges pass between the near boxes and not through them.
+    #[test]
+    fn a_folded_fan_nests_and_stays_clean() {
+        let it = items(41);
+        let edges: Vec<(usize, usize)> = (1..41).map(|i| (0, i)).collect();
+        let p = place(&it, &edges, Algorithm::Sugiyama);
+        let rows: HashSet<i32> = p.rects.iter().map(|r| r.y).collect();
+        assert!(rows.len() >= 5, "forty leaves do not fit on two rows: {} rows", rows.len());
+        assert_eq!(tangle_count(&p, &edges), (0, 0));
+        assert!(wideness(&p.rects) <= MAX_WIDTH_RATIO * 1.25, "{}", wideness(&p.rects));
     }
 
     #[test]
