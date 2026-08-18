@@ -131,12 +131,13 @@ Each connected component is laid out on its own and the components are packed
 side by side, so ten unconnected pairs come out as ten vertical pairs and
 nothing can leave a hole between them. Within a component, nodes are ranked by
 network simplex, so the rows are as few as the edges allow and each edge is as
-short as it can be; ordered within a row by median and
-sifting to cut crossings; and placed against the medians of their neighbours,
-with loosely joined groups pulled together afterwards rather than left at
-opposite ends of the drawing. A rank too wide to read — a hundred motivation
-elements two ranks deep gives layering nothing to stack — is folded onto
-several lines instead of run off the page.
+short as it can be; ordered within a row by median and sifting to cut
+crossings; and given x by Brandes and Köpf — aligned into blocks with a
+median neighbour, a corridor and the boxes at both ends of its long edge
+first so the whole edge is one column, and the blocks packed as tightly as
+the boxes allow. A rank too wide to read — a hundred motivation elements two
+ranks deep gives layering nothing to stack — is folded onto several lines
+instead of run off the page.
 
 Every edge is one straight line, centre to centre; no bendpoints are ever
 written. The layout keeps lines off boxes by where it puts the boxes: a long
