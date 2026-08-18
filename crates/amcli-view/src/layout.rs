@@ -163,45 +163,134 @@ fn fits(w: i32, h: i32) -> bool {
     w <= MIN_FOLD_WIDTH || w as f64 <= h as f64 * MAX_WIDTH_RATIO
 }
 
-/// A box sized so its label fits.
+/// Advance widths for ASCII 32..=126, in thousandths of an em: for each
+/// character the wider of Lucida Grande and Arial, measured from the font
+/// files rather than assumed.
 ///
-/// Archi draws the label inside the box, wrapped by word, at its default 9pt
-/// font — around seven pixels a character and fifteen a line, inside five
-/// pixels of padding each side. The stock 120×55 box holds three lines of
-/// fifteen characters, which is enough for a name of twenty-odd characters
-/// and not for one of forty; on a real model the median name was twenty-six
-/// characters and one in ten was over thirty-eight, and those were cut off.
+/// A flat average is what made this wrong before. At seven pixels a character
+/// "Communications Providers" asks for a 120 box and needs eighteen pixels
+/// more than one gives it, because the average is dragged down by letters
+/// that name does not contain.
+#[rustfmt::skip]
+const ADV: [u16; 95] = [
+    316, 316, 374, 632, 632, 889, 697, 229, //  !"#$%&'
+    333, 333, 482, 795, 316, 579, 316, 524, // ()*+,-./
+    632, 632, 632, 632, 632, 632, 632, 632, // 01234567
+    632, 632, 316, 316, 795, 795, 795, 556, // 89:;<=>?
+    1015, 690, 667, 722, 749, 667, 611, 778, // @ABCDEFG
+    735, 288, 500, 667, 556, 861, 739, 778, // HIJKLMNO
+    667, 778, 722, 667, 632, 722, 667, 944, // PQRSTUVW
+    667, 667, 611, 325, 524, 325, 632, 556, // XYZ[\]^_
+    614, 556, 629, 512, 629, 557, 368, 624, // `abcdefg
+    621, 289, 304, 584, 289, 934, 621, 614, // hijklmno
+    629, 629, 409, 510, 374, 621, 518, 771, // pqrstuvw
+    613, 522, 573, 334, 374, 334, 632,      // xyz{|}~
+];
+
+/// Archi's default diagram font is 9pt Segoe UI on Windows, 9pt Sans on Linux
+/// and Lucida Grande on macOS — twelve pixels of em on all three, since macOS
+/// counts points at 72dpi and the others at 96.
+const FONT_PX: i32 = 12;
+
+/// What a character outside the table costs. Cyrillic and the Latin
+/// supplement sit near here; it is a guess, and a guess that runs wide.
+const OTHER_ADV: i32 = 620;
+
+fn advance(c: char) -> i32 {
+    match c {
+        ' '..='~' => ADV[c as usize - 32] as i32,
+        // The punctuation a name is actually written with. An em dash costs
+        // three times what the fallback would charge it.
+        '—' => 1000,
+        '–' | '‑' => 556,
+        '’' | '‘' => 229,
+        '“' | '”' => 374,
+        '…' => 1000,
+        '\u{00a0}' => ADV[0] as i32,
+        _ => OTHER_ADV,
+    }
+}
+
+/// How wide a run of text draws, in pixels, rounded up.
+fn text_px(s: &str) -> i32 {
+    let mils: i32 = s.chars().map(advance).sum();
+    (mils * FONT_PX + 999) / 1000
+}
+
+/// Word wrap as draw2d does it, returning the number of lines. A word wider
+/// than the line gets one to itself and overhangs, which is why the caller
+/// sizes the box to the longest word first.
+fn wrapped_lines(label: &str, usable: i32) -> i32 {
+    let mut lines = 0;
+    let mut cur = 0;
+    for word in label.split_whitespace() {
+        let w = text_px(word);
+        if cur == 0 {
+            cur = w;
+            lines = 1;
+        } else if cur + text_px(" ") + w <= usable {
+            cur += text_px(" ") + w;
+        } else {
+            lines += 1;
+            cur = w;
+        }
+    }
+    lines.max(1)
+}
+
+/// Pixels Archi keeps for itself on each side of a label, inside an element
+/// figure whose type icon is showing.
+///
+/// The figure insets its text control by four pixels; then, when the icon is
+/// visible and the text centred — the default for every ArchiMate element —
+/// it insets *both* sides by the icon offset instead, so the label stays
+/// centred under an icon that is not. That offset runs from 16 to 27 across
+/// Archi 5.9's figures, and the widest of them are the motivation elements a
+/// model tends to name at length, so this takes the widest rather than the
+/// common one: a box a few pixels roomier than it needed to be is not a
+/// defect, and a clipped name is.
+pub const ICON_INSET: i32 = 27;
+
+/// The same for a figure with no icon — a note, or a group whose label lives
+/// in its tab. Only the text control's own margin applies.
+pub const TEXT_INSET: i32 = 4;
+
+/// A box sized so its label fits, for an element figure.
 ///
 /// The width is chosen so the name wraps into two lines, from the stock 120
-/// up to 264 — a little over two boxes — and the height grows to three lines
-/// only if two will not do at that width. Word wrap breaks at spaces, so the
-/// estimate is padded by the longest word: a line cannot be narrower than
-/// that. Everything is snapped to the grid.
+/// up to 264 — a little over two boxes — and the height grows past three
+/// lines only when two will not do at that width. A single word longer than
+/// the cap wins over the cap: word wrap cannot break inside one, so anything
+/// narrower would clip.
 pub fn fit_size(label: &str) -> (i32, i32) {
-    const CHAR_W: i32 = 7;
+    fit_inside(label, ICON_INSET)
+}
+
+/// The same for a figure that shows no type icon, which has far more room.
+pub fn fit_note_size(label: &str) -> (i32, i32) {
+    fit_inside(label, TEXT_INSET)
+}
+
+fn fit_inside(label: &str, inset: i32) -> (i32, i32) {
     const LINE_H: i32 = 15;
-    const PAD_W: i32 = 10;
     const PAD_H: i32 = 10;
     const MIN_W: i32 = 120;
     const MAX_W: i32 = 264;
     const MIN_H: i32 = 55;
 
-    let chars = label.chars().count() as i32;
-    let longest_word =
-        label.split_whitespace().map(|w| w.chars().count() as i32).max().unwrap_or(0);
+    let chrome = 2 * inset;
+    let longest = label.split_whitespace().map(text_px).max().unwrap_or(0);
 
-    // Two lines' worth of characters, no narrower than the longest word.
-    let per_line = ((chars + 1) / 2).max(longest_word);
-    let want = per_line * CHAR_W + PAD_W;
-    let w = snap(want.clamp(MIN_W, MAX_W));
+    // Half the label, so it wraps into two lines, but never narrower than the
+    // longest word — and the longest word outranks the cap.
+    let want = (text_px(label) / 2).max(longest) + chrome;
+    let w = snap_up(want.clamp(MIN_W, MAX_W).max(longest + chrome));
 
-    // At that width, how many lines does it actually take? Word wrap loses
-    // the tail of most lines, so allow one more than the arithmetic says
-    // whenever it wraps at all. Three fit in the stock height; past that the
-    // box grows a line at a time.
-    let cpl = ((w - PAD_W) / CHAR_W).max(1);
-    let lines = (chars + cpl - 1) / cpl + i32::from(chars > cpl);
-    let h = if lines <= 3 { MIN_H } else { snap(lines * LINE_H + PAD_H) };
+    // Three lines fit the stock height; past that the box grows a line at a
+    // time. Snapping up, never to nearest: half a grid square the wrong way
+    // is a clipped line.
+    let lines = wrapped_lines(label, w - chrome);
+    let h = if lines <= 3 { MIN_H } else { snap_up(lines * LINE_H + PAD_H) };
     (w, h)
 }
 
@@ -312,6 +401,12 @@ fn wideness(rects: &[Rect]) -> f64 {
 
 fn snap(v: i32) -> i32 {
     (v as f64 / GRID as f64).round() as i32 * GRID
+}
+
+/// Snap outwards. Sizing rounds this way: `snap` can take six pixels off a
+/// width that was measured, and a measured width has no six pixels to spare.
+fn snap_up(v: i32) -> i32 {
+    (v + GRID - 1) / GRID * GRID
 }
 
 /// How wide a row runs once its slots are laid end to end.
@@ -2701,6 +2796,75 @@ pub fn free_slot(taken: &[Rect], w: i32, h: i32) -> Rect {
 
 #[cfg(test)]
 mod tests {
+
+    /// The label a box gets has to fit the room Archi leaves for it. This is
+    /// the check the old flat seven-pixels-a-character estimate failed: on a
+    /// real model thirty-five names were drawn wider than their box.
+    fn clipped(label: &str) -> bool {
+        let (w, h) = fit_size(label);
+        let usable = w - 2 * ICON_INSET;
+        // A word wider than the line is clipped whatever the wrap does with
+        // the rest, and lines that do not fit the height are cut off.
+        label.split_whitespace().any(|word| text_px(word) > usable)
+            || wrapped_lines(label, usable) * 15 + 10 > h
+    }
+
+    #[test]
+    fn every_name_fits_the_box_it_is_given() {
+        for label in [
+            // The one that started it: a 120 box leaves 66 pixels of text and
+            // "Communications" alone is 88.
+            "Communications Providers",
+            "Underwriting Not India-Calibrated",
+            "Purpose-Bound, Withdrawable Consent",
+            "Money Moves Only Between RE and Borrower Accounts",
+            "Launch Window — Disbursements from March 2027",
+            "Daily Three-Way Reconciliation",
+            "API",
+            "Payment API",
+            "МФО и заёмщик",
+            "",
+        ] {
+            assert!(
+                !clipped(label),
+                "{label:?} does not fit fit_size({label:?}) = {:?}",
+                fit_size(label)
+            );
+        }
+    }
+
+    #[test]
+    fn a_word_wider_than_the_cap_widens_the_box_past_it() {
+        // Word wrap cannot break inside a word, so a cap that clipped one
+        // would be a cap that clipped the name.
+        let (w, _) = fit_size("Kraftfahrzeughaftpflichtversicherungsvertrag");
+        assert!(w > 264, "capped at {w}, which would clip the word");
+        assert!(!clipped("Kraftfahrzeughaftpflichtversicherungsvertrag"));
+    }
+
+    #[test]
+    fn a_short_name_still_gets_the_stock_box() {
+        assert_eq!(fit_size("Refunds"), (120, 55));
+        assert_eq!(fit_size("Payment API"), (120, 55));
+    }
+
+    #[test]
+    fn a_note_is_not_charged_for_an_icon_it_does_not_have() {
+        let label = "Reporting to All Four CICs Under RE Membership";
+        let (element, _) = fit_size(label);
+        let (note, _) = fit_note_size(label);
+        assert!(note < element, "note {note} is not narrower than element {element}");
+    }
+
+    #[test]
+    fn sizes_land_on_the_grid_and_never_shrink_to_get_there() {
+        for label in ["Communications Providers", "Adapter Checklist Before a Provider Goes Live"] {
+            let (w, h) = fit_size(label);
+            assert_eq!(w % GRID, 0, "{label:?} width {w} is off the grid");
+            assert!(h >= 55, "{label:?} height {h} is under the stock box");
+        }
+    }
+
     use super::*;
 
     fn items(n: usize) -> Vec<Item> {
