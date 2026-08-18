@@ -68,6 +68,9 @@ jobs:
             & .\skills\amcli\scripts\install.ps1 -DryRun -Version $v -InstallDir C:\amcli-test 2>$null
             if ($LASTEXITCODE -eq 0) { throw "accepted -Version $v" }
           }
+          # The step inherits $LASTEXITCODE, which is 1 here precisely because
+          # the last refusal worked. Say so, or a passing check reports failure.
+          exit 0
 
   installer:
     runs-on: ubuntu-24.04
