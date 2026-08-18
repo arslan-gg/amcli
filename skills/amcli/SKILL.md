@@ -223,9 +223,15 @@ regenerate-everything script re-runnable:
 
 `--layout` takes `auto` (the default), `layered` or `grid`; `view layout` spells
 the same flag `--algorithm` and both commands accept both names. `auto` layers
-the graph unless that comes out absurdly wide — a hundred elements two ranks deep
-has nothing to stack — and then lays out a grid instead and says so. The row
+the graph — folding a rank too wide to read onto several lines rather than
+running it off the page — and only lays out a grid when that would be both
+squarer and no more tangled, which in practice means an edgeless set. The row
 reports which algorithm actually ran.
+
+Layout sizes each box to its label and routes every edge clear of every box,
+and `view layout` writes sizes and routing back along with positions — so
+`--relayout-all` redraws the view, it does not just shuffle it. Run it after a
+batch of edits rather than after each one.
 
 `view render` draws the geometry the model actually stores. `export mermaid`
 and `export dot` re-lay-out, so they are for a quick look, not for reproducing

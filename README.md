@@ -127,19 +127,31 @@ layer is deliberately not consulted: most relationships in a real model run
 *within* a layer, so ranking by layer puts them in one row and turns each into a
 horizontal line through whatever sits between its ends.
 
-Nodes are ranked by longest path and then pulled back down to sit directly above
-their earliest successor, so most edges span one row. Longer ones reserve a
-corridor in each row they cross — and a bendpoint is only written when the
-straight line would actually hit a box, because a kink that buys nothing is
-still a kink. On a graph that admits a clean drawing the result has no bends, no
-edge through a box, and no two edges crossing; a test asserts all three.
+Nodes are ranked by network simplex, so the rows are as few as the edges allow
+and each edge is as short as it can be; ordered within a row by median and
+sifting to cut crossings; and placed against the medians of their neighbours,
+with loosely joined groups pulled together afterwards rather than left at
+opposite ends of the drawing. A rank too wide to read — a hundred motivation
+elements two ranks deep gives layering nothing to stack — is folded onto
+several lines instead of run off the page.
 
-Some graphs cannot be layered usefully: a hundred motivation elements two ranks
-deep gives layering nothing to stack, and the honest layered drawing of it is one
-row thousands of pixels wide. The default `--layout auto` measures that and falls
-back to a grid, reporting which one it used. `--layout layered` forces layering
-regardless. The reverse case is left alone deliberately — tall and narrow is what
-a correctly layered dependency chain looks like.
+Every edge is drawn clear of every box. A long one reserves a corridor in each
+row it crosses; a short one that would slice through its own row goes down,
+along the gap, and up; and each is then simplified so it keeps only the bends
+that are holding it off something. On a graph that admits a clean drawing the
+result has no bends, no edge through a box, and no two edges crossing; a test
+asserts all three, and another sweeps four hundred random graphs asserting no
+edge — routed or straight — ever passes through a box.
+
+Boxes are sized to their labels: the width a name wraps into two lines at,
+from the stock 120 up to 264, and taller only when it must be. `view layout`
+writes sizes and routing back along with positions, so a relaid view is
+redrawn, not just shuffled.
+
+`--layout auto` is layered unless a grid would be both squarer and no more
+tangled — crossings plus edges through boxes, which a grid can never route
+around — which in practice means the fallback is for edgeless sets.
+`--layout layered` and `--layout grid` force one or the other.
 
 `export mermaid` and `export dot` re-lay-out, so they are for a quick look in a
 chat window rather than for reproducing a diagram someone drew.
