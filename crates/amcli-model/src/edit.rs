@@ -675,6 +675,19 @@ impl Model {
         x: i32,
         y: i32,
     ) -> Result<(), EditError> {
+        self.set_view_object_rect(view, object_id, x, y, None)
+    }
+
+    /// Move and resize an object already on a view. `size` of `None` leaves the
+    /// width and height as they are.
+    pub fn set_view_object_rect(
+        &mut self,
+        view: ViewId,
+        object_id: &str,
+        x: i32,
+        y: i32,
+        size: Option<(i32, i32)>,
+    ) -> Result<(), EditError> {
         let view_node = self.view(view).node;
         let Some(obj) = self.doc.descendants(view_node).into_iter().find(|n| {
             self.doc.local_name(*n) == "child"
@@ -685,6 +698,46 @@ impl Model {
         if let Some(b) = self.doc.child_named(obj, "bounds") {
             self.doc.set_attr(b, "x", &x.to_string());
             self.doc.set_attr(b, "y", &y.to_string());
+            if let Some((w, h)) = size {
+                self.doc.set_attr(b, "width", &w.to_string());
+                self.doc.set_attr(b, "height", &h.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// Replace the bendpoints on a connection already on a view.
+    ///
+    /// The connection is found by its `id`. Existing bendpoints are removed and
+    /// the given ones written in their place; an empty list straightens the
+    /// line. Same encoding as [`Self::add_view_connection`].
+    pub fn set_view_connection_bendpoints(
+        &mut self,
+        view: ViewId,
+        connection_id: &str,
+        bendpoints: &[(i32, i32, i32, i32)],
+    ) -> Result<(), EditError> {
+        let view_node = self.view(view).node;
+        let Some(conn) = self.doc.descendants(view_node).into_iter().find(|n| {
+            self.doc.local_name(*n) == "sourceConnection"
+                && self.doc.attr(*n, "id").as_deref() == Some(connection_id)
+        }) else {
+            return Err(EditError::NoSuchConcept(connection_id.to_string()));
+        };
+        let old: Vec<NodeId> =
+            self.doc.children(conn).filter(|c| self.doc.local_name(*c) == "bendpoint").collect();
+        for c in old {
+            self.doc.remove_subtree(c);
+        }
+        for (sx, sy, ex, ey) in bendpoints {
+            self.doc.append_child(
+                conn,
+                NodeBuilder::new("bendpoint")
+                    .attr("startX", sx.to_string())
+                    .attr("startY", sy.to_string())
+                    .attr("endX", ex.to_string())
+                    .attr("endY", ey.to_string()),
+            )?;
         }
         Ok(())
     }
@@ -804,6 +857,24 @@ impl Model {
             .into_iter()
             .filter(|n| self.doc.local_name(*n) == "child")
             .filter_map(|n| Some((self.doc.attr(n, "id")?, self.doc.attr(n, "archimateElement"))))
+            .collect()
+    }
+
+    /// Every connection on a view, as (connection id, source object id,
+    /// target object id), in document order.
+    pub fn view_connections(&self, view: ViewId) -> Vec<(String, String, String)> {
+        let node = self.view(view).node;
+        self.doc
+            .descendants(node)
+            .into_iter()
+            .filter(|n| self.doc.local_name(*n) == "sourceConnection")
+            .filter_map(|n| {
+                Some((
+                    self.doc.attr(n, "id")?,
+                    self.doc.attr(n, "source")?,
+                    self.doc.attr(n, "target")?,
+                ))
+            })
             .collect()
     }
 }

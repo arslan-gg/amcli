@@ -623,11 +623,38 @@ fn relayout(
     // The edges between the objects being moved. Without them every layered
     // relayout saw an edgeless graph, ranked everything at zero, and produced
     // one enormous row — the layout was never given the chance to do its job.
-    let edges = edges_between(m, &scene, &movable);
+    let (edges, connections) = edges_between(m, v, &movable);
     let placed = place(&movable, &edges, algo);
 
+    // The layout may have resized a box — to fit its label, or widened a hub
+    // so its many edges hang straight — so the size goes back as well as the
+    // position.
     for (item, r) in movable.iter().zip(placed.rects.iter()) {
-        m.set_view_object_bounds(v, &item.id, r.x, r.y)
+        m.set_view_object_rect(v, &item.id, r.x, r.y, Some((r.w, r.h)))
+            .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    }
+    // And the routing goes back with it. Moving the boxes and leaving the old
+    // bendpoints where they were drew every routed edge through whatever now
+    // sat on its former path; a connection whose route the layout dropped is
+    // straightened, not left with stale kinks.
+    let mut routed = 0;
+    for (edge_index, (conn_id, a, b)) in connections.iter().enumerate() {
+        let bends: Vec<(i32, i32, i32, i32)> = placed
+            .routes
+            .get(&edge_index)
+            .map(|pts| {
+                pts.iter()
+                    .map(|p| {
+                        let bp = bendpoint_for(placed.rects[*a], placed.rects[*b], *p);
+                        (bp.start_x, bp.start_y, bp.end_x, bp.end_y)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !bends.is_empty() {
+            routed += 1;
+        }
+        m.set_view_connection_bendpoints(v, conn_id, &bends)
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     }
 
@@ -635,43 +662,36 @@ fn relayout(
         .s("view", m.view(v).id.clone())
         .n("moved", movable.len() as i64)
         .n("edges", edges.len() as i64)
+        .n("routed", routed)
         .s("algorithm", placed.algorithm.as_str())
         .b("dry_run", opts.dry_run);
     let out = finish(opts, m, row)?;
     Ok(fallback_note(out, algo, placed.algorithm))
 }
 
-/// Model relationships between the given diagram objects, as index pairs.
-fn edges_between(m: &Model, scene: &amcli_view::Scene, items: &[Item]) -> Vec<(usize, usize)> {
-    let g = Graph::build(m);
-    let concept_of: std::collections::HashMap<&str, Option<ConceptId>> = scene
-        .nodes
-        .iter()
-        .map(|n| (n.id.as_str(), n.concept_id.as_deref().and_then(|c| m.concept_by_id(c))))
-        .collect();
-
-    let mut slot: std::collections::HashMap<ConceptId, usize> = Default::default();
-    for (i, item) in items.iter().enumerate() {
-        if let Some(Some(c)) = concept_of.get(item.id.as_str()) {
-            slot.entry(*c).or_insert(i);
-        }
-    }
-
+/// The connections drawn among the given diagram objects, as index pairs into
+/// `items` — one edge per connection, in document order — with each
+/// connection's id and endpoints alongside so its routing can be written back.
+///
+/// Read from the view rather than from the model graph: what is drawn is the
+/// view's connections, and a concept placed twice on one view has two objects
+/// and two sets of lines.
+fn edges_between(
+    m: &Model,
+    v: ViewId,
+    items: &[Item],
+) -> (Vec<(usize, usize)>, Vec<(String, usize, usize)>) {
+    let index: std::collections::HashMap<&str, usize> =
+        items.iter().enumerate().map(|(i, it)| (it.id.as_str(), i)).collect();
     let mut edges = Vec::new();
-    for (i, item) in items.iter().enumerate() {
-        let Some(Some(c)) = concept_of.get(item.id.as_str()) else { continue };
-        // Outbound only: an undirected pass would add every edge twice.
-        for arc in g.neighbors(*c, Dir::Out, &EdgeFilter::default()) {
-            if let Some(j) = slot.get(&arc.other)
-                && *j != i
-            {
-                edges.push((i, *j));
-            }
+    let mut connections = Vec::new();
+    for (id, src, tgt) in m.view_connections(v) {
+        if let (Some(&a), Some(&b)) = (index.get(src.as_str()), index.get(tgt.as_str())) {
+            edges.push((a, b));
+            connections.push((id, a, b));
         }
     }
-    edges.sort_unstable();
-    edges.dedup();
-    edges
+    (edges, connections)
 }
 
 fn render(
