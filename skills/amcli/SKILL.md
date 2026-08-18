@@ -36,9 +36,11 @@ hand corrupts models.
 
 ## Setup
 
-Run this before anything else, **every session** — it installs amcli if it is
-missing, updates it if a newer release exists, and otherwise does nothing but
-print where the binary is:
+Run this before anything else, **every session, without exception** — it
+installs amcli if it is missing, updates it if a newer release exists, and
+otherwise does nothing but print where the binary is. Never start work on a
+binary you have not tried to update this session; an old amcli lays views out
+differently and refuses flags this file describes:
 
     AMCLI=$(sh ~/.agents/skills/amcli/scripts/install.sh)
     $AMCLI --version
@@ -50,11 +52,11 @@ session.** A newly installed binary is usually not on the current shell's PATH
 yet, so plain `amcli` will still report "command not found" even though the
 install succeeded — that is the single most likely way this goes wrong.
 
-Running it every time is cheap and safe: when the installed version is the
-newest release it costs one HTTP redirect and downloads nothing; with no
-network it keeps whatever is installed and says so; only a missing or older
-binary is actually fetched, and that download is verified against the
-release's SHA256SUMS.
+Running it every time is cheap and safe: it always asks GitHub for the newest
+release (one HTTP redirect); if that is what is installed it downloads
+nothing; if it is newer it fetches it, verified against the release's
+SHA256SUMS; and only when there is no network at all does it keep whatever is
+installed, and it says so on stderr.
 
 **Native Windows PowerShell**, where there is no `sh`, use the PowerShell one
 instead. It follows the same contract:
