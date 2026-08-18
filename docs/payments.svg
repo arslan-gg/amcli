@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="644" height="459" viewBox="-10 -10 644 459">
+  <title>Payments</title>
+  <style>text{font-family:Arial,Helvetica,sans-serif;font-size:9px}</style>
+  <g class="nodes">
+    <g data-id="id-a17e7b35c971f3395e06be0e3fd633e4" data-concept="id-a47e7ccbda50ee4b096354219473ab94" data-type="ApplicationComponent">
+      <rect x="168" y="132" width="120" height="55" fill="#b5ffff" fill-opacity="1" stroke="#7eb2b2" stroke-opacity="1" stroke-width="1"/>
+      <text x="228" y="162.88" text-anchor="middle">Payment API</text>
+    </g>
+    <g data-id="id-e14d1a482686c49f193ab74f20a26130" data-concept="id-1d1e790fa1a518341872354d4bb3daeb" data-type="ApplicationComponent">
+      <rect x="0" y="252" width="120" height="55" fill="#b5ffff" fill-opacity="1" stroke="#7eb2b2" stroke-opacity="1" stroke-width="1"/>
+      <text x="60" y="282.88" text-anchor="middle">Fraud Check</text>
+    </g>
+    <g data-id="id-067720e312edfb2faeb321cf5394f54a" data-concept="id-e6834473b30e11222aac7e6ebfa3c3ee" data-type="Node">
+      <rect x="0" y="0" width="120" height="55" fill="#c9e7b7" fill-opacity="1" stroke="#8ca180" stroke-opacity="1" stroke-width="1"/>
+      <text x="60" y="30.88" text-anchor="middle">Kubernetes Cluster</text>
+    </g>
+    <g data-id="id-bf3563bc0630c8d9f321b00b87739bc2" data-concept="id-75a50e1293cdef89ece43402eae8b7a3" data-type="ApplicationComponent">
+      <rect x="168" y="0" width="120" height="55" fill="#b5ffff" fill-opacity="1" stroke="#7eb2b2" stroke-opacity="1" stroke-width="1"/>
+      <text x="228" y="30.88" text-anchor="middle">Ledger</text>
+    </g>
+    <g data-id="id-dab4fbd08adb02546d8c372aaf8d154c" data-concept="id-96b26f68ca379213afb660ad5b1b7d38" data-type="ApplicationComponent">
+      <rect x="168" y="252" width="120" height="55" fill="#b5ffff" fill-opacity="1" stroke="#7eb2b2" stroke-opacity="1" stroke-width="1"/>
+      <text x="228" y="282.88" text-anchor="middle">Payment Gateway</text>
+    </g>
+    <g data-id="id-965591f0aa7f924d93002ee8b8a037dc" data-concept="id-9a5a25ad9689fada8f312270baa5701e" data-type="ApplicationService">
+      <rect x="336" y="252" width="120" height="55" rx="10" ry="10" fill="#b5ffff" fill-opacity="1" stroke="#7eb2b2" stroke-opacity="1" stroke-width="1"/>
+      <text x="396" y="282.88" text-anchor="middle">Payment Service</text>
+    </g>
+    <g data-id="id-531c0aa3ff20b93fa76acad22e59458c" data-concept="id-6a397b3dc34c140e23f09bfeb6c642d4" data-type="DataObject">
+      <rect x="336" y="0" width="120" height="55" fill="#b5ffff" fill-opacity="1" stroke="#7eb2b2" stroke-opacity="1" stroke-width="1"/>
+      <text x="396" y="30.88" text-anchor="middle">Transaction</text>
+    </g>
+    <g data-id="id-363e54597e1259dfbe45d4f8257d9184" data-concept="id-b902024e8283919072767c290d4ca2fa" data-type="BusinessProcess">
+      <rect x="336" y="384" width="120" height="55" rx="10" ry="10" fill="#ffffb5" fill-opacity="1" stroke="#b2b27e" stroke-opacity="1" stroke-width="1"/>
+      <text x="396" y="414.88" text-anchor="middle">Checkout</text>
+    </g>
+    <g data-id="id-70daf2c530c868d7414c00621477767b" data-concept="id-f0e0b6d941fb36033ae2739256739562" data-type="BusinessProcess">
+      <rect x="504" y="384" width="120" height="55" rx="10" ry="10" fill="#ffffb5" fill-opacity="1" stroke="#b2b27e" stroke-opacity="1" stroke-width="1"/>
+      <text x="564" y="414.88" text-anchor="middle">Refund</text>
+    </g>
+  </g>
+  <g class="edges">
+    <g data-id="id-eee8636a5a9375f90a3039af5f16cd0e" data-relationship="id-4ca27a20972110432d794a76908517e2">
+      <polyline points="267,187 356,251" fill="none" stroke="#5c5c5c" stroke-width="1" stroke-dasharray="2 2"/>
+      <polygon points="356,251 343.79,250.84 351.97,239.48" fill="#ffffff" stroke="#5c5c5c"/>
+    </g>
+    <g data-id="id-10b107306b2f5fa0d519a19709a8d836" data-relationship="id-10a5acca4492c1548919848ba3d64c14">
+      <polyline points="228,131 228,55" fill="none" stroke="#5c5c5c" stroke-width="1" stroke-dasharray="6 3"/>
+      <polygon points="228,55 231,62 225,62" fill="#5c5c5c" stroke="#5c5c5c"/>
+    </g>
+    <g data-id="id-e760076fb5fed8275258203d1d884e6a" data-relationship="id-8499f54ba0eebe1007183edd0f4370e2">
+      <polyline points="263,131 360,55" fill="none" stroke="#5c5c5c" stroke-width="1" stroke-dasharray="2 2"/>
+      <polyline points="356.34,61.68 360,55 352.64,56.96" fill="none" stroke="#5c5c5c"/>
+    </g>
+    <g data-id="id-9f750d813368bef90b5e25aed668924b" data-relationship="id-b24f6e1949fc8dbbc7673ba92b631e51">
+      <polyline points="99,251 188,187" fill="none" stroke="#5c5c5c" stroke-width="1"/>
+      <polyline points="184.07,193.52 188,187 180.57,188.65" fill="none" stroke="#5c5c5c"/>
+    </g>
+    <g data-id="id-3fdcee3bfadd82e21766482170ce618e" data-relationship="id-e9cf0fe94e86cb9b15432dfe8824362c">
+      <polyline points="95,55 192,131" fill="none" stroke="#5c5c5c" stroke-width="1" stroke-dasharray="2 2"/>
+      <polygon points="192,131 179.81,130.34 188.45,119.32" fill="#ffffff" stroke="#5c5c5c"/>
+    </g>
+    <g data-id="id-066bc98f0315128b93baf14eeb8ddaa4" data-relationship="id-377d1ec3b3b8b0f10196ca8db27a7f1e">
+      <polyline points="120,27 167,27" fill="none" stroke="#5c5c5c" stroke-width="1" stroke-dasharray="2 2"/>
+      <polygon points="167,27 157,34 157,20" fill="#ffffff" stroke="#5c5c5c"/>
+    </g>
+    <g data-id="id-50c104f0bc356ba7f24941b5ee0e8eaf" data-relationship="id-1054f31514052d4e4ee93fa28e4451cb">
+      <polyline points="288,27 335,27" fill="none" stroke="#5c5c5c" stroke-width="1" stroke-dasharray="2 2"/>
+      <polyline points="295,24 288,27 295,30" fill="none" stroke="#5c5c5c"/>
+    </g>
+    <g data-id="id-12c12633f6a2e8db0b0fe714ceeac238" data-relationship="id-0d3d4950a33725880228e20711819853">
+      <polyline points="228,251 228,187" fill="none" stroke="#5c5c5c" stroke-width="1"/>
+      <polyline points="231,194 228,187 225,194" fill="none" stroke="#5c5c5c"/>
+    </g>
+    <g data-id="id-5643df465c29c62397277d6e9ccff478" data-relationship="id-650265b481e23117bd88a0e93a7cc486">
+      <polyline points="396,307 396,383" fill="none" stroke="#5c5c5c" stroke-width="1"/>
+      <polyline points="393,376 396,383 399,376" fill="none" stroke="#5c5c5c"/>
+    </g>
+    <g data-id="id-25234af753f733b6437f2a02057e1e91" data-relationship="id-7667efa5a7b997a5f6aaf10d0998e7e4">
+      <polyline points="431,307 528,383" fill="none" stroke="#5c5c5c" stroke-width="1"/>
+      <polyline points="520.64,381.04 528,383 524.34,376.32" fill="none" stroke="#5c5c5c"/>
+    </g>
+  </g>
+</svg>

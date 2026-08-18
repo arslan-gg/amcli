@@ -1,224 +1,165 @@
-# amcli
+<h1 align="center">amcli</h1>
 
-**A CLI over ArchiMate models. No Archi, no JVM, no daemon — one static binary
-that reads and writes `.archimate` files directly.**
+<p align="center">
+  <b>ArchiMate models from the command line.</b><br>
+  One static binary that reads, edits, validates and draws <code>.archimate</code> files directly.<br>
+  No Archi, no JVM, no daemon. Built for AI agents, pleasant for humans.
+</p>
 
-Built so an AI agent can study and change an architecture model the way a person
-uses Archi, minus the GUI: search it, walk the graph, edit it safely, validate it
-against the real ArchiMate rules, and draw a view.
+<p align="center">
+  <a href="https://github.com/arslan-gg/amcli/actions/workflows/ci.yml"><img src="https://github.com/arslan-gg/amcli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/arslan-gg/amcli/releases/latest"><img src="https://img.shields.io/github/v/release/arslan-gg/amcli?label=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0"></a>
+  <a href="https://agentskills.io"><img src="https://img.shields.io/badge/agent%20skill-included-8A2BE2" alt="Agent skill included"></a>
+</p>
 
 ```console
-$ amcli stats
-total   elements        947
-total   relationships   1745
-layer   Application     812
+$ amcli search payment -l 3
+id-a47e7ccb…  ApplicationComponent  Payment API      /Application  3  3  1  name
+id-96b26f68…  ApplicationComponent  Payment Gateway  /Application  0  1  1  name
+id-9a5a25ad…  ApplicationService    Payment Service  /Application  1  2  1  name
 
-$ amcli search payment -t ApplicationComponent -l 3
-4e9a7c21  ApplicationComponent  Payment API      /Application/Payments  7  12  3  name
-1b90ccde  ApplicationComponent  Payment Gateway  /Application/Payments  2   4  1  name
-
-$ amcli impact id:4e9a7c21 -D in          # what breaks if this changes?
-$ amcli relation add Serving "Payment API" "Checkout"
-$ amcli view auto "Payments" --from "Payment API" -n 2
+$ amcli impact "Payment API" -D in            # what breaks if this changes?
+$ amcli relation add Serving "Fraud Check" "Payment API"
+$ amcli view auto "Payments" --from "Payment API" -n 3
 $ amcli view render "Payments" -o payments.svg
 ```
 
-## Why this exists
+<p align="center">
+  <img src="docs/payments.svg" alt="A view laid out by amcli: straight lines, no crossings, boxes sized to their labels">
+  <br>
+  <sub>That view was placed by <code>amcli</code>: straight lines, nothing crossing, nothing hand-dragged.</sub>
+</p>
 
-Archi's own command line (ACLI) is a batch pipeline: load, save, import, CSV,
-HTML report, Open Exchange, coArchi. It has no command to search a model, walk
-its graph, edit one element, or validate anything, and no image export. The only
-headless route to those today is jArchi scripting, which needs a full Archi
-install (Eclipse RCP, ~150–200 MB) plus a JRE, starts in seconds, and makes you
-write a fresh JavaScript file for every question.
+## Why
 
-Among open-source libraries, nothing permissively licensed does full-fidelity
-**read *and* write** of the Archi format at all.
+- **Archi is a GUI.** Its command line (ACLI) loads, saves, imports and reports.
+  It cannot search a model, walk its graph, edit one element, validate anything
+  or export an image. The headless route is jArchi scripting — a full Archi
+  install plus a JRE, and a fresh JavaScript file per question.
+- **Nothing permissively licensed reads *and* writes the Archi format** with
+  full fidelity. amcli does, and it is Apache-2.0.
+- **Agents need a tool, not an app.** Tab-separated records, exit codes to
+  branch on, atomic batches, and a skill that installs the binary itself.
 
-## What makes it different
+## Highlights
 
-**Edits produce a clean diff.** Untouched nodes are written back as the exact
-bytes they were parsed from — comments, whitespace, attribute order, the quoting
-of the XML declaration, everything. Renaming one element changes one line.
+- **Diffs a human can review.** Untouched bytes stay untouched — comments,
+  whitespace, attribute order, all of it. Renaming one element changes one line:
 
-**Writes cannot corrupt the model.** Every write goes through Archi's own 62×62
-relationship matrix and is refused if the standard forbids it — with the
-permitted alternatives named. Deleting a concept also removes every diagram
-object and connection that referenced it and recomputes the view's
-`targetConnections`, so the model still opens in Archi afterwards. Saves are
-atomic; `--expect-checksum` refuses a write over a file that moved since you read
-it.
+  ```diff
+  -    <element xsi:type="archimate:ApplicationComponent" name="Payment API" id="id-a47e7ccb…"/>
+  +    <element xsi:type="archimate:ApplicationComponent" name="Payments API" id="id-a47e7ccb…"/>
+  ```
 
-**It answers questions in one call.** `search`, `trace`, `path`, `impact`,
-`cycles` — tab-separated records on stdout, context on stderr, and exit codes an
-agent can branch on without parsing prose. `3` is not found, `4` is ambiguous,
-and both come back with something to retry.
+- **Writes that cannot corrupt the model.** Every write is checked against
+  Archi's own 62×62 relationship matrix and refused if the standard forbids it
+  — naming what *is* allowed:
 
-**Batches are atomic.** `amcli apply` takes JSONL, resolves forward references
-between lines, and writes once at the end. If any line fails the file is
-byte-identical.
+  ```console
+  $ amcli relation add Composition "Transaction" "Checkout"
+  error: ArchiMate does not permit Composition from DataObject to BusinessProcess
+         — permitted here: Association
+  ```
 
-**A model can be rebuilt reproducibly.** Keep the batches in the repository and
-pass `--id-seed`: ids are derived from what they name rather than drawn at random,
-so regenerating an unchanged model produces an unchanged file. Without a seed —
-still the default, because an id only has to be unique — every rebuild reissues
-every id and the whole file looks changed.
+  Deletes cascade to every diagram object that referenced the concept, saves
+  are atomic, and `--expect-checksum` refuses to write over a file that moved
+  since you read it. Whatever amcli writes, Archi still opens.
+- **One question, one call.** `search`, `get`, `trace`, `path`, `impact`,
+  `cycles`, `query 'layer=Application and deg>10'`. Data on stdout, context on
+  stderr, exit codes an agent can branch on: `3` not found, `4` ambiguous —
+  both come back with something to retry.
+- **Atomic batches.** `amcli apply` takes JSONL, resolves forward references
+  between lines and writes once. If any line fails, the file is byte-identical.
+- **Reproducible rebuilds.** Keep the batches in git and pass `--id-seed`: ids
+  derive from what they name, so regenerating an unchanged model produces an
+  unchanged file.
+- **Views drawn to be read.** Layout works from the graph alone, tries several
+  layerings and keeps the least tangled: every edge one straight line, kept off
+  the boxes, boxes sized to their labels, and — wherever the graph allows it —
+  nothing crossing. [How it works →](docs/layout.md)
+- **Agent-ready.** Ships an [Agent Skill](https://agentskills.io) that teaches
+  Claude Code, Codex and friends the workflow — and keeps the binary current
+  every session.
 
 ## Install
 
-Install the skill; it installs the binary.
+**For an agent** — the skill installs and updates the binary itself:
 
 ```bash
 npx skills add arslan-gg/amcli -y
 ```
 
-That writes the [Agent Skills](https://agentskills.io) package into
-`~/.agents/skills/amcli/` — the documented cross-tool location Codex reads
-natively — and symlinks `~/.claude/skills/amcli` at it. The `-y` matters:
-without it the CLI opens an interactive agent picker, which hangs in a
-non-interactive shell.
-
-The skill's own setup section then tells the agent to run the installer that
-came with it, so in the normal case you never run this yourself:
+**Just the binary** — verified against the release's SHA256SUMS, into
+`~/.local/bin`, no `sudo`, no shell config edited:
 
 ```bash
-sh ~/.agents/skills/amcli/scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/arslan-gg/amcli/main/skills/amcli/scripts/install.sh | sh
 ```
 
-It resolves the newest release, verifies a sha256, and installs to
-`~/.local/bin`. It prints the absolute path of the binary on stdout and nothing
-else, so `AMCLI=$(sh …/install.sh)` works — which matters because a fresh
-install is usually not on the current shell's PATH yet. It never uses `sudo`
-and never edits a shell config. `AMCLI_VERSION`, `AMCLI_INSTALL_DIR` and
-`AMCLI_DRY_RUN` override the obvious things.
+```powershell
+irm https://raw.githubusercontent.com/arslan-gg/amcli/main/skills/amcli/scripts/install.ps1 | iex
+```
 
-If no prebuilt binary matches the platform, or no release exists yet, it builds
-with cargo instead. That path also works by hand, and needs no release at all:
+**From source** (Rust 1.90+; the only route for platforms without a prebuilt
+binary — the installers fall back to it on their own):
 
 ```bash
 cargo install --git https://github.com/arslan-gg/amcli --locked amcli-cli
 ```
 
-Note the `--git`. Plain `cargo install amcli-cli` does not work and is not
-planned: the binary embeds the skill with `include_str!` from outside its own
-package directory, which cargo will not put in a `.crate` tarball.
+Prebuilt for macOS (Apple silicon, Intel), Linux (x86_64, aarch64, static
+musl) and Windows x64. `amcli skill install` writes the skill from the binary
+if you went binary-first.
 
-Binary first instead? `amcli skill install` writes the same skill from the
-binary. It refuses to touch a directory `npx skills add` owns, since that
-tool's lock file records an upstream tree hash and would silently overwrite
-anything written underneath it.
+## A tour
 
-On Windows use the PowerShell installer, which follows the same contract:
+```bash
+amcli stats                                   # how big, and of what
+amcli get "Payment API"                       # the concept and everything it touches
+amcli trace "Payment API" -n 2                # the neighbourhood
+amcli path "Web App" "Customer Database"      # how are these connected?
+amcli query 'kind=element and view=0'         # modelled but drawn nowhere
 
-```powershell
-& ~\.agents\skills\amcli\scripts\install.ps1
+amcli element  add ApplicationComponent "Refund Service" -f /Application
+amcli relation add Access "Refund Service" "Refund Record" --access rw
+amcli prop set "Refund Service" owner team-payments
+amcli element  delete "Refund Service" -y     # cascades, and says to what
+
+amcli apply batch.jsonl                       # many edits, one write, all or nothing
+amcli validate                                # rules, with a `fix` per finding
+amcli view auto "Refunds" --from "Refund Service" -n 2
+amcli export mermaid                          # a quick diagram for a chat window
 ```
 
-## Rendering
-
-`amcli view render` draws the geometry the model stores: every figure on the
-bounds Archi recorded, every connection on the polyline Archi computes. It does
-**not** promise pixel identity with Archi, which is not achievable in principle —
-Archi's default view font is the platform system font, so its own export differs
-between macOS and Windows.
-
-`amcli view auto` lays a new view out from the graph, and from nothing else.
-The ArchiMate layer is deliberately not consulted: most relationships in a
-real model run *within* a layer, so ranking by layer puts them in one row and
-turns each into a horizontal line through whatever sits between its ends.
-Nor, in the end, does the direction of the arrows decide. What a drawing is
-for is being read, and a line through a box or across another line is what
-stops that; so several layerings are tried per connected component and the
-least tangled drawing is kept, and the arrows point down only when that
-costs nothing.
-
-The first candidate follows the arrows — ranks by network simplex, so the
-rows are as few as the edges allow and each edge as short as it can be. The
-others ignore direction and grow rings out from a hub, each ring's groups
-going to whichever side of the hub most of their parents are on. That is
-what puts a hub's fan half above it and half below, a value stream along
-one row under the lifecycle that composes it, and two capabilities serving
-the same crowd on opposite sides of it — none of which a drawing that must
-point every arrow down can do, and the difference between a stack of
-crossings and none. Two boxes in one row joined by an edge are drawn side by
-side, and the ordering keeps them so.
-
-Each connected component is laid out on its own and the components are
-packed side by side. Within a component, nodes are ordered within a row by
-median and sifting to cut crossings, and given x by Brandes and Köpf —
-aligned into blocks with a median neighbour, a corridor and the boxes at
-both ends of its long edge first so the whole edge is one column, and of a
-fan the middle slot first so a hub stands over the middle of what it links
-to. A rank too wide to read — wider than a screen and four times wider than
-the drawing is tall — is folded onto several lines, and the fold nests: the
-outer boxes on the near line, the inner on the far, so an inner box's edge
-crosses the near line between the outer boxes and never through one.
-
-Every edge is one straight line, centre to centre; no bendpoints are ever
-written. The layout keeps lines off boxes by where it puts the boxes: a long
-edge reserves a corridor in each row it crosses, sequenced where the line
-will run and as wide as its slant, and the boxes pack around it; every edge
-is kept off the boxes of the rows it ends in by the row gaps, which are
-computed so that each line has dropped clear of the row band before it
-reaches a neighbour. On a graph that admits a clean drawing the result has
-no edge through a box and no two edges crossing; tests assert that for a
-fan, for two hubs sharing a crowd, for a chain under a hub and for a folded
-fan, and a sweep of four hundred random graphs asserts that no edge between
-neighbouring rows ever cuts a box and that the share of long edges drawn
-through a rank they skip stays under a bound. That share is not zero — a
-slanted line across a crowded rank sometimes has no seat for its corridor
-that does not cost more crossings than it saves — and it is reported.
-
-What this cannot do is make a non-planar graph planar. Three hubs sharing
-three boxes cross at least once however they are drawn, and in rows they
-cross more. That is the model, not the drawing.
-
-Boxes are sized to their labels: the width a name wraps into two lines at,
-from the stock 120 up to 264, and taller only when it must be. `view layout`
-writes sizes back along with positions and straightens every connection, so a
-relaid view is redrawn, not just shuffled.
-
-`--layout auto` is layered unless a grid would be both squarer and no more
-tangled — crossings plus edges through boxes, which a grid can never route
-around — which in practice means the fallback is for edgeless sets.
-`--layout layered` and `--layout grid` force one or the other.
-
-`export mermaid` and `export dot` re-lay-out, so they are for a quick look in a
-chat window rather than for reproducing a diagram someone drew.
+`amcli --help` lists everything; `amcli <command> --help` goes deep. Reads are
+bare verbs, writes are noun-verb, `--dry-run` and `--count` never write.
 
 ## Development
 
 ```bash
-cargo test
-cargo xtask verify   # the generated tables still match assets/archi
+cargo test           # byte-identity over real Archi files, property tests, layout sweep
+cargo xtask verify   # generated tables still match the vendored Archi assets
 ```
 
-The corpus in `tests/corpus/` is real Archi output. The identity test asserts
-that parsing and writing every file in it is a byte-for-byte no-op; the property
-tests apply random edit sequences and assert the result still re-parses, still
-means the same thing, and left every untouched subtree alone.
-
-`assets/archi/` holds MIT-licensed files vendored from `archimatetool/archi`;
-`cargo xtask codegen` turns them into the type tables and the packed relationship
-matrix, and CI fails if the committed output goes stale.
+`tests/corpus/` is real Archi output; the identity test asserts that parsing and
+writing every file is a byte-for-byte no-op. `assets/archi/` is vendored from
+[archimatetool/archi](https://github.com/archimatetool/archi) (MIT) and turned
+into the type tables and relationship matrix by `cargo xtask codegen`.
 
 ## Status
 
-Read, write, validate, views and SVG all work and are covered by tests. Not yet
-built: coArchi's grafico directory format, The Open Group's Open Exchange XML,
-and PNG output (render to SVG and convert).
-
-No Homebrew tap, deliberately. `brew` does not exist in the Linux containers
-where most agents run, and a tap costs a second repository, a fine-grained PAT
-that the default `GITHUB_TOKEN` cannot substitute for, and Gatekeeper
-quarantine handling — all for a route the agent never takes.
+Read, write, validate, views and SVG all work and are tested. Not yet:
+coArchi's grafico directory format, Open Exchange XML, and PNG output (render
+to SVG and convert). No Homebrew tap on purpose — `brew` does not exist in the
+containers agents run in.
 
 ## Licence and trademarks
 
 Apache-2.0. See [NOTICE](NOTICE) for the vendored Archi assets and their MIT
 licence.
 
-ArchiMate® is a registered trademark of The Open Group. Archi® is a trademark of
-Phillip Beauvoir. This project is independent and is not affiliated with,
-endorsed by, or certified by either. It reads and writes their file formats for
+ArchiMate® is a registered trademark of The Open Group. Archi® is a trademark
+of Phillip Beauvoir. This project is independent and is not affiliated with,
+endorsed by, or certified by either; it reads and writes their file formats for
 interoperability.
