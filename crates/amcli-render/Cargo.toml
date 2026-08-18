@@ -9,3 +9,8 @@ rust-version.workspace = true
 
 [dependencies]
 amcli-view.workspace = true
+amcli-model.workspace = true
+# The one rasteriser: pure Rust, no system libraries, so the binary stays
+# static. Text and system fonts only — no raster image decoders, a view has
+# nothing to decode.
+resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }

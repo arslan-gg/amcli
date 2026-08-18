@@ -1509,3 +1509,141 @@ fn first_difference(a: &str, b: &str) -> Option<String> {
     (a.lines().count() != b.lines().count())
         .then(|| format!("{} lines before, {} after", a.lines().count(), b.lines().count()))
 }
+
+/// `-o v.png` is enough to ask for a raster; `--as png` says it outright.
+#[test]
+fn view_render_writes_png_when_asked_for_one() {
+    let m = Model::new("testmodel1.archimate");
+    let png = m.dir.path().join("v.png");
+    let (code, _, err) =
+        m.run(&["view", "render", "2 Test Bounds and Images", "-o", png.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let bytes = std::fs::read(&png).unwrap();
+    assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "not a PNG");
+
+    let out = Command::cargo_bin("amcli")
+        .unwrap()
+        .arg("-m")
+        .arg(m.path())
+        .args(["view", "render", "2 Test Bounds and Images", "--as", "png"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.starts_with(b"\x89PNG"), "png goes to stdout raw when there is no -o");
+}
+
+// ---- amcli web ---------------------------------------------------------------
+
+/// The URL is the command's answer and has to be out before the server starts
+/// serving: whoever launched the process reads one line and has the link. So
+/// this spawns the real binary, reads stdout until the URL arrives, talks to
+/// the server, and only then kills it.
+#[test]
+fn web_prints_its_url_before_it_serves() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let m = Model::new("testmodel1.archimate");
+    let mut child = Command::cargo_bin("amcli")
+        .unwrap()
+        .arg("-m")
+        .arg(m.path())
+        .args(["web", "--no-open", "-F", "json", "-q"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = String::new();
+    BufReader::new(child.stdout.take().unwrap()).read_line(&mut first).unwrap();
+    let url = first
+        .split("\"url\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .unwrap_or_else(|| panic!("no url in the first line: {first:?}"))
+        .to_string();
+    assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+    let port: u16 =
+        url.trim_start_matches("http://127.0.0.1:").trim_end_matches('/').parse().unwrap();
+
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.write_all(format!("GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut body = String::new();
+    s.read_to_string(&mut body).unwrap();
+    assert!(body.starts_with("HTTP/1.1 200"), "{body}");
+    assert!(body.contains("\"checksum\":\""), "{body}");
+
+    child.kill().unwrap();
+    let _ = child.wait();
+}
+
+/// A port already taken is an error a person can act on, not a hang.
+#[test]
+fn web_refuses_a_busy_port_with_a_hint() {
+    let taken = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let m = Model::new("testmodel1.archimate");
+    let (code, _, err) = m.run(&["web", "--no-open", "--port", &port.to_string()]);
+    assert_eq!(code, 7, "io: {err}");
+    assert!(err.contains("--port"), "{err}");
+}
+
+/// Everything under `src/web/assets/` is compiled in by name. A file that is
+/// there but not in the table would be silently unreachable, so this walks the
+/// directory rather than trusting the list.
+#[test]
+fn every_web_asset_is_served() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/assets");
+    let m = Model::new("testmodel1.archimate");
+    let mut child = Command::cargo_bin("amcli")
+        .unwrap()
+        .arg("-m")
+        .arg(m.path())
+        .args(["web", "--no-open", "-q"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    use std::io::{BufRead, BufReader, Read, Write};
+    let mut first = String::new();
+    BufReader::new(child.stdout.take().unwrap()).read_line(&mut first).unwrap();
+    let port: u16 = first
+        .split('\t')
+        .next()
+        .unwrap()
+        .trim()
+        .trim_start_matches("http://127.0.0.1:")
+        .trim_end_matches('/')
+        .parse()
+        .unwrap();
+
+    let mut checked = 0;
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+            let url = if rel == "index.html" { "/".to_string() } else { format!("/{rel}") };
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(format!("GET {url} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut body = Vec::new();
+            s.read_to_end(&mut body).unwrap();
+            let text = String::from_utf8_lossy(&body);
+            assert!(
+                text.starts_with("HTTP/1.1 200"),
+                "{rel} is in src/web/assets but not served: {}",
+                text.lines().next().unwrap_or("")
+            );
+            let want = std::fs::read(&path).unwrap();
+            let got = &body[body.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4..];
+            assert!(want == got, "{rel} differs between disk and the binary");
+            checked += 1;
+        }
+    }
+    assert!(checked >= 10, "walked only {checked} assets");
+    child.kill().unwrap();
+    let _ = child.wait();
+}

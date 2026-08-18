@@ -143,4 +143,9 @@ fn svg_output_is_byte_stable() {
     // sits above the primary layer.
     assert!(svg.find("class=\"nodes\"") < svg.find("class=\"edges\""));
     assert!(!svg.contains("-0"), "negative zero is normalised away");
+    // The actor carries its type icon, once as a symbol and once as a use.
+    assert!(svg.contains(r##"<symbol id="i-BusinessActor""##), "{svg}");
+    assert!(svg.contains(r##"<use href="#i-BusinessActor""##), "{svg}");
+    let bare = amcli_render::svg(&scene, &amcli_render::Options { icons: false, ..o });
+    assert!(!bare.contains("<use"), "icons can be switched off");
 }

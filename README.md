@@ -1,8 +1,8 @@
 <h1 align="center">amcli</h1>
 
 <p align="center">
-  <b>ArchiMate models from the command line.</b><br>
-  One static binary that reads, edits, validates and draws <code>.archimate</code> files directly.<br>
+  <b>ArchiMate models from the command line — and in your browser.</b><br>
+  One static binary that reads, edits, validates, draws and serves <code>.archimate</code> files directly.<br>
   No Archi, no JVM, no daemon. Built for AI agents, pleasant for humans.
 </p>
 
@@ -22,13 +22,15 @@ id-9a5a25ad…  ApplicationService    Payment Service  /Application  1  2  1  na
 $ amcli impact "Payment API" -D in            # what breaks if this changes?
 $ amcli relation add Serving "Fraud Check" "Payment API"
 $ amcli view auto "Payments" --from "Payment API" -n 3
-$ amcli view render "Payments" -o payments.svg
+$ amcli view render "Payments" -o payments.png     # or .svg
+$ amcli web                                   # and now look at all of it
+http://127.0.0.1:52341/
 ```
 
 <p align="center">
-  <img src="docs/payments.svg" alt="A view laid out by amcli: straight lines, no crossings, boxes sized to their labels">
+  <img src="docs/web.gif" alt="amcli web: a view drawn as Archi draws it, the details of an element, the element table filtered to one layer, and an interactive graph explored from that element, in light and dark">
   <br>
-  <sub>That view was placed by <code>amcli</code>: straight lines, nothing crossing, nothing hand-dragged.</sub>
+  <sub>The agent works on the model; <code>amcli web</code> shows you what it did — every view, every element, the graph between them — while it keeps working.</sub>
 </p>
 
 ## Why
@@ -44,6 +46,18 @@ $ amcli view render "Payments" -o payments.svg
 
 ## Highlights
 
+- **The agent edits, you watch — `amcli web`.** One command serves the model
+  read-only to your browser on a free local port and opens it. Every view is
+  drawn as Archi draws it — layer colours, figures, type icons — and a click on
+  any figure opens the element: documentation, properties, every relationship
+  in and out, every view it is on. Every element and relationship sits in a
+  table you can filter by layer, type, folder and name. The **graph** starts
+  from any element, walks out to a chosen depth, filters by layer and
+  relationship type, expands on double-click and lets you drag things where
+  you want them. Stats, search (⌘K), light and dark, SVG and PNG a click away.
+  The page **follows the file**: an agent editing with amcli and a person
+  watching in a browser see the same model, batch by batch, without a
+  reload. Nothing on the page writes; the only verb it knows is GET.
 - **Diffs a human can review.** Untouched bytes stay untouched — comments,
   whitespace, attribute order, all of it. Renaming one element changes one line:
 
@@ -141,6 +155,9 @@ amcli view auto "Refunds" --from "Refund Service" -n 2
 amcli view move "Refunds" -f /Views/Payments  # file it; the id does not change
 amcli export views                            # the batch that rebuilds every view
 amcli export mermaid                          # a quick diagram for a chat window
+amcli view render "Refunds" -o refunds.png     # or .svg; --scale 2 for a slide
+amcli web                                     # look at all of it in a browser, read-only
+amcli web --no-open                           # just the URL — a container, or an agent handing it to you
 ```
 
 `amcli --help` lists everything; `amcli <command> --help` goes deep. Reads are
@@ -160,10 +177,10 @@ into the type tables and relationship matrix by `cargo xtask codegen`.
 
 ## Status
 
-Read, write, validate, views and SVG all work and are tested. Not yet:
-coArchi's grafico directory format, Open Exchange XML, and PNG output (render
-to SVG and convert). No Homebrew tap on purpose — `brew` does not exist in the
-containers agents run in.
+Read, write, validate, views, SVG and PNG, and the web viewer all work and are
+tested. Not yet: coArchi's grafico directory format and Open Exchange XML. No
+Homebrew tap on purpose — `brew` does not exist in the containers agents run
+in.
 
 ## Licence and trademarks
 

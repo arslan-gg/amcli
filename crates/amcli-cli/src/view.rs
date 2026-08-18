@@ -86,17 +86,18 @@ pub enum ViewCmd {
     /// Draw a view.
     Render {
         view: String,
-        /// svg | json. This is `--as`, not the global `-F`: one controls what
-        /// is drawn, the other how amcli reports. The field is named
-        /// `draw_as` because a second `format` would be merged into the
-        /// global one by clap.
-        #[arg(long = "as", default_value = "svg")]
-        draw_as: String,
+        /// svg | png | json. Defaults to the extension of `-o`, else svg.
+        /// This is `--as`, not the global `-F`: one controls what is drawn,
+        /// the other how amcli reports. The field is named `draw_as` because
+        /// a second `format` would be merged into the global one by clap.
+        #[arg(long = "as")]
+        draw_as: Option<String>,
         /// Write here instead of to stdout.
         #[arg(short = 'o', long)]
         out: Option<String>,
         #[arg(long, default_value_t = 10)]
         margin: i32,
+        /// For png, the resolution: 2 draws every pixel of the view as two.
         #[arg(long, default_value_t = 1.0)]
         scale: f64,
     },
@@ -130,7 +131,14 @@ pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError
         ViewCmd::Rename { view, name } => rename(opts, m, view, name),
         ViewCmd::Move { view, folder } => move_view(opts, m, view, folder),
         ViewCmd::Render { view, draw_as, out, margin, scale } => {
-            render(m, view, draw_as, out.as_deref(), *margin, *scale)
+            // `-o v.png` says what it wants without a second flag.
+            let inferred = out
+                .as_deref()
+                .and_then(|p| std::path::Path::new(p).extension())
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            let format = draw_as.clone().or(inferred).unwrap_or_else(|| "svg".to_string());
+            render(m, view, &format, out.as_deref(), *margin, *scale)
         }
     }
 }
@@ -801,19 +809,18 @@ fn render(
     let v = find_view(m, view)?;
     let scene = amcli_view::compile(m, v);
 
-    let body = match format {
-        "svg" => amcli_render::svg(&scene, &Options { margin, scale, ..Default::default() }),
-        "json" => amcli_render::scene_json(&scene),
+    let body: Vec<u8> = match format {
+        "svg" => amcli_render::svg(&scene, &Options { margin, scale, ..Default::default() }).into(),
+        "json" => amcli_render::scene_json(&scene).into(),
+        "png" => amcli_render::png(&scene, &Options { margin, scale, ..Default::default() })
+            .map_err(|e| CliError::new(Code::Unsupported, "unsupported", e))?,
         other => {
             return Err(CliError::new(
                 Code::Unsupported,
                 "unsupported",
                 format!("`{other}` is not a render format"),
             )
-            .hint(
-                "svg or json. For PNG: render to SVG and convert, e.g. \
-                 `amcli view render V -o v.svg && rsvg-convert -o v.png v.svg`",
-            ));
+            .hint("svg, png or json"));
         }
     };
 
@@ -835,7 +842,10 @@ fn render(
         }
         None => {
             // The drawing itself is the output, so it goes to stdout raw.
-            print!("{body}");
+            use std::io::Write;
+            let mut stdout = std::io::stdout().lock();
+            let _ = stdout.write_all(&body);
+            let _ = stdout.flush();
             let mut o = Output::empty();
             for w in &scene.warnings {
                 o = o.note(w.clone());

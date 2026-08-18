@@ -17,8 +17,9 @@ license: Apache-2.0
 compatibility: >-
   Needs a shell and the `amcli` binary; if the binary is missing, the Setup
   section installs it and needs network for that one step. After that: no
-  network, no daemon, no server, and no Archi installation — amcli works
-  directly on the model file.
+  network, no daemon, and no Archi installation — amcli works directly on the
+  model file. The one optional server is `amcli web`, a local read-only
+  viewer that runs only while asked to and stops with Ctrl-C.
 metadata:
   homepage: https://github.com/arslan-gg/amcli
   binary: amcli
@@ -28,7 +29,8 @@ metadata:
 # amcli — ArchiMate models from the command line
 
 A single binary that reads and edits ArchiMate model files directly. No GUI, no
-JVM, no server.
+JVM, no daemon — and, when a person wants to *look* at the model, `amcli web`
+serves it read-only to their browser from the same binary.
 
 **Never read a `.archimate` file with Read or cat.** They run to megabytes of
 XML. Every question you have is one `amcli` command, and editing that XML by
@@ -68,7 +70,7 @@ Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
 
-This skill is written for **amcli 0.6.2**. The installer always gives you the
+This skill is written for **amcli 0.7.0**. The installer always gives you the
 newest *release*, and this file ships from the repository's main branch, so
 for a short while after a change lands the binary can be one release behind
 what is described here. If a command or flag below is refused, the binary
@@ -236,6 +238,7 @@ mirrors — and never deletes anyone's modelling.
     amcli view move "Refunds" -f /Views/Payments   # re-file, id unchanged
     amcli view delete "Refunds"                # removes the drawing, no concept
     amcli view render "Refunds" -o refund.svg
+    amcli view render "Refunds" -o refund.png --scale 2   # a raster, from the extension
     amcli export views                         # the batch that rebuilds every view
     amcli export mermaid                       # a quick inline diagram for chat
 
@@ -305,9 +308,37 @@ holds, because the model already has it:
     amcli view list -q --fields name |
       while IFS= read -r v; do amcli view layout "$v" --relayout-all -q; done
 
-`view render` draws the geometry the model actually stores. `export mermaid`
-and `export dot` re-lay-out, so they are for a quick look, not for reproducing
-someone's diagram.
+`view render` draws the geometry the model actually stores — SVG by default,
+PNG when `-o` ends in `.png` or `--as png` says so (`--scale 2` doubles the
+pixels; labels use the machine's fonts, so a container with none draws no
+text and says so). `export mermaid` and `export dot` re-lay-out, so they are
+for a quick look, not for reproducing someone's diagram.
+
+## Showing the model to a person
+
+    amcli web                     # local read-only viewer; prints the URL and opens the browser
+    amcli web --no-open           # print the URL only — a container, SSH, or when the person opens it
+    amcli web --port 8080         # a fixed port; the default is a free one the OS picks
+
+`amcli web` serves the model on `127.0.0.1` only: every view drawn as Archi
+draws it (colours, figures, type icons) with SVG and PNG a click away, a table
+of every element and relationship, an interactive graph to explore from any
+element, and stats.
+Nothing on the page edits anything, and the process writes nothing — it is the
+one command that keeps running after it has answered, so **run it in the
+background** (`amcli web --no-open &`, or a second terminal) and hand the URL
+to the person. `-q` prints the URL and nothing else on stdout; `-F json` puts
+it in the usual envelope. Ctrl-C stops it, and nothing needs cleaning up.
+
+The page follows the file: keep editing the model with amcli in the same
+session and the browser picks up each write within a couple of seconds, so a
+person can watch a batch land view by view. When the file is mid-write or
+invalid the page keeps showing the last good model and says so.
+
+Opening the browser is the default and is what a person at the same machine
+wants. In a container or over SSH there is no browser to open — pass
+`--no-open`; the URL is printed either way, and a failed open is a note on
+stderr, never an error.
 
 ## Going deeper
 

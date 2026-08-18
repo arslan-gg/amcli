@@ -153,6 +153,10 @@ pub struct Output {
     pub meta: Vec<(&'static str, Value)>,
     /// Shown on stderr for a human; never on stdout.
     pub notes: Vec<String>,
+    /// What to do after the rows are printed and stdout is flushed. `web` is
+    /// the one command that keeps running after it has answered, and its
+    /// answer — the URL — has to be out before it starts serving.
+    pub then: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl Output {

@@ -15,10 +15,13 @@
 
 use std::fmt::Write;
 
+use amcli_model::ElementType;
 use amcli_view::geometry::{GROUP_HEADER, NOTE_DOG_EAR, Pt, Rect};
+use amcli_view::icons::{ICON_BOX, ICON_RIGHT, ICON_TOP};
 use amcli_view::notation::{BALL_RADIUS, deco_points};
-use amcli_view::{Deco, Figure, Node, Scene};
+use amcli_view::{Deco, Figure, Node, Scene, icons};
 
+#[derive(Clone, Copy, Debug)]
 pub struct Options {
     /// Blank space around the content, in view units.
     pub margin: i32,
@@ -29,11 +32,13 @@ pub struct Options {
     pub font_size: f64,
     /// Emit `width`/`height`, so the file has an intrinsic size in a browser.
     pub sized: bool,
+    /// Draw each element's type icon in its top-right corner, as Archi does.
+    pub icons: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { margin: 10, scale: 1.0, font_size: 9.0, sized: true }
+        Options { margin: 10, scale: 1.0, font_size: 9.0, sized: true, icons: true }
     }
 }
 
@@ -65,6 +70,27 @@ pub fn svg(scene: &Scene, o: &Options) -> String {
         num(o.font_size)
     );
     s.push('\n');
+
+    // One symbol per element type the scene draws, sorted, so the same scene
+    // gives the same bytes and a figure's icon is a `<use>` rather than a copy.
+    if o.icons {
+        let mut types: Vec<ElementType> = scene
+            .nodes
+            .iter()
+            .filter(|n| shows_icon(n))
+            .filter_map(|n| ElementType::from_str(&n.type_name))
+            .collect();
+        types.sort();
+        types.dedup();
+        let symbols: Vec<String> = types.into_iter().filter_map(icons::symbol).collect();
+        if !symbols.is_empty() {
+            s.push_str("  <defs>\n");
+            for sym in symbols {
+                let _ = writeln!(s, "    {sym}");
+            }
+            s.push_str("  </defs>\n");
+        }
+    }
 
     // Nodes first, in tree pre-order, then every edge. In GEF the connection
     // layer sits above the primary layer, so an edge is never hidden behind a
@@ -174,11 +200,34 @@ fn node(s: &mut String, n: &Node, o: &Options) {
     }
     s.push('\n');
 
+    if o.icons
+        && shows_icon(n)
+        && let Some(t) = ElementType::from_str(&n.type_name).filter(|t| icons::icon(*t).is_some())
+    {
+        let _ = writeln!(
+            s,
+            "      <use href=\"#i-{}\" x=\"{}\" y=\"{}\" width=\"{ICON_BOX}\" height=\"{ICON_BOX}\" color=\"{line}\"/>",
+            t.info().short,
+            r.x + r.w - ICON_RIGHT,
+            r.y + ICON_TOP
+        );
+    }
+
     let text = if n.content.is_empty() { &n.label } else { &n.content };
     if !text.is_empty() {
         label(s, n, text, o);
     }
     s.push_str("    </g>\n");
+}
+
+/// Whether Archi would draw a type icon on this figure: an element with room
+/// for one. Notes and groups have no type; a junction is its own icon; and a
+/// figure smaller than the icon plus its margins would just be smudged.
+fn shows_icon(n: &Node) -> bool {
+    !matches!(n.figure, Figure::Note | Figure::Tabbed | Figure::Circle)
+        && n.concept_id.is_some()
+        && n.abs.w >= ICON_RIGHT + ICON_BOX
+        && n.abs.h >= ICON_TOP + ICON_BOX + 4
 }
 
 /// Wrapped, clipped label text.
@@ -477,4 +526,55 @@ fn jstr(s: &str) -> String {
 /// Bounds of a rectangle, for callers that want to reason about the scene.
 pub fn bbox(scene: &Scene) -> Rect {
     scene.content
+}
+
+/// The same drawing as [`svg`], rasterised. `o.scale` is the resolution:
+/// 2.0 gives a picture twice the size of the view in pixels.
+///
+/// Labels are set in whatever sans-serif the machine has (Arial or Helvetica
+/// where they exist, else the system's own), which is also what Archi does;
+/// a machine with no fonts at all gets boxes and lines but no text, and the
+/// error says so rather than pretending.
+pub fn png(scene: &Scene, o: &Options) -> Result<Vec<u8>, String> {
+    let markup = svg(scene, &Options { sized: true, scale: 1.0, ..*o });
+    let mut opt = resvg::usvg::Options::default();
+    {
+        let db = opt.fontdb_mut();
+        db.load_system_fonts();
+        db.set_sans_serif_family("Arial");
+        if db.faces().next().is_none() {
+            return Err(
+                "no fonts are installed, so labels cannot be drawn; render to SVG instead".into()
+            );
+        }
+    }
+    opt.font_family = "Arial".into();
+    let tree = resvg::usvg::Tree::from_data(markup.as_bytes(), &opt).map_err(|e| e.to_string())?;
+    let size = tree.size();
+    let scale = if o.scale > 0.0 { o.scale as f32 } else { 1.0 };
+    let (w, h) = ((size.width() * scale).ceil() as u32, (size.height() * scale).ceil() as u32);
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(w.max(1), h.max(1))
+        .ok_or_else(|| format!("{w}x{h} is too large to rasterise"))?;
+    pixmap.fill(resvg::tiny_skia::Color::WHITE);
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    pixmap.encode_png().map_err(|e| e.to_string())
+}
+
+/// Every type icon as one `<svg><defs>…</defs></svg>`, for a page that draws
+/// its own figures and wants them to carry the same icons a rendered view does.
+pub fn icon_defs() -> String {
+    let mut s = String::from(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"0\" height=\"0\">\n  <defs>\n",
+    );
+    for e in ElementType::ALL {
+        if let Some(sym) = icons::symbol(e) {
+            let _ = writeln!(s, "    {sym}");
+        }
+    }
+    s.push_str("  </defs>\n</svg>\n");
+    s
 }

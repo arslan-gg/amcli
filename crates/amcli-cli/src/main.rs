@@ -14,6 +14,7 @@ mod output;
 mod read;
 mod skill;
 mod view;
+mod web;
 mod write;
 
 use output::{CliError, Code, Format, Output, Printer};
@@ -222,6 +223,16 @@ enum Command {
         #[arg(short = 'o', long)]
         out: Option<String>,
     },
+    /// Browse the model in a local web page: views, elements, relationships
+    /// and a graph. Read-only; the page follows the file as it changes.
+    Web {
+        /// Port to listen on. Defaults to a free one chosen by the OS.
+        #[arg(long)]
+        port: Option<u16>,
+        /// Print the URL and serve; do not open a browser.
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Install the agent skill.
     #[command(subcommand)]
     Skill(skill::SkillCmd),
@@ -332,12 +343,21 @@ fn main() {
     let mut stderr = std::io::stderr().lock();
 
     match run(&cli) {
-        Ok(out) => {
+        Ok(mut out) => {
             let verdict = out.exit;
+            let then = out.then.take();
             printer.print(out, &mut stdout, &mut stderr);
             let _ = stdout.flush();
             if let Some(code) = verdict {
                 std::process::exit(code as i32);
+            }
+            if let Some(then) = then {
+                // The locks are held for the life of `main`; a continuation
+                // that spawns threads must not inherit a terminal nobody else
+                // can write to.
+                drop(stdout);
+                drop(stderr);
+                then();
             }
         }
         Err(e) => {
@@ -385,6 +405,7 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         Command::Validate { level, fix, strict } => {
             return read::validate(&mut model, level, *fix, *strict, &write_opts(cli));
         }
+        Command::Web { port, no_open } => return web::run(model, path, *port, *no_open),
         _ => {}
     }
 
@@ -428,6 +449,7 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         | Command::Apply { .. }
         | Command::Skill(_)
         | Command::Init { .. }
+        | Command::Web { .. }
         | Command::Validate { .. } => unreachable!("dispatched above"),
     }
 }

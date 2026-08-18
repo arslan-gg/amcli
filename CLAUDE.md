@@ -20,6 +20,9 @@ touches the document must preserve that property.
 |---|---|
 | `crates/amcli-xml` | Format-preserving XML tree with byte spans. Knows nothing about ArchiMate. |
 | `crates/amcli-model` | The ArchiMate IR: types, folders, concepts, views, containers (plain XML / ZIP / grafico). |
+| `crates/amcli-view` | View geometry, layout, notation — and `icons.rs`, the type icons. |
+| `crates/amcli-render` | A compiled view to SVG, or to PNG through `resvg` (pure Rust, so the binary stays static). |
+| `crates/amcli-cli` | The binary; `src/web/` is `amcli web`, the read-only viewer. |
 | `xtask` | Codegen from the vendored Archi assets. |
 
 ## `skills/amcli/` is shipped, not documentation
@@ -59,6 +62,32 @@ Consequences worth knowing before you edit it:
   Keep those two properties if you touch the installers.
 - Files beginning with a dot are never copied, so no `.gitattributes` or
   `.version` inside the skill folder.
+
+## `amcli web` and `crates/amcli-cli/src/web/`
+
+The viewer is a hand-rolled HTTP/1.1 GET server on `std::net` plus a page of
+plain ES modules, all compiled into the binary with `include_str!`. There is
+no build step, no bundler and no CDN, and that is a property to keep: the
+binary is the whole product, and it works offline.
+
+- **Every file under `src/web/assets/` must be in `ASSETS` in `api.rs`.** A
+  test starts the binary and fetches each file on disk; a file that is there
+  but not listed is unreachable and fails the test.
+- **Server threads never print.** `main` holds the stdout/stderr locks until
+  it hands over to the server via `Output::then`, and after that the terminal
+  belongs to the person, not to a request log.
+- **The URL is printed before the server serves.** That is the whole
+  contract for an agent: read one line, keep the process running.
+- **Nothing on the page writes.** The only HTTP verb is GET; the viewer is
+  read-only by construction, not by policy.
+- **The page draws with the same notation as the renderer.** `/api/model`
+  carries the fills, figures, icons and line ends from `amcli-view`'s
+  `notation.rs` and `icons.rs`, so the graph cannot drift from a rendered view.
+- **Type icons are hand-ported code**, in `crates/amcli-view/src/icons.rs`,
+  one entry per Archi figure class named in a comment. They are not
+  `assets/archi` inputs and `xtask` does not touch them. Path data must stay
+  within the 16×16 box and never contain `-0` — the render byte-stability
+  test forbids it.
 
 `assets/archi/` holds MIT-licensed files vendored from `archimatetool/archi`.
 They are **generated inputs, not hand-edited** — `assets/archi/PROVENANCE.toml`

@@ -9,6 +9,7 @@
 //! Laying out a *new* view is a separate job; see [`layout`].
 
 pub mod geometry;
+pub mod icons;
 pub mod layout;
 pub mod notation;
 
