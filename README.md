@@ -77,7 +77,9 @@ $ amcli view render "Payments" -o payments.svg
 - **Views drawn to be read.** Layout works from the graph alone, tries several
   layerings and keeps the least tangled: every edge one straight line, kept off
   the boxes, boxes sized to their labels, and — wherever the graph allows it —
-  nothing crossing. [How it works →](docs/layout.md)
+  nothing crossing. [How it works →](docs/layout.md) Past a dozen views, file
+  them: `-f /Views/<name>` on `create` and `auto`, `view move` for the rest,
+  and a view keeps its id when it moves.
 - **Agent-ready.** Ships an [Agent Skill](https://agentskills.io) that teaches
   Claude Code, Codex and friends the workflow — and keeps the binary current
   every session.
@@ -129,6 +131,7 @@ amcli element  delete "Refund Service" -y     # cascades, and says to what
 amcli apply batch.jsonl                       # many edits, one write, all or nothing
 amcli validate                                # rules, with a `fix` per finding
 amcli view auto "Refunds" --from "Refund Service" -n 2
+amcli view move "Refunds" -f /Views/Payments  # file it; the id does not change
 amcli export mermaid                          # a quick diagram for a chat window
 ```
 
