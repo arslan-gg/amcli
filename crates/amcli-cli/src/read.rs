@@ -163,7 +163,7 @@ fn unknown_type(g: &Graph<'_>, name: &str) -> CliError {
 fn concept_row(m: &Model, g: &Graph<'_>, c: ConceptId) -> Row {
     let concept = m.concept(c);
     let (i, o) = g.degree(c);
-    Row::new()
+    let row = Row::new()
         .s("id", concept.id.clone())
         .s("type", concept.kind.name())
         .s("name", concept.name.clone())
@@ -172,7 +172,38 @@ fn concept_row(m: &Model, g: &Graph<'_>, c: ConceptId) -> Row {
         .n("out", o as i64)
         // Appended, never inserted: a column added in the middle would silently
         // repoint every `cut -f5` an agent has already written.
-        .n("views", g.views_of(c).len() as i64)
+        .n("views", g.views_of(c).len() as i64);
+    with_ends(row, m, concept)
+}
+
+/// A relationship row carries the two ends it joins; an element row is
+/// unchanged.
+///
+/// Without this a relationship could not be read on its own. `get` on one
+/// reported an empty `relations` list — true, since nothing points *at* it —
+/// and `query 'kind=relation'` gave a type and nothing to hang it on, so the
+/// only way to see what a relationship joined was to fetch one end and filter
+/// its list by id. That is two commands and a guess to answer the question you
+/// have to answer before deleting anything.
+///
+/// The ids come from the concept rather than from the index, so a relationship
+/// whose end is missing still says what it points at; the name is then empty,
+/// which is the fact `validate` reports as a dangling reference.
+fn with_ends(row: Row, m: &Model, c: &amcli_model::Concept) -> Row {
+    if !c.kind.is_relationship() {
+        return row;
+    }
+    let end = |id: &Option<String>| -> (String, String) {
+        let id = id.clone().unwrap_or_default();
+        let name = m.concept_by_id(&id).map(|e| m.concept(e).name.clone()).unwrap_or_default();
+        (id, name)
+    };
+    let (source, source_name) = end(&c.source);
+    let (target, target_name) = end(&c.target);
+    row.s("source", source)
+        .s("source_name", source_name)
+        .s("target", target)
+        .s("target_name", target_name)
 }
 
 /// Documentation is never returned whole in a list: one long blob can cost more
@@ -229,7 +260,11 @@ pub fn get(g: &Graph<'_>, ctx: &Ctx, sel: &str, full: bool) -> Result<Output, Cl
         .collect();
 
     let doc = m.documentation(concept.node).unwrap_or_default();
+    // The nested list carries the view count and the names, so the plain count
+    // column would be a second field of the same name — one `views` key twice
+    // in the JSON, where a reader silently keeps whichever came last.
     let row = concept_row(m, g, c)
+        .without("views")
         .opt("layer", concept.kind.layer().map(|l| l.as_str().to_string()))
         .s("documentation", clip(&doc, full))
         .b("documentation_truncated", !full && doc.chars().count() > 500)

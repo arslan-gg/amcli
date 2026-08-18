@@ -11,7 +11,9 @@
 //! **Records go to stdout; counts, truncation notices and hints go to stderr.**
 //! That keeps stdout pipeable into `cut -f2` while a human still sees the
 //! context. A terminal changes colour, never structure, so what an agent gets
-//! through a pipe is byte-identical to what a person sees.
+//! through a pipe is byte-identical to what a person sees. `-q` silences the
+//! stderr side of that and never changes stdout — including the JSON envelope,
+//! so one jq path holds whether or not the flag is there.
 
 use std::fmt::Write as _;
 use std::io::Write;
@@ -268,12 +270,17 @@ impl Printer {
         }
     }
 
+    /// One JSON shape, whatever the flags.
+    ///
+    /// `-q` used to drop the envelope here, so `.data[0]` and `.[0]` were both
+    /// right depending on a flag somewhere else in the command line, and a jq
+    /// path written against one silently returned nothing against the other.
+    /// In text `-q` only quietens stderr and leaves stdout alone; it does the
+    /// same here now. The envelope is small, it carries the counts, and it is
+    /// the same `ok` discriminator an error comes back with — so a reader can
+    /// branch on one field instead of on the shape.
     fn print_json(&self, out: &Output, stdout: &mut impl Write) {
         let data = json_rows(&out.rows);
-        if self.quiet {
-            let _ = writeln!(stdout, "{data}");
-            return;
-        }
         let mut meta = String::from("{");
         for (i, (k, v)) in out.meta.iter().enumerate() {
             if i > 0 {

@@ -56,7 +56,8 @@ pub struct Cli {
     #[arg(short = 'F', long, global = true, default_value = "text")]
     format: String,
 
-    /// Drop the envelope and the notes; emit data only.
+    /// Drop the column headers and the notes from stderr. Stdout is unchanged,
+    /// JSON envelope included.
     #[arg(short = 'q', long, global = true)]
     quiet: bool,
 

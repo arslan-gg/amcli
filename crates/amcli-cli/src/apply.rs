@@ -8,7 +8,9 @@
 //! Two features carry the design. `ref` names a line's result so a later line
 //! can point at it before its id exists, which is what makes a batch composable
 //! at all. `if_absent` binds the ref to an existing concept instead of failing,
-//! which makes a batch re-runnable after a half-finished attempt.
+//! which makes a batch re-runnable after a half-finished attempt — and
+//! `if_present` does the same for the ops that delete, so that a batch which
+//! *replaces* something can be re-run too.
 //!
 //! View operations ride along. A view built member by member — create it,
 //! add each element, lay it out — is a dozen or a hundred commands, and run
@@ -63,9 +65,21 @@ enum Op {
     #[serde(rename = "element.doc")]
     ElementDoc { target: String, text: String },
     #[serde(rename = "element.delete")]
-    ElementDelete { target: String },
+    ElementDelete {
+        target: String,
+        #[serde(default)]
+        if_present: bool,
+    },
+    #[serde(rename = "relation.delete")]
+    RelationDelete {
+        target: String,
+        #[serde(default)]
+        if_present: bool,
+    },
     #[serde(rename = "prop.set")]
     PropSet { target: String, key: String, value: String },
+    #[serde(rename = "prop.unset")]
+    PropUnset { target: String, key: String },
     #[serde(rename = "folder.add")]
     FolderAdd { parent: String, name: String },
     #[serde(rename = "folder.delete")]
@@ -157,8 +171,23 @@ pub fn run(opts: &Opts, m: &mut Model, file: Option<&str>) -> Result<Output, Cli
             continue;
         }
         let op: Op = serde_json::from_str(line).map_err(|e| {
-            CliError::new(Code::Usage, "usage", format!("line {n}: {e}"))
-                .hint("one JSON operation per line; see `amcli apply --help`")
+            let complaint = e.to_string();
+            // An op this binary has never heard of is the same skew
+            // `parse_or_hint` answers for subcommands: the skill ships from the
+            // branch and the binary from the newest tag, so a batch written
+            // against the newer document reaches an older binary. Say so, or
+            // the reader goes looking for a typo that is not there.
+            let hint = if complaint.starts_with("unknown variant") {
+                format!(
+                    "one JSON operation per line; see references/batch.md. This amcli is \
+                     {}. If a skill named that operation, this binary is older than that \
+                     document — upgrade it: sh ~/.agents/skills/amcli/scripts/install.sh",
+                    crate::VERSION
+                )
+            } else {
+                "one JSON operation per line; see references/batch.md".to_string()
+            };
+            CliError::new(Code::Usage, "usage", format!("line {n}: {complaint}")).hint(hint)
         })?;
 
         match apply_one(opts, m, &op, &mut refs) {
@@ -285,13 +314,14 @@ fn apply_one(
                 .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
             Ok(Row::new().s("op", "element.doc").s("id", m.concept(c).id.clone()))
         }
-        Op::ElementDelete { target } => {
-            let c = resolve(m, target, refs)?;
-            let id = m.concept(c).id.clone();
-            let done = m
-                .delete_concept(c)
-                .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
-            Ok(Row::new().s("op", "element.delete").s("id", id).n("removed", done.total() as i64))
+        Op::ElementDelete { target, if_present } => {
+            delete(m, refs, "element.delete", target, *if_present, None)
+        }
+        Op::RelationDelete { target, if_present } => {
+            // Deleting a relationship used to mean `element.delete` aimed at
+            // one, which reads as a mistake and silently accepts a real one.
+            // Named for what it deletes, it can insist on it instead.
+            delete(m, refs, "relation.delete", target, *if_present, Some(true))
         }
         Op::PropSet { target, key, value } => {
             let c = resolve(m, target, refs)?;
@@ -301,6 +331,18 @@ fn apply_one(
                 .s("op", "prop.set")
                 .s("id", m.concept(c).id.clone())
                 .s("key", key.clone()))
+        }
+        Op::PropUnset { target, key } => {
+            let c = resolve(m, target, refs)?;
+            // No `if_present`: a key that is not there is already what this
+            // asks for, and a concept that is not there is a broken batch.
+            let had = m.properties(m.concept(c).node).iter().any(|(k, _)| k == key);
+            m.remove_property(c, key);
+            Ok(Row::new()
+                .s("op", "prop.unset")
+                .s("id", m.concept(c).id.clone())
+                .s("key", key.clone())
+                .b("removed", had))
         }
         Op::ViewCreate { name, viewpoint, folder, replace } => view_op(
             opts,
@@ -390,6 +432,70 @@ fn apply_one(
                 .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
             Ok(Row::new().s("op", "folder.delete").s("path", full))
         }
+    }
+}
+
+/// One delete, for both ops that do one.
+///
+/// `want_relationship` is what tells them apart: `relation.delete` refuses
+/// anything that is not a relationship, because a batch is machine-written and
+/// aiming it at an element by accident would take the element's whole cascade
+/// with it. `element.delete` stays permissive — it is how relationships were
+/// deleted before this op existed, and breaking those batches would buy
+/// nothing.
+///
+/// A skipped delete reports no id and `removed` 0. Nothing else can report 0:
+/// a delete that happens always removes at least the concept itself.
+fn delete(
+    m: &mut Model,
+    refs: &HashMap<String, String>,
+    op: &'static str,
+    target: &str,
+    if_present: bool,
+    want_relationship: Option<bool>,
+) -> Result<Row, CliError> {
+    let Some(c) = optional(m, target, refs, if_present)? else {
+        return Ok(Row::new().s("op", op).s("id", String::new()).n("removed", 0));
+    };
+    if let Some(want) = want_relationship
+        && m.concept(c).kind.is_relationship() != want
+    {
+        return Err(CliError::new(
+            Code::Usage,
+            "usage",
+            format!("`{target}` is not a relationship"),
+        )
+        .hint(
+            "`relation.delete` takes the relationship, by id or by `ref:`; for an element \
+             use `element.delete`",
+        ));
+    }
+    let id = m.concept(c).id.clone();
+    let done =
+        m.delete_concept(c).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    Ok(Row::new().s("op", op).s("id", id).n("removed", done.total() as i64))
+}
+
+/// `resolve`, except that `if_present` turns "nothing matches" into a skip.
+///
+/// This is the counterpart of `if_absent`, and it is what makes a batch that
+/// replaces one relationship with another re-runnable: the second run finds
+/// the old one already gone and the new one already there, and writes nothing.
+///
+/// Two misses are never skipped. An ambiguous selector still fails — the thing
+/// is there and the batch has not said which one — and so does a `ref:`, which
+/// names something an earlier line in this same batch was supposed to produce,
+/// so a miss is a typo rather than a state the model might be in.
+fn optional(
+    m: &Model,
+    sel: &str,
+    refs: &HashMap<String, String>,
+    if_present: bool,
+) -> Result<Option<ConceptId>, CliError> {
+    match resolve(m, sel, refs) {
+        Ok(c) => Ok(Some(c)),
+        Err(e) if if_present && e.code == Code::NotFound && !sel.starts_with("ref:") => Ok(None),
+        Err(e) => Err(e),
     }
 }
 

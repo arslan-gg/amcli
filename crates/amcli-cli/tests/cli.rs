@@ -198,9 +198,13 @@ fn token_economy_flags_do_what_they_say() {
     let (_, less, _) = m.run(&["list", "--fields", "-folder"]);
     assert_eq!(rows(&less)[0].len(), rows(&full)[0].len() - 1);
 
-    // -q drops the envelope in JSON.
-    let (_, out, _) = m.run(&["list", "-F", "json", "-q"]);
-    assert!(out.trim_start().starts_with('['), "{out}");
+    // -q quietens stderr and leaves stdout alone, in every format — so the
+    // JSON envelope is there either way and one jq path reads both.
+    let (_, plain, _) = m.run(&["list", "-F", "json"]);
+    let (_, quiet, err) = m.run(&["list", "-F", "json", "-q"]);
+    assert_eq!(plain, quiet, "-q must not reshape stdout");
+    assert!(quiet.trim_start().starts_with(r#"{"ok":true,"data":["#), "{quiet}");
+    assert!(err.is_empty(), "-q asked for no commentary: {err}");
 }
 
 #[test]
@@ -216,6 +220,44 @@ fn json_output_is_valid_and_carries_the_envelope() {
     let (_, out, _) = m.run(&["get", "nope", "-F", "json"]);
     assert!(out.contains(r#""ok":false"#));
     assert!(out.contains(r#""exit":3"#), "the exit code is in the payload too: {out}");
+}
+
+/// Reported from real use: `get` on a relationship answered with an empty
+/// `relations` list — nothing points at it, which is true and useless — and
+/// `query 'kind=relation'` gave a type with nothing to hang it on. Checking
+/// what a relationship joined took a second command against one of its ends.
+#[test]
+fn a_relationship_row_says_what_it_joins() {
+    let m = Model::new("modelimporter_test.archimate");
+
+    let (code, out, _) =
+        m.run(&["query", "kind=relation", "--fields", "id,source_name,target_name", "-q"]);
+    assert_eq!(code, 0);
+    let r = rows(&out);
+    assert!(!r.is_empty());
+    for row in &r {
+        assert_eq!(row.len(), 3, "{row:?}");
+        assert!(!row[1].is_empty() && !row[2].is_empty(), "both ends are named: {row:?}");
+    }
+
+    // And on the relationship itself, with the ids that address each end.
+    let rel = r[0][0];
+    let (code, out, _) = m.run(&["get", &format!("id:{rel}"), "-F", "json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let row = &v["data"][0];
+    assert_eq!(row["source_name"], "BA1", "{out}");
+    assert_eq!(row["target_name"], "BR1", "{out}");
+    assert!(row["source"].as_str().unwrap().len() > 8, "an end is addressable: {out}");
+
+    // An element carries no ends, rather than two empty columns.
+    let (_, out, _) = m.run(&["get", "BA1", "-F", "json"]);
+    assert!(!out.contains("source_name"), "{out}");
+
+    // `get` names the views once. It used to say `views` twice in one object —
+    // the count and then the list — and a JSON reader keeps whichever it saw
+    // last.
+    assert_eq!(out.matches(r#""views":"#).count(), 1, "{out}");
 }
 
 #[test]
@@ -451,6 +493,150 @@ fn a_batch_lands_completely_or_not_at_all() {
     assert!(err.contains("line 2"), "the failing line is named: {err}");
     assert_eq!(m.text(), after_first, "nothing from the failed batch was written");
     assert!(!m.text().contains("Would Be Added"), "not even the line that succeeded");
+}
+
+/// Reported from real use: replacing an Association with a Realization needed
+/// a delete and an add, and the batch could only do the add — so the model
+/// passed through a state where it said something false, or the delete was
+/// left to a second command that could fail on its own.
+#[test]
+fn a_batch_replaces_a_relationship_in_one_write() {
+    let m = Model::new("modelimporter_test.archimate");
+    m.run(&["element", "add", "ApplicationComponent", "Payment API"]);
+    m.run(&["element", "add", "ApplicationService", "Payments"]);
+    m.run(&["relation", "add", "Association", "Payment API", "Payments"]);
+    m.run(&["prop", "set", "Payment API", "owner", "team-a"]);
+
+    let (_, out, _) = m.run(&["query", "type=Association", "--fields", "id", "-q"]);
+    let old = out.trim().to_string();
+
+    let ops = m.dir.path().join("swap.jsonl");
+    std::fs::write(
+        &ops,
+        format!(
+            concat!(
+                r#"{{"op":"relation.delete","target":"id:{id}","if_present":true}}"#,
+                "\n",
+                r#"{{"op":"relation.add","type":"Realization","source":"Payment API","target":"Payments","if_absent":true}}"#,
+                "\n",
+                r#"{{"op":"prop.unset","target":"Payment API","key":"owner"}}"#,
+                "\n",
+            ),
+            id = old
+        ),
+    )
+    .unwrap();
+
+    let (code, out, _) = m.run(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!m.text().contains("AssociationRelationship"), "the old one is gone");
+    assert!(m.text().contains("RealizationRelationship"), "the new one is there");
+    assert!(!m.text().contains(r#"key="owner""#), "prop.unset removed it");
+
+    // And the whole thing is re-runnable: nothing to delete, nothing to add,
+    // nothing to unset, so the file comes back byte-identical.
+    let after = m.text();
+    let (code, out, _) = m.run(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(m.text(), after, "a re-run changes nothing");
+    let skipped = rows(&out).into_iter().find(|r| r[0] == "relation.delete").unwrap();
+    assert_eq!(skipped[1], "", "a skipped delete reports no id: {skipped:?}");
+    assert_eq!(skipped[2], "0", "and removes nothing: {skipped:?}");
+
+    // Without `if_present` the miss is the batch's problem, not a silent skip.
+    let strict = m.dir.path().join("strict.jsonl");
+    std::fs::write(&strict, format!("{{\"op\":\"relation.delete\",\"target\":\"id:{old}\"}}\n"))
+        .unwrap();
+    let (code, _, err) = m.run(&["apply", strict.to_str().unwrap()]);
+    assert_eq!(code, 3, "not found");
+    assert!(err.contains("line 1"), "{err}");
+
+    // And it refuses an element: aimed at one by accident it would take the
+    // element's whole cascade with it.
+    let wrong = m.dir.path().join("wrong.jsonl");
+    std::fs::write(&wrong, "{\"op\":\"relation.delete\",\"target\":\"Payment API\"}\n").unwrap();
+    let (code, _, err) = m.run(&["apply", wrong.to_str().unwrap()]);
+    assert_eq!(code, 2, "usage");
+    assert!(err.contains("is not a relationship"), "{err}");
+    assert!(err.contains("element.delete"), "the error names the op that would work: {err}");
+    assert_eq!(m.text(), after, "and nothing was written");
+}
+
+/// `references/batch.md` is what an agent reads before writing a batch — not
+/// `--help`, which says nothing about the operations. A field that exists in
+/// the parser and nowhere in that file is a feature nobody can use:
+/// `relation.add` accepted a `doc` for two releases without saying so.
+#[test]
+fn every_batch_op_and_field_is_documented() {
+    const SRC: &str = include_str!("../src/apply.rs");
+    const DOC: &str = include_str!("../../../skills/amcli/references/batch.md");
+
+    let body = SRC.split("enum Op {").nth(1).expect("the Op enum").split("\n}\n").next().unwrap();
+
+    // `op` is every documented line for the operation being read, `shown` its
+    // name for the complaint.
+    let mut op = String::new();
+    let mut shown = String::new();
+    let mut renamed: Option<String> = None;
+    let mut missing: Vec<String> = Vec::new();
+    let mut seen = 0;
+    for line in body.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("#[serde(rename = \"") {
+            let name = rest.split('"').next().unwrap().to_string();
+            // An operation is named with a dot, a field never is.
+            if name.contains('.') {
+                // Every field has to appear on a line that documents *this*
+                // operation. Checking the file as a whole would have passed
+                // the case that prompted the test: `relation.add` took a `doc`
+                // and only `element.add` was shown taking one.
+                op = DOC
+                    .lines()
+                    .filter(|l| l.contains(&format!(r#""op":"{name}""#)))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if op.is_empty() {
+                    missing.push(format!("op {name}"));
+                }
+                shown = name;
+                seen += 1;
+            } else {
+                renamed = Some(name);
+            }
+            continue;
+        }
+        if line.starts_with('#') || line.starts_with("//") || line.is_empty() {
+            continue;
+        }
+        for field in fields_of(line) {
+            let field = renamed.take().unwrap_or(field);
+            if !op.contains(&format!(r#""{field}":"#)) {
+                missing.push(format!("{shown}.{field}"));
+            }
+        }
+    }
+    // A parser that stopped reading the enum early would pass by finding
+    // nothing to complain about.
+    assert!(seen > 15, "only {seen} operations parsed out of `Op`");
+    assert!(missing.is_empty(), "not in references/batch.md: {missing:?}");
+}
+
+/// The `name: Type` pairs in one line of the `Op` enum, which is all the
+/// parsing the test above needs.
+fn fields_of(line: &str) -> Vec<String> {
+    let b = line.as_bytes();
+    let mut out = Vec::new();
+    for i in 0..b.len() {
+        if b[i] != b':' || b.get(i + 1) != Some(&b' ') || (i > 0 && b[i - 1] == b':') {
+            continue;
+        }
+        let start =
+            line[..i].rfind(|c: char| !c.is_alphanumeric() && c != '_').map(|p| p + 1).unwrap_or(0);
+        if start < i {
+            out.push(line[start..i].to_string());
+        }
+    }
+    out
 }
 
 #[test]

@@ -109,7 +109,9 @@ Subjects are positional, never flags:
 The default output is tab-separated records, one per line — cheap to read and
 easy to `cut -f2`. Counts, hints and a `# id<TAB>name<TAB>…` column header go to
 stderr, so read stderr to learn what the columns are. Add `-F json` only when you
-need nested structure, such as the relationship ids inside `get`.
+need nested structure, such as the relationship ids inside `get`. JSON is always
+the same shape — `{"ok":…,"data":[…],"meta":{…}}`, success or failure — so
+`.data[]` is the path whether or not `-q` is there; `-q` only quietens stderr.
 
     amcli query 'layer=Application' --count    # ask "how many" FIRST, always
     amcli search auth -l 10 --fields id,name   # project down
@@ -143,6 +145,9 @@ Two of those are easy to get wrong:
 
 - `kind` is `element` or `relation`. Without it, filters like `layer!=none`
   return relationships mixed in with elements, and relationships have no name.
+  A relationship row carries `source`, `source_name`, `target` and `target_name`
+  after the usual columns, so `amcli query 'kind=relation'` and `amcli get` on a
+  relationship both say what it joins — read that before deleting one.
 - `type` takes one ArchiMate type and accepts either spelling — `Triggering` and
   `TriggeringRelationship` are the same thing. So does `-t`. A type that does not
   exist is exit 2 with the model's own types listed, never an empty result.
@@ -192,7 +197,7 @@ refusal is the impact report. Add `-y` once you have read it.
 Use `--dry-run` when unsure. Use `--expect-checksum` when you read the model on
 an earlier turn and are writing now:
 
-    CS=$(amcli info -F json -q | jq -r '.[0].checksum')
+    CS=$(amcli info -F json | jq -r '.data[0].checksum')
     amcli element rename id:x "New" --expect-checksum "$CS"    # exit 6 if it moved
 
 **For more than two edits, use one atomic batch rather than a sequence.**
@@ -210,6 +215,19 @@ batch — `view.create`, `view.add`, `view.auto`, `view.layout`, `view.rename`,
 `view.move`, `view.delete`, same fields as the commands — so a view is built
 and laid out with the concepts it shows, in one write; `references/batch.md`
 has those and the folder ops.
+
+Deletes go in a batch too — `element.delete`, `relation.delete`, `prop.unset` —
+which is what lets a change that is really a *replacement* land as one write.
+Retyping a relationship is the common one, and the model never passes through a
+state where it says the wrong thing:
+
+    amcli apply - <<'EOF'
+    {"op":"relation.delete","target":"id:8f3c1a02","if_present":true}
+    {"op":"relation.add","type":"Realization","source":"Payment API","target":"Payments","if_absent":true}
+    EOF
+
+`if_present` is `if_absent` for deletes: with it, the second run of that batch
+finds nothing to do and writes a file identical to the one it read.
 
 **If the model is regenerated from batches you keep in the repository**, pass the
 same `--id-seed` every time (or set `$AMCLI_ID_SEED`). Ids are then derived from
