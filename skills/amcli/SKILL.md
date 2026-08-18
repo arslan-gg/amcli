@@ -68,7 +68,7 @@ Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
 
-This skill is written for **amcli 0.6.1**. The installer always gives you the
+This skill is written for **amcli 0.6.2**. The installer always gives you the
 newest *release*, and this file ships from the repository's main branch, so
 for a short while after a change lands the binary can be one release behind
 what is described here. If a command or flag below is refused, the binary
@@ -291,8 +291,11 @@ the same crowd take opposite sides of it. Arrows point down only when that
 costs nothing. Do not "fix" an upward arrow by moving boxes: the layout chose
 that to keep a line off a box.
 
-Layout sizes each box to its label and draws every edge as one straight line
-— no bendpoints, ever — placing the boxes so the lines stay off them. `view
+Layout sizes each box to the label it has to hold — measured against the room
+Archi leaves inside a figure, which is the box less its margin and, when the
+type icon shows, less that icon's width off *both* sides — and draws every
+edge as one straight line, no bendpoints, ever, placing the boxes so the lines
+stay off them. `view
 layout` writes sizes back along with positions and straightens every
 connection, so `--relayout-all` redraws the view, it does not just shuffle it.
 Run it after a batch of edits rather than after each one — and over every view
