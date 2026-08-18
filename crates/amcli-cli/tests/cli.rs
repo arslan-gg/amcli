@@ -667,6 +667,23 @@ fn the_skill_points_at_paths_that_exist_and_never_downgrades_itself() {
         found += 1;
     }
     assert!(found >= 2, "expected the sh and PowerShell installers to be named, saw {found}");
+
+    // The skill names the amcli version it is written for. It ships from the
+    // branch, so that number has to move with every release commit, and this
+    // is what makes forgetting it a red test rather than a stale document.
+    let stated = body
+        .lines()
+        .find_map(|l| {
+            let (_, rest) = l.split_once("written for **amcli ")?;
+            rest.split_once("**").map(|(v, _)| v.trim().to_string())
+        })
+        .expect("SKILL.md says which amcli it is written for");
+    assert_eq!(
+        stated,
+        env!("CARGO_PKG_VERSION"),
+        "SKILL.md says it is written for amcli {stated}, but this is {}; bump the skill with the release",
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 /// A skill newer than the binary is the expected steady state, so the failure

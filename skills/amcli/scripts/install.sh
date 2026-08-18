@@ -14,6 +14,11 @@
 #
 # Never uses sudo. Never edits a shell rc file. Never prompts.
 #
+# Safe to run at the start of every session: if the newest release is what
+# is already installed it downloads nothing and just prints the path, and if
+# the network is down it keeps whatever is installed rather than failing. So
+# "check amcli is there and up to date" is this one line, every time.
+#
 #   AMCLI_VERSION=v0.1.0            install that tag instead of the newest
 #   AMCLI_INSTALL_DIR=/path/bin     default ~/.local/bin
 #   AMCLI_DRY_RUN=1                 report what would happen, download nothing
@@ -218,9 +223,23 @@ if [ "$rc" != 0 ]; then
     exit 0
 fi
 
+# The version already installed at the target path, as `vX.Y.Z`, or empty.
+installed_tag() {
+    v=$("$DIR/$BIN" --version 2>/dev/null | awk '{ print $2; exit }') || return 1
+    [ -n "$v" ] || return 1
+    printf 'v%s\n' "$v"
+}
+
 if [ -n "${AMCLI_VERSION:-}" ]; then
     TAG=$AMCLI_VERSION
 elif ! resolve_tag; then
+    # No release, or no network. If a binary is installed, that is the one to
+    # use: a session that starts offline should not lose a working amcli.
+    if have_installed=$(installed_tag); then
+        say "could not reach $BASE; keeping installed amcli $have_installed"
+        printf '%s\n' "$DIR/$BIN"
+        exit 0
+    fi
     if [ "${AMCLI_DRY_RUN:-0}" = 1 ]; then
         say "target:  $TARGET"
         say "release: none published yet, would build with cargo"
@@ -228,6 +247,13 @@ elif ! resolve_tag; then
         exit 0
     fi
     cargo_fallback "no published release found for $REPO yet."
+    exit 0
+fi
+
+# Already current: nothing to download.
+if [ "$(installed_tag 2>/dev/null || true)" = "$TAG" ]; then
+    say "amcli $TAG is already installed"
+    printf '%s\n' "$DIR/$BIN"
     exit 0
 fi
 

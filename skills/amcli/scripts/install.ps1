@@ -56,7 +56,33 @@ function Resolve-Tag {
     return $null
 }
 
+# The version already installed at the target path, as vX.Y.Z, or $null.
+function Installed-Tag {
+    $exe = Join-Path $InstallDir $bin
+    if (-not (Test-Path $exe)) { return $null }
+    try { $out = & $exe --version 2>$null } catch { return $null }
+    if ($out -match '^amcli (\S+)') { return "v$($Matches[1])" }
+    return $null
+}
+
 if ($Version) { $tag = $Version } else { $tag = Resolve-Tag }
+
+# No release, or no network: keep an installed binary rather than fail.
+if (-not $tag) {
+    $have = Installed-Tag
+    if ($have) {
+        Say "could not reach $Base; keeping installed amcli $have"
+        Write-Output (Resolve-Path (Join-Path $InstallDir $bin)).Path
+        exit 0
+    }
+}
+
+# Already current: nothing to download.
+if ($tag -and (Installed-Tag) -eq $tag) {
+    Say "amcli $tag is already installed"
+    Write-Output (Resolve-Path (Join-Path $InstallDir $bin)).Path
+    exit 0
+}
 
 if (-not $tag) {
     if ($DryRun) {

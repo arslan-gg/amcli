@@ -36,23 +36,25 @@ hand corrupts models.
 
 ## Setup
 
-Run this before anything else:
-
-    amcli --version
-
-If it prints a version, carry on to the next section. If it does not:
-
-**Wherever `sh` runs** — macOS, Linux, WSL, Git Bash — use the installer that
-came with this skill. It sits next to this file, which is normally
-`~/.agents/skills/amcli`, or `./.agents/skills/amcli` for a project install:
+Run this before anything else, **every session** — it installs amcli if it is
+missing, updates it if a newer release exists, and otherwise does nothing but
+print where the binary is:
 
     AMCLI=$(sh ~/.agents/skills/amcli/scripts/install.sh)
+    $AMCLI --version
 
-It prints the absolute path of the binary on stdout and nothing else. **Use
-`$AMCLI` for the rest of the session.** A newly installed binary is usually not
-on the current shell's PATH yet, so plain `amcli` will still report "command not
-found" even though the install succeeded — that is the single most likely way
-this goes wrong.
+The installer sits next to this file, which is normally `~/.agents/skills/amcli`,
+or `./.agents/skills/amcli` for a project install. It prints the absolute path
+of the binary on stdout and nothing else. **Use `$AMCLI` for the rest of the
+session.** A newly installed binary is usually not on the current shell's PATH
+yet, so plain `amcli` will still report "command not found" even though the
+install succeeded — that is the single most likely way this goes wrong.
+
+Running it every time is cheap and safe: when the installed version is the
+newest release it costs one HTTP redirect and downloads nothing; with no
+network it keeps whatever is installed and says so; only a missing or older
+binary is actually fetched, and that download is verified against the
+release's SHA256SUMS.
 
 **Native Windows PowerShell**, where there is no `sh`, use the PowerShell one
 instead. It follows the same contract:
@@ -62,6 +64,14 @@ instead. It follows the same contract:
 Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
+
+This skill is written for **amcli 0.4.0**. The installer always gives you the
+newest *release*, and this file ships from the repository's main branch, so
+for a short while after a change lands the binary can be one release behind
+what is described here. If a command or flag below is refused, the binary
+says so and names the fix; carry on with what the binary you have does
+support, and do not reinstall the skill to match the binary — that would only
+take you backwards.
 
 ## Finding the model
 

@@ -43,6 +43,14 @@ Consequences worth knowing before you edit it:
   skill is normally the *newer* of the two. Never tell an agent to reconcile
   that by reinstalling the skill — it would downgrade itself. The reconciliation
   lives in `parse_or_hint` in `main.rs`.
+- **The skill names the version it is written for** ("written for **amcli
+  X.Y.Z**" in `SKILL.md`), and a test pins that to the workspace version. A
+  release commit therefore bumps `Cargo.toml`, `Cargo.lock` *and* that line, or
+  `cargo test` is red.
+- **The skill's Setup runs the installer every session.** That is only fine
+  because `install.sh` / `install.ps1` short-circuit when the newest release is
+  already installed and keep the installed binary when there is no network.
+  Keep those two properties if you touch the installers.
 - Files beginning with a dot are never copied, so no `.gitattributes` or
   `.version` inside the skill folder.
 
