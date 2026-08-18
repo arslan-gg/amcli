@@ -25,11 +25,13 @@
 //! position in its row. The three together get within a few per cent of what a
 //! far more expensive search finds on real views.
 //!
-//! **Placing by priority.** Within a row, the slot with the most links to the
-//! row it is aligned against is placed first at its ideal, and the rest fit
-//! around it — so a hub sits on its column and its edges hang straight, rather
-//! than yielding to whatever leaf happened to be on its left. Corridors go
-//! first of all, so a long edge comes out straight.
+//! **Placing by Brandes and Köpf.** Slots are aligned into blocks with a
+//! median neighbour in the row above or below — a corridor with its corridor
+//! neighbour first, and the box at the end of a long edge with the corridor,
+//! so the whole edge is one column — and the blocks packed as tight as the
+//! boxes allow, four ways; the layout with the fewest slanted long edges is
+//! kept whole. Aligned slots share an x exactly, and a long edge whose ends
+//! both sit on its column cannot pass through a box.
 //!
 //! **Straight lines, and lanes to keep them clear.** Every edge is one
 //! straight line from centre to centre; there are no bendpoints. An edge
@@ -65,9 +67,6 @@ const HGAP: i32 = 48;
 const VGAP: i32 = 72;
 /// Width reserved in a row for an edge passing through it.
 const DUMMY_W: i32 = 12;
-/// How many box-neighbours a corridor-neighbour outweighs when a box decides
-/// where to sit. See [`Layered::wish`].
-const LANE_VOTES: usize = 3;
 
 #[derive(Clone, Debug)]
 pub struct Item {
@@ -875,16 +874,17 @@ struct Layered {
     x: HashMap<Slot, i32>,
     y: Vec<i32>,
     /// Rows that are lines of a folded rank rather than ranks in their own
-    /// right. See [`Self::assign_x`] for why they are held still.
+    /// right.
     folded: HashSet<usize>,
     /// The height every row is given. At least the tallest box here, and
     /// when this is one component of several, the tallest box in any of
     /// them — so rows line up across the packed drawing.
     pitch: i32,
-    /// The gap between rows. Starts at [`VGAP`] and grows if a straight
-    /// edge between adjacent rows would otherwise cut through a box in its
-    /// own row — see [`Self::fit_gap`].
-    gap: i32,
+    /// The gap below each row. Each starts at [`VGAP`] and grows if a
+    /// straight edge across it would otherwise cut through a box in one of
+    /// its two rows — see [`Self::fit_gap`]. One per gap rather than one for
+    /// the drawing, so a single shallow edge makes one gap tall, not all.
+    gaps: Vec<i32>,
     /// The two boxes each corridor belongs to, upper end first.
     lane_ends: HashMap<usize, (usize, usize)>,
 }
@@ -928,7 +928,7 @@ fn build(
         y: Vec::new(),
         folded: HashSet::new(),
         pitch: min_pitch.max(items.iter().map(|i| i.h).max().unwrap_or(55)).max(55),
-        gap: VGAP,
+        gaps: Vec::new(),
         lane_ends: HashMap::new(),
     };
 
@@ -1499,108 +1499,32 @@ impl Layered {
         }
     }
 
-    /// Place each slot near the median of what it connects to, then push apart.
+    /// Give every slot an x, by Brandes and Köpf.
     ///
-    /// Aligning a node with its neighbours is what makes an edge vertical
-    /// instead of diagonal, and a vertical edge is one that crosses nothing.
+    /// "Fast and Simple Horizontal Coordinate Assignment" (2001), the method
+    /// `dot`'s successors use. Four layouts are made — aligning each slot
+    /// with a median neighbour in the row above or the row below, packing
+    /// leftward or rightward — and each slot takes the average of the middle
+    /// two of its four positions. Aligned slots share one x exactly, so an
+    /// edge between them is vertical, not nearly so; a corridor is a chain of
+    /// aligned slots and is a straight column by construction; and packing
+    /// is as tight as the boxes allow, so nothing drifts and no group is left
+    /// standing off on its own. The priority sweep this replaces got close to
+    /// each of those and none of them exactly, and needed a compaction pass
+    /// and a fold-block rule to stay out of trouble.
     ///
-    /// Slots are placed by **priority**: within a row, the slot with the most
-    /// links to the row it is being aligned against goes first and takes its
-    /// ideal position; the rest are fitted around what is already down. Placing
-    /// left to right instead — every slot yielding to whatever sits on its left
-    /// — lets one leaf that happens to come first push a hub with ten children
-    /// off its column, and the ten edges then run diagonally across the row.
-    /// On a tree that came out as a right-leaning staircase, with every row
-    /// anchored at the same left edge and holes of several hundred pixels
-    /// where the medians wanted to be.
-    ///
-    /// The lines of a folded rank are placed as one block. They have no links
-    /// to each other, so placed one line at a time each would take its own
-    /// median from the rank below and pack rightward from that single spot,
-    /// and the rank below then recentre on where they landed — a little to the
-    /// right — on every sweep, until the fan walked off the page. As a block
-    /// they take one median and stay stacked.
+    /// Then the row gap and the corridor widths, which depend on where the
+    /// boxes landed and change how they pack, once round each.
     fn assign_x(&mut self, items: &[Item], edges: &[(usize, usize)]) {
-        let nb = self.neighbours();
-        let depth = self.rows.len();
-
-        // A first pass left to right gives every slot a position.
-        for row in &self.rows {
-            let mut cursor = 0;
-            for s in row {
-                self.x.insert(*s, cursor);
-                cursor += self.width[s] + HGAP;
-            }
-        }
-
-        // The rows that will be swept as units: a folded rank's lines together,
-        // every other row alone.
-        let mut units: Vec<Vec<usize>> = Vec::new();
-        let mut r = 0;
-        while r < depth {
-            if self.folded.contains(&r) {
-                let start = r;
-                while r < depth && self.folded.contains(&r) {
-                    r += 1;
-                }
-                units.push((start..r).collect());
-            } else {
-                units.push(vec![r]);
-                r += 1;
-            }
-        }
-
-        let sweep = |g: &mut Self, rounds: usize| {
-            for sweep in 0..rounds {
-                let down = sweep % 2 == 0;
-                let seq: Vec<usize> = if down {
-                    (1..units.len()).collect()
-                } else {
-                    (0..units.len().saturating_sub(1)).rev().collect()
-                };
-                for ui in seq {
-                    let unit = units[ui].clone();
-                    let other: Vec<usize> =
-                        if down { units[ui - 1].clone() } else { units[ui + 1].clone() };
-                    let other_set: HashSet<usize> = other.iter().copied().collect();
-                    if unit.len() == 1 {
-                        g.place_row(unit[0], &other_set, &nb);
-                    } else {
-                        g.place_block(&unit, &other_set, &nb);
-                    }
-                }
-            }
-        };
-        sweep(self, 6);
         let _ = items;
-
-        // Close the gaps that separate loosely joined groups. Each row is
-        // placed against its neighbours' medians, and a group whose members
-        // link mostly to each other is self-consistent wherever it sits — so
-        // two such groups joined by a few edges settle far apart with those
-        // edges stretched right across the drawing. Nothing in the sweep
-        // pulls a *group* toward another. This does: every gap in every row
-        // is tried closed, and stays closed if the drawing's edges get
-        // shorter in total. Closing a gap in one row moves the medians of the
-        // rows beside it, so a short sweep follows and the two alternate.
-        for _ in 0..3 {
-            self.close_gaps(&nb);
-            sweep(self, 2);
-        }
-        self.close_gaps(&nb);
-
-        // Edges are straight lines, and a corridor only protects its edge
-        // if it is as wide as the line's slant across the row. Now that the
-        // boxes have settled: pick the row gap that lets every adjacent edge
-        // clear its rows, size each corridor to its line's sweep at that gap,
-        // and let the boxes fit around it. The ends move a little for that,
-        // and the gap depends on where they are, so the two go round
-        // together, and the gap is fixed last against the boxes as drawn.
-        for _ in 0..3 {
+        self.brandes_koepf();
+        // Corridors sized to the slant their line makes at this placement,
+        // then placed again with that room; the gap last, against the boxes
+        // as they will be drawn.
+        for _ in 0..2 {
             self.fit_gap(edges);
             self.size_lanes();
-            sweep(self, 2);
-            self.close_gaps(&nb);
+            self.brandes_koepf();
         }
         self.fit_gap(edges);
 
@@ -1608,6 +1532,289 @@ impl Layered {
         let min = self.x.values().copied().min().unwrap_or(0);
         for v in self.x.values_mut() {
             *v = snap(*v - min);
+        }
+    }
+
+    /// The four Brandes–Köpf layouts, balanced.
+    fn brandes_koepf(&mut self) {
+        let nb = self.neighbours();
+        let conflicts = self.type1_conflicts(&nb);
+        let mut layouts: Vec<HashMap<Slot, i32>> = Vec::with_capacity(4);
+        for (down, left) in [(true, true), (true, false), (false, true), (false, false)] {
+            let (root, align) = self.vertical_alignment(&nb, &conflicts, down, left);
+            layouts.push(self.horizontal_compaction(&root, &align, left));
+        }
+        self.balance(layouts);
+    }
+
+    /// Non-inner segments that cross an inner one. An inner segment joins two
+    /// corridor slots — one long edge passing through two rows — and is kept
+    /// straight at any cost; a box's edge that would cross it is not allowed
+    /// to align, and is marked so the alignment pass skips it.
+    fn type1_conflicts(&self, nb: &HashMap<Slot, Vec<Slot>>) -> HashSet<(Slot, Slot)> {
+        let mut marked = HashSet::new();
+        let pos = self.positions();
+        let is_dummy = |s: &Slot| matches!(s, Slot::Dummy(..));
+        for i in 0..self.rows.len().saturating_sub(1) {
+            let (upper, lower) = (&self.rows[i], &self.rows[i + 1]);
+            let mut k0 = 0usize;
+            let mut l = 0usize;
+            for l1 in 0..lower.len() {
+                let v = lower[l1];
+                // Is v the lower end of an inner segment?
+                let inner_upper = if is_dummy(&v) {
+                    nb.get(&v)
+                        .into_iter()
+                        .flatten()
+                        .find(|u| is_dummy(u) && pos.get(u).map(|(r, _)| *r) == Some(i))
+                        .copied()
+                } else {
+                    None
+                };
+                if l1 + 1 == lower.len() || inner_upper.is_some() {
+                    let k1 = match inner_upper {
+                        Some(u) => pos[&u].1,
+                        None => upper.len().saturating_sub(1),
+                    };
+                    while l <= l1 {
+                        let w = lower[l];
+                        for u in nb.get(&w).into_iter().flatten() {
+                            let Some(&(ru, k)) = pos.get(u) else { continue };
+                            if ru != i {
+                                continue;
+                            }
+                            if k < k0 || k > k1 {
+                                marked.insert((*u, w));
+                            }
+                        }
+                        l += 1;
+                    }
+                    k0 = k1;
+                }
+            }
+        }
+        marked
+    }
+
+    /// Row and index of every slot.
+    fn positions(&self) -> HashMap<Slot, (usize, usize)> {
+        self.rows
+            .iter()
+            .enumerate()
+            .flat_map(|(r, row)| row.iter().enumerate().map(move |(i, s)| (*s, (r, i))))
+            .collect()
+    }
+
+    /// Group slots into blocks that will share one x.
+    ///
+    /// Rows are taken top to bottom (or bottom to top), slots left to right
+    /// (or right to left), and each slot is aligned with the median of its
+    /// neighbours in the row already done — a corridor slot with a corridor
+    /// neighbour there first, so a long edge's chain is one column — provided
+    /// that neighbour is not already aligned with someone, the alignment
+    /// would not cross one made earlier in this row, and the segment is not
+    /// a marked conflict.
+    fn vertical_alignment(
+        &self,
+        nb: &HashMap<Slot, Vec<Slot>>,
+        conflicts: &HashSet<(Slot, Slot)>,
+        down: bool,
+        left: bool,
+    ) -> (HashMap<Slot, Slot>, HashMap<Slot, Slot>) {
+        let pos = self.positions();
+        let mut root: HashMap<Slot, Slot> = HashMap::new();
+        let mut align: HashMap<Slot, Slot> = HashMap::new();
+        for row in &self.rows {
+            for s in row {
+                root.insert(*s, *s);
+                align.insert(*s, *s);
+            }
+        }
+        let depth = self.rows.len();
+        let order: Vec<usize> =
+            if down { (0..depth).collect() } else { (0..depth).rev().collect() };
+        for (k, &r) in order.iter().enumerate() {
+            if k == 0 {
+                continue;
+            }
+            let prev = order[k - 1];
+            // Corridor slots claim their neighbours first, boxes after: a
+            // long edge's chain, and the box at its end, get their column
+            // before a box beside them takes it for a short edge. Brandes
+            // and Köpf process a row strictly in order with a single moving
+            // guard; taking corridors out of turn needs the guard replaced by
+            // the thing it stood for — no two alignments in one row may
+            // cross — checked against the alignments made so far.
+            let mut slots: Vec<Slot> = if left {
+                self.rows[r].clone()
+            } else {
+                self.rows[r].iter().rev().copied().collect()
+            };
+            slots.sort_by_key(|s| !matches!(s, Slot::Dummy(..)));
+            // Alignments made in this row, as (upper index, lower index).
+            let mut made: Vec<(usize, usize)> = Vec::new();
+            for v in slots {
+                let vj = pos[&v].1;
+                // Neighbours in the row already done, in row order.
+                let mut ups: Vec<(usize, Slot)> = nb
+                    .get(&v)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|u| pos.get(u).filter(|(ru, _)| *ru == prev).map(|(_, i)| (*i, *u)))
+                    .collect();
+                if ups.is_empty() {
+                    continue;
+                }
+                ups.sort_unstable();
+                ups.dedup();
+                let d = ups.len();
+                let mut candidates: Vec<(usize, Slot)> = Vec::new();
+                // A corridor neighbour first, before any median. For a
+                // corridor slot that is what makes the chain a column; for a
+                // box it is what puts the end of a long edge on the column,
+                // so the whole edge — a straight line — runs down it. Brandes
+                // and Köpf align by median only, because their edges bend at
+                // the corridor and only the chain need be straight; here the
+                // ends must sit on it too. A box with long edges in two
+                // columns can sit on one; the median decides which is tried
+                // first.
+                let mut lanes: Vec<(usize, Slot)> =
+                    ups.iter().copied().filter(|(_, u)| matches!(u, Slot::Dummy(..))).collect();
+                if !left {
+                    lanes.reverse();
+                }
+                candidates.extend(lanes);
+                let (m1, m2) = ((d - 1) / 2, d / 2);
+                let medians = if left { [m1, m2] } else { [m2, m1] };
+                for m in medians {
+                    candidates.push(ups[m]);
+                }
+                for (i, u) in candidates {
+                    if align[&v] != v {
+                        break;
+                    }
+                    if conflicts.contains(&(u, v)) || conflicts.contains(&(v, u)) {
+                        continue;
+                    }
+                    // Taken already, or would cross an alignment made here.
+                    let taken = made.iter().any(|(ui, _)| *ui == i);
+                    let crosses = made.iter().any(|(ui, lj)| (*ui < i) != (*lj < vj));
+                    if taken || crosses {
+                        continue;
+                    }
+                    align.insert(u, v);
+                    let ru = root[&u];
+                    root.insert(v, ru);
+                    align.insert(v, ru);
+                    made.push((i, vj));
+                }
+            }
+        }
+        (root, align)
+    }
+
+    /// Pack the blocks as tightly as the boxes allow, leftward or rightward.
+    ///
+    /// Blocks are placed by longest path over a graph of "this block must sit
+    /// right of that one by at least so much", one edge for every pair of
+    /// slots side by side in a row; the separation is centre to centre, half
+    /// each box plus the gap, so boxes of any width pack correctly. For the
+    /// rightward layouts the rows are mirrored, packed, and mirrored back.
+    fn horizontal_compaction(
+        &self,
+        root: &HashMap<Slot, Slot>,
+        _align: &HashMap<Slot, Slot>,
+        left: bool,
+    ) -> HashMap<Slot, i32> {
+        // Block graph: for consecutive slots u,v (in the packing direction),
+        // root[v] must be at least sep(u,v) right of root[u].
+        let mut succ: HashMap<Slot, Vec<(Slot, i32)>> = HashMap::new();
+        let mut indeg: HashMap<Slot, usize> = HashMap::new();
+        for s in root.keys() {
+            indeg.entry(root[s]).or_insert(0);
+        }
+        for row in &self.rows {
+            let seq: Vec<Slot> =
+                if left { row.clone() } else { row.iter().rev().copied().collect() };
+            for w in seq.windows(2) {
+                let (u, v) = (root[&w[0]], root[&w[1]]);
+                let sep = self.width[&w[0]] / 2 + self.width[&w[1]] / 2 + HGAP;
+                let list = succ.entry(u).or_default();
+                match list.iter_mut().find(|(t, _)| *t == v) {
+                    Some(e) => e.1 = e.1.max(sep),
+                    None => {
+                        list.push((v, sep));
+                        *indeg.entry(v).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        // Longest path from the sources, in a stable order.
+        let mut x: HashMap<Slot, i32> = HashMap::new();
+        let mut ready: Vec<Slot> =
+            indeg.iter().filter(|(_, d)| **d == 0).map(|(s, _)| *s).collect();
+        ready.sort_unstable();
+        let mut queue: VecDeque<Slot> = ready.into_iter().collect();
+        for s in queue.iter() {
+            x.insert(*s, 0);
+        }
+        while let Some(u) = queue.pop_front() {
+            let xu = x[&u];
+            if let Some(list) = succ.get(&u) {
+                let mut list = list.clone();
+                list.sort_unstable();
+                for (v, sep) in list {
+                    let e = x.entry(v).or_insert(i32::MIN);
+                    *e = (*e).max(xu + sep);
+                    let d = indeg.get_mut(&v).unwrap();
+                    *d -= 1;
+                    if *d == 0 {
+                        queue.push_back(v);
+                    }
+                }
+            }
+        }
+        // Every slot at its block's x; mirrored back for a rightward layout.
+        let mut out: HashMap<Slot, i32> = HashMap::new();
+        for s in root.keys() {
+            let c = x[&root[s]];
+            out.insert(*s, if left { c } else { -c });
+        }
+        out
+    }
+
+    /// Choose among the four layouts.
+    ///
+    /// Brandes and Köpf balance the four by giving every slot the average of
+    /// the middle two of its four positions. That keeps the order and the
+    /// separation, but not the blocks: a slot aligned one way in two layouts
+    /// and another way in the other two lands between, and an edge that was
+    /// vertical in each is vertical in none. With bends at every corridor
+    /// slot that costs a little straightness; with straight lines it puts
+    /// the corridor off the line and the line through a box. So one layout
+    /// is taken whole: the one with the fewest slanted long edges, and among
+    /// those the shortest edges in total.
+    fn balance(&mut self, layouts: Vec<HashMap<Slot, i32>>) {
+        let score = |l: &HashMap<Slot, i32>| -> (usize, i64) {
+            let mut slanted = 0usize;
+            let mut length: i64 = 0;
+            for (a, b) in &self.links {
+                let d = (l[a] - l[b]).abs() as i64;
+                length += d;
+                if d != 0 && (matches!(a, Slot::Dummy(..)) || matches!(b, Slot::Dummy(..))) {
+                    slanted += 1;
+                }
+            }
+            (slanted, length)
+        };
+        let best = layouts
+            .iter()
+            .enumerate()
+            .min_by_key(|(i, l)| (score(l), *i))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        for (s, c) in &layouts[best] {
+            self.x.insert(*s, c - self.width[s] / 2);
         }
     }
 
@@ -1626,15 +1833,17 @@ impl Layered {
     /// which is the wrong way round.
     fn size_lanes(&mut self) {
         let row_of = self.row_index();
-        let step = (self.pitch + self.gap) as f64;
+        let tops = self.row_tops();
         let mut widths: Vec<(Slot, i32)> = Vec::new();
         for (ei, (upper, lower)) in &self.lane_ends {
             let (u, l) = (Slot::Item(*upper), Slot::Item(*lower));
             let (Some(&ru), Some(&rl)) = (row_of.get(&u), row_of.get(&l)) else { continue };
             let ux = (self.x[&u] + self.width[&u] / 2) as f64;
             let lx = (self.x[&l] + self.width[&l] / 2) as f64;
-            let per_row = (lx - ux) / (rl - ru) as f64;
-            let sweep = (per_row.abs() * self.pitch as f64 / step).ceil() as i32;
+            // Slope over the real vertical distance between the two ends.
+            let drop = (tops[rl] - tops[ru]).max(1) as f64;
+            let per_px = (lx - ux) / drop;
+            let sweep = (per_px.abs() * self.pitch as f64).ceil() as i32;
             for seg in 0..(rl - ru - 1) {
                 let dm = Slot::Dummy(*ei, seg);
                 if self.width.contains_key(&dm) {
@@ -1647,20 +1856,22 @@ impl Layered {
         }
     }
 
-    /// Grow the row gap until no straight edge between adjacent rows cuts
-    /// through a box in either of its own rows.
+    /// Grow each row gap until no straight edge across it cuts through a box
+    /// in either of its two rows.
     ///
     /// A line from one row to the next leaves its box through the bottom if
     /// it is steep and through the side if it is shallow, and a shallow one
     /// then runs along the row band through the neighbours before it drops.
     /// How shallow is shallow depends on the gap: the further apart the rows,
-    /// the steeper every line. So the gap is the one number that makes every
-    /// adjacent edge in the drawing clear its rows — computed exactly, not
-    /// tuned — and capped, so one edge that spans the width of the drawing
-    /// costs a taller drawing but not an absurd one.
+    /// the steeper every line. So each gap is the one number that makes every
+    /// edge across it clear its rows — computed exactly, not tuned — and
+    /// capped at six times the stock gap, so one edge that spans the width of
+    /// the drawing costs one tall gap and not an absurd one. Per gap rather
+    /// than per drawing: a ten-rank chain with one shallow edge at the bottom
+    /// should not be three thousand pixels tall for it.
     fn fit_gap(&mut self, edges: &[(usize, usize)]) {
         let row_of = self.row_index();
-        let mut need = VGAP;
+        let mut need = vec![VGAP; self.rows.len()];
         for &(a, b) in edges {
             if a == b {
                 continue;
@@ -1697,273 +1908,35 @@ impl Layered {
                     // over `run`; solve for the gap.
                     let half = (self.height[o].max(1) as f64) / 2.0 + 2.0;
                     let g = (half * run / run_to_box.max(1.0) - self.pitch as f64).ceil() as i32;
-                    need = need.max(g);
+                    need[upper_row] = need[upper_row].max(g);
                 }
             }
         }
-        self.gap = snap(need.min(VGAP * 4)).max(VGAP);
-    }
-
-    /// Slide everything to the right of a vertical cut leftward, wherever that
-    /// shortens the drawing's edges overall.
-    ///
-    /// Two groups of boxes that link mostly to themselves are each
-    /// self-consistent wherever they sit, and the sweep leaves them wherever
-    /// the ordering happened to put them — often at opposite ends of the
-    /// drawing, with the few edges between them stretched right across it.
-    /// Closing a gap one row at a time cannot fix that: the row that moves
-    /// leaves the rows above and below behind, and its own edges to them get
-    /// longer than the cross-group edges get shorter. So the move here is
-    /// across every row at once — everything to the right of a vertical cut
-    /// slides left together, by as much as the tightest row allows — and only
-    /// the edges that cross the cut change length. Kept if they get shorter.
-    ///
-    /// The cuts tried are the right edge of every slot: the places a gap can
-    /// start. Rows in order, cuts left to right, strictly better only, and
-    /// repeated to a fixed point, so the result is determined.
-    fn close_gaps(&mut self, nb: &HashMap<Slot, Vec<Slot>>) {
-        let all: Vec<Slot> = self.rows.iter().flatten().copied().collect();
-        for _round in 0..8 {
-            let mut any = false;
-            let mut cuts: Vec<i32> = all.iter().map(|s| self.x[s] + self.width[s]).collect();
-            cuts.sort_unstable();
-            cuts.dedup();
-            for cut in cuts {
-                // How far can everything at or beyond the cut move left? The
-                // least clearance any row has at the cut.
-                let mut room = i32::MAX;
-                for row in &self.rows {
-                    let mut left_edge = i32::MIN;
-                    let mut right_start = i32::MAX;
-                    for s in row {
-                        let (x0, x1) = (self.x[s], self.x[s] + self.width[s]);
-                        if x0 >= cut {
-                            right_start = right_start.min(x0);
-                        } else {
-                            left_edge = left_edge.max(x1);
-                        }
-                    }
-                    if right_start != i32::MAX && left_edge != i32::MIN {
-                        room = room.min(right_start - left_edge - HGAP);
-                    }
-                }
-                if room == i32::MAX || room <= 0 {
-                    continue;
-                }
-                let moved: HashSet<Slot> =
-                    all.iter().copied().filter(|s| self.x[s] >= cut).collect();
-                if moved.is_empty() || moved.len() == all.len() {
-                    continue;
-                }
-                // Only edges crossing the cut change. Sum |dx| before and after.
-                let mut before: i64 = 0;
-                let mut after: i64 = 0;
-                for m in &moved {
-                    let mx = self.x[m] + self.width[m] / 2;
-                    for o in nb.get(m).into_iter().flatten() {
-                        if moved.contains(o) {
-                            continue;
-                        }
-                        let ox = self.x[o] + self.width[o] / 2;
-                        before += (mx - ox).abs() as i64;
-                        after += (mx - room - ox).abs() as i64;
-                    }
-                }
-                if after < before {
-                    for m in &moved {
-                        *self.x.get_mut(m).unwrap() -= room;
-                    }
-                    any = true;
-                }
-            }
-            if !any {
-                break;
-            }
-        }
-    }
-
-    /// Where a slot wants to be, given the rows it is aligned against: the
-    /// median centre of its links there, and how many such links it has.
-    fn wish(
-        &self,
-        s: Slot,
-        other: &HashSet<usize>,
-        row_of: &HashMap<Slot, usize>,
-        nb: &HashMap<Slot, Vec<Slot>>,
-    ) -> Option<(i32, usize)> {
-        // A corridor neighbour counts for more than a box neighbour. Edges are
-        // straight lines, and a long edge only stays inside its corridor if
-        // its two ends sit over the corridor's column; a box that is the end
-        // of a long edge and also has several short ones would otherwise be
-        // pulled to the median of the short ones and the long line would
-        // slant across the ranks it skips. Three votes for a corridor, one
-        // for a box, and the median of that.
-        let mut centres: Vec<i32> = Vec::new();
-        for o in nb.get(&s).into_iter().flatten() {
-            if !row_of.get(o).is_some_and(|r| other.contains(r)) {
-                continue;
-            }
-            let c = self.x[o] + self.width[o] / 2;
-            let votes = if matches!(o, Slot::Dummy(..)) { LANE_VOTES } else { 1 };
-            centres.extend(std::iter::repeat_n(c, votes));
-        }
-        if centres.is_empty() {
-            return None;
-        }
-        centres.sort_unstable();
-        let n = centres.len();
-        let median =
-            if n % 2 == 1 { centres[n / 2] } else { (centres[n / 2 - 1] + centres[n / 2]) / 2 };
-        Some((median - self.width[&s] / 2, n))
+        self.gaps = need.into_iter().map(|g| snap(g.min(VGAP * 6)).max(VGAP)).collect();
     }
 
     fn row_index(&self) -> HashMap<Slot, usize> {
         self.rows.iter().enumerate().flat_map(|(r, row)| row.iter().map(move |s| (*s, r))).collect()
     }
 
-    /// Place one row against its neighbouring row(s), by priority.
-    fn place_row(&mut self, r: usize, other: &HashSet<usize>, nb: &HashMap<Slot, Vec<Slot>>) {
-        let row_of = self.row_index();
-        let order = self.rows[r].clone();
-        let n = order.len();
-        if n == 0 {
-            return;
-        }
-
-        // Each slot's target and priority. A slot with no links to the other
-        // side keeps where it is, at the lowest priority.
-        //
-        // A dummy — one row of a long edge's corridor — is placed before any
-        // real box. It has exactly one link each way, so by link count it would
-        // go last and take whatever room was left, and the corridor would end
-        // up somewhere other than under the edge's ends. The edge then needs a
-        // bend to reach it, on a drawing that could have been straight. Placing
-        // the corridor first keeps the edge straight and lets the boxes, which
-        // can sit anywhere in their row without their edges getting longer,
-        // fit around it. This is the priority order in Gansner et al.
-        let plan: Vec<(i32, usize)> = order
-            .iter()
-            .map(|s| {
-                let (t, links) = self.wish(*s, other, &row_of, nb).unwrap_or((self.x[s], 0));
-                let priority = if matches!(s, Slot::Dummy(..)) { usize::MAX } else { links };
-                (t, priority)
-            })
-            .collect();
-
-        // Priority order: dummies, then most links first; ties by current
-        // position so a sweep is deterministic and stable.
-        let mut by_priority: Vec<usize> = (0..n).collect();
-        by_priority.sort_by(|&a, &b| plan[b].1.cmp(&plan[a].1).then_with(|| a.cmp(&b)));
-
-        // Positions in row order, filled in as slots are placed. A slot placed
-        // earlier is fixed and later ones must fit between the fixed ones.
-        let mut placed: Vec<Option<i32>> = vec![None; n];
-        for &i in &by_priority {
-            let (target, _) = plan[i];
-            let w = self.width[&order[i]];
-            // The nearest fixed slot on either side bounds where this one can
-            // go: everything unfixed between them will be squeezed in later, so
-            // room for those has to be kept too.
-            let mut lo = i32::MIN;
-            let mut need_left = 0;
-            for j in (0..i).rev() {
-                match placed[j] {
-                    Some(x) => {
-                        lo = x + self.width[&order[j]] + HGAP + need_left;
-                        break;
-                    }
-                    None => need_left += self.width[&order[j]] + HGAP,
-                }
-            }
-            let mut hi = i32::MAX;
-            let mut need_right = 0;
-            for j in (i + 1)..n {
-                match placed[j] {
-                    Some(x) => {
-                        hi = x - HGAP - need_right - w;
-                        break;
-                    }
-                    None => need_right += self.width[&order[j]] + HGAP,
-                }
-            }
-            let x = if lo != i32::MIN && hi != i32::MAX && lo > hi {
-                // Cannot fit between the fixed neighbours at all — this can
-                // only happen if earlier placements were too tight, which the
-                // reservation above prevents; but be safe and lean left.
-                lo
-            } else {
-                target.clamp(lo.min(hi), hi.max(lo))
-            };
-            placed[i] = Some(x);
-        }
-        for (i, s) in order.iter().enumerate() {
-            self.x.insert(*s, placed[i].unwrap());
-        }
+    /// The gap below row `r`: as fitted, or the stock one.
+    fn gap_below(&self, r: usize) -> i32 {
+        self.gaps.get(r).copied().unwrap_or(VGAP)
     }
 
-    /// Place the lines of a folded rank as one block against a neighbouring
-    /// row: keep each line packed as it is, and shift them all together so the
-    /// block's centre sits on the median of everything the block links to.
-    fn place_block(
-        &mut self,
-        lines: &[usize],
-        other: &HashSet<usize>,
-        nb: &HashMap<Slot, Vec<Slot>>,
-    ) {
-        let row_of = self.row_index();
-        // Pack each line tight, so the block is compact whatever the first
-        // pass left.
-        for &r in lines {
-            let mut cursor = 0;
-            for s in &self.rows[r].clone() {
-                self.x.insert(*s, cursor);
-                cursor += self.width[s] + HGAP;
-            }
+    /// The y of each row's top, from the pitch and the gaps.
+    fn row_tops(&self) -> Vec<i32> {
+        let mut y = Vec::with_capacity(self.rows.len());
+        let mut cursor = 0;
+        for r in 0..self.rows.len() {
+            y.push(snap(cursor));
+            cursor += self.pitch + self.gap_below(r);
         }
-        // Everything the block links to on the other side.
-        let mut centres: Vec<i32> = Vec::new();
-        for &r in lines {
-            for s in &self.rows[r] {
-                for o in nb.get(s).into_iter().flatten() {
-                    if row_of.get(o).is_some_and(|rr| other.contains(rr)) {
-                        centres.push(self.x[o] + self.width[o] / 2);
-                    }
-                }
-            }
-        }
-        if centres.is_empty() {
-            return;
-        }
-        centres.sort_unstable();
-        let target_centre = centres[centres.len() / 2];
-        let block_w =
-            lines.iter().map(|&r| row_width(&self.rows[r], &self.width)).max().unwrap_or(0);
-        let shift = target_centre - block_w / 2;
-        for &r in lines {
-            // Centre each line inside the block width, then shift the block.
-            let lw = row_width(&self.rows[r], &self.width);
-            let inset = (block_w - lw) / 2;
-            for s in &self.rows[r].clone() {
-                let x = self.x[s] + inset + shift;
-                self.x.insert(*s, x);
-            }
-        }
-    }
-
-    /// The height every row is given: the tallest box in the drawing.
-    ///
-    /// One pitch for all rows rather than each row's own tallest, so that a
-    /// drawing reads as a grid — and so that when components are laid out
-    /// separately and packed side by side, their rows line up across the
-    /// shelf instead of drifting by the height of one taller box.
-    fn row_pitch(&self) -> i32 {
-        self.pitch
+        y
     }
 
     fn assign_y(&mut self) {
-        let h = self.row_pitch();
-        let g = self.gap;
-        self.y = (0..self.rows.len()).map(|r| snap(r as i32 * (h + g))).collect();
+        self.y = self.row_tops();
     }
 
     fn finish(&self, items: &[Item]) -> Vec<Rect> {
@@ -2569,7 +2542,7 @@ mod tests {
         assert!(adjacent > 3000 && long > 1000, "the sweep proves little: {adjacent} / {long}");
         let share = long_through as f64 / long as f64;
         eprintln!("long edges through a box: {long_through} of {long} ({share:.3})");
-        assert!(share < 0.30, "{long_through} of {long} long edges through a box ({share:.2})");
+        assert!(share < 0.20, "{long_through} of {long} long edges through a box ({share:.2})");
     }
 
     #[test]
