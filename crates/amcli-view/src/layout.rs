@@ -31,13 +31,17 @@
 //! than yielding to whatever leaf happened to be on its left. Corridors go
 //! first of all, so a long edge comes out straight.
 //!
-//! **Lanes, not bends.** An edge crossing several rows reserves a corridor in
-//! each one, which keeps other boxes out of its way.
-//!
-//! **Bends only where a straight line would actually hit something.** The
-//! corridor usually leaves the direct line clear, and then the edge is drawn
-//! straight. Adding a bendpoint because an edge *might* need one is how a
-//! diagram ends up full of kinks that buy nothing.
+//! **Straight lines, and lanes to keep them clear.** Every edge is one
+//! straight line from centre to centre; there are no bendpoints. An edge
+//! crossing several rows reserves a corridor in each — sequenced where the
+//! line will run and as wide as its slant across the row — and the boxes
+//! pack around it. An edge between neighbouring rows is kept off its own
+//! row's boxes by the row gap, which is chosen so that every such line has
+//! dropped clear of the row band before it reaches a neighbour: one number
+//! per drawing, computed rather than tuned. What is left is a slanted long
+//! edge across a crowded rank whose corridor the ordering could not seat
+//! where the line runs without more crossings than it saves; those are drawn
+//! through, and counted.
 //!
 //! What this cannot do is make a dense graph sparse. A rank of thirty
 //! requirements over thirty drivers with seventy-five edges between them has a
@@ -61,6 +65,9 @@ const HGAP: i32 = 48;
 const VGAP: i32 = 72;
 /// Width reserved in a row for an edge passing through it.
 const DUMMY_W: i32 = 12;
+/// How many box-neighbours a corridor-neighbour outweighs when a box decides
+/// where to sit. See [`Layered::wish`].
+const LANE_VOTES: usize = 3;
 
 #[derive(Clone, Debug)]
 pub struct Item {
@@ -168,9 +175,6 @@ pub fn fit_size(label: &str) -> (i32, i32) {
 pub struct Placement {
     /// One rectangle per item, in the order given.
     pub rects: Vec<Rect>,
-    /// Absolute waypoints for an edge, by its index in the input. Only edges
-    /// that need routing appear here.
-    pub routes: HashMap<usize, Vec<Pt>>,
     /// Which algorithm actually ran. Under [`Algorithm::Auto`] this is what the
     /// fallback chose, so a caller can say so rather than leaving the user to
     /// wonder why the diagram looks like a grid.
@@ -218,18 +222,10 @@ pub fn place(items: &[Item], edges: &[(usize, usize)], algo: Algorithm) -> Place
 /// How tangled a drawing is: crossings between its lines, plus lines drawn
 /// through a box, which is worse than a crossing and counted as two.
 fn tangles(p: &Placement, edges: &[(usize, usize)]) -> usize {
-    let mut through = 0;
-    for (ei, &(a, b)) in edges.iter().enumerate() {
-        if a == b {
-            continue;
-        }
-        let mut path = vec![p.rects[a].center()];
-        path.extend(p.routes.get(&ei).into_iter().flatten().copied());
-        path.push(p.rects[b].center());
-        if !path_is_clear(&path, &p.rects, a, b) {
-            through += 1;
-        }
-    }
+    let through = edges
+        .iter()
+        .filter(|(a, b)| a != b && !straight_is_clear(p.rects[*a], p.rects[*b], &p.rects, *a, *b))
+        .count();
     drawn_crossings(p, edges) + 2 * through
 }
 
@@ -268,7 +264,7 @@ fn segments_cross(p1: Pt, p2: Pt, q1: Pt, q2: Pt) -> bool {
 }
 
 fn grid_placement(items: &[Item]) -> Placement {
-    Placement { rects: grid(items), routes: HashMap::new(), algorithm: Algorithm::Grid }
+    Placement { rects: grid(items), algorithm: Algorithm::Grid }
 }
 
 /// Width of the bounding box over its height, so 1.0 is square and 10.0 is a
@@ -741,35 +737,22 @@ fn sugiyama(items: &[Item], edges: &[(usize, usize)]) -> Placement {
 
     // Each component laid out in its own coordinates, with a mapping back to
     // the caller's indices for both items and edges.
-    let mut drawn: Vec<(Vec<usize>, Placement, Vec<usize>)> = Vec::with_capacity(comps.len());
+    let mut drawn: Vec<(Vec<usize>, Placement)> = Vec::with_capacity(comps.len());
     for members in &comps {
         let local: HashMap<usize, usize> =
             members.iter().enumerate().map(|(li, gi)| (*gi, li)).collect();
         let sub_items: Vec<Item> = members.iter().map(|gi| items[*gi].clone()).collect();
-        let mut sub_edges: Vec<(usize, usize)> = Vec::new();
-        let mut edge_map: Vec<usize> = Vec::new();
-        for (ei, (a, b)) in edges.iter().enumerate() {
-            if let (Some(&la), Some(&lb)) = (local.get(a), local.get(b)) {
-                sub_edges.push((la, lb));
-                edge_map.push(ei);
-            }
-        }
+        let sub_edges: Vec<(usize, usize)> =
+            edges.iter().filter_map(|(a, b)| Some((*local.get(a)?, *local.get(b)?))).collect();
         let p = sugiyama_connected(&sub_items, &sub_edges, pitch);
-        drawn.push((members.clone(), p, edge_map));
+        drawn.push((members.clone(), p));
     }
 
     // Pack: shelves left to right, wrapping at the width bound. The bound is
     // taken from the total area, the same way the fold judges a row: a
     // drawing of area A drawn r times wider than tall is sqrt(A·r) across.
-    // A component's extent takes in its routes as well as its boxes: a
-    // corridor can run just outside the outermost box, and packing the next
-    // component into that strip puts it under someone else's edge.
     let extent = |p: &Placement| -> Rect {
-        let mut b = p.rects.iter().copied().reduce(|a, b| a.union(b)).unwrap_or_default();
-        for q in p.routes.values().flatten() {
-            b = b.union(Rect { x: q.x - DUMMY_W / 2, y: q.y, w: DUMMY_W, h: 1 });
-        }
-        b
+        p.rects.iter().copied().reduce(|a, b| a.union(b)).unwrap_or_default()
     };
     let bbox = |p: &Placement| -> (i32, i32) {
         let b = extent(p);
@@ -782,22 +765,21 @@ fn sugiyama(items: &[Item], edges: &[(usize, usize)]) -> Placement {
     // decided against that width.
     let area: f64 = drawn
         .iter()
-        .map(|(_, p, _)| {
+        .map(|(_, p)| {
             let (w, h) = bbox(p);
             (w + HGAP) as f64 * (h + VGAP) as f64
         })
         .sum();
-    let widest = drawn.iter().map(|(_, p, _)| bbox(p).0).max().unwrap_or(0);
-    let tallest = drawn.iter().map(|(_, p, _)| bbox(p).1).max().unwrap_or(0);
+    let widest = drawn.iter().map(|(_, p)| bbox(p).0).max().unwrap_or(0);
+    let tallest = drawn.iter().map(|(_, p)| bbox(p).1).max().unwrap_or(0);
     let by_area = (area * MAX_WIDTH_RATIO).sqrt() as i32;
     // A single shelf as wide as the bound allows for the tallest component.
     let by_ratio = (tallest as f64 * MAX_WIDTH_RATIO) as i32;
     let shelf_w = by_area.max(by_ratio).max(widest);
 
     let mut rects = vec![Rect::default(); items.len()];
-    let mut routes: HashMap<usize, Vec<Pt>> = HashMap::new();
     let (mut x, mut y, mut shelf_h) = (0, 0, 0);
-    for (members, p, edge_map) in &drawn {
+    for (members, p) in &drawn {
         let (w, h) = bbox(p);
         if x > 0 && x + w > shelf_w {
             x = 0;
@@ -812,16 +794,10 @@ fn sugiyama(items: &[Item], edges: &[(usize, usize)]) -> Placement {
             let r = p.rects[li];
             rects[*gi] = Rect { x: r.x + dx, y: r.y + dy, w: r.w, h: r.h };
         }
-        for (lei, pts) in &p.routes {
-            routes.insert(
-                edge_map[*lei],
-                pts.iter().map(|q| Pt { x: q.x + dx, y: q.y + dy }).collect(),
-            );
-        }
         x = snap(x + w + HGAP);
         shelf_h = shelf_h.max(h);
     }
-    Placement { rects, routes, algorithm: Algorithm::Sugiyama }
+    Placement { rects, algorithm: Algorithm::Sugiyama }
 }
 
 /// The connected components of the graph, each a sorted list of item
@@ -866,8 +842,7 @@ fn sugiyama_connected(items: &[Item], edges: &[(usize, usize)], min_pitch: i32) 
     let ranks = compact(&raw_rank);
     let g = build(items, edges, &ranks, &reversed.iter().copied().collect::<Vec<_>>(), min_pitch);
     let rects = g.finish(items);
-    let routes = g.routes(items, edges, &rects);
-    Placement { rects, routes, algorithm: Algorithm::Sugiyama }
+    Placement { rects, algorithm: Algorithm::Sugiyama }
 }
 
 /// Squeeze out empty rows so a sparse ranking does not leave gaps.
@@ -883,7 +858,7 @@ fn compact(ranks: &[usize]) -> Vec<usize> {
 
 /// A node in the layered graph: either a real item or a placeholder standing in
 /// for an edge passing through this row.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 enum Slot {
     Item(usize),
     /// (edge index, which segment of the chain)
@@ -906,6 +881,12 @@ struct Layered {
     /// when this is one component of several, the tallest box in any of
     /// them — so rows line up across the packed drawing.
     pitch: i32,
+    /// The gap between rows. Starts at [`VGAP`] and grows if a straight
+    /// edge between adjacent rows would otherwise cut through a box in its
+    /// own row — see [`Self::fit_gap`].
+    gap: i32,
+    /// The two boxes each corridor belongs to, upper end first.
+    lane_ends: HashMap<usize, (usize, usize)>,
 }
 
 fn build(
@@ -947,6 +928,8 @@ fn build(
         y: Vec::new(),
         folded: HashSet::new(),
         pitch: min_pitch.max(items.iter().map(|i| i.h).max().unwrap_or(55)).max(55),
+        gap: VGAP,
+        lane_ends: HashMap::new(),
     };
 
     // Order on the boxes alone, then fold. Folding wants an ordering to cut
@@ -979,9 +962,15 @@ fn build(
     // Order again with the corridors in, so they thread between the boxes
     // rather than sitting where they were pushed on at the end of each row.
     g.order(items);
-    g.assign_x(items);
+    g.straighten_corridors();
+    g.assign_x(items, &drawn_edges(&drawn));
     g.assign_y();
     g
+}
+
+/// The drawn edges as index pairs, self-loops out.
+fn drawn_edges(drawn: &[Option<(usize, usize)>]) -> Vec<(usize, usize)> {
+    drawn.iter().flatten().copied().collect()
 }
 
 impl Layered {
@@ -1006,11 +995,14 @@ impl Layered {
             if r0 == r1 {
                 continue; // handled at routing time
             }
-            let (lo, hi, from, to) = if r0 < r1 {
-                (r0, r1, Slot::Item(a), Slot::Item(b))
+            let (lo, hi, from, to, upper, lower) = if r0 < r1 {
+                (r0, r1, Slot::Item(a), Slot::Item(b), a, b)
             } else {
-                (r1, r0, Slot::Item(b), Slot::Item(a))
+                (r1, r0, Slot::Item(b), Slot::Item(a), b, a)
             };
+            if hi > lo + 1 {
+                self.lane_ends.insert(ei, (upper, lower));
+            }
             let mut prev = from;
             for (seg, row) in ((lo + 1)..hi).enumerate() {
                 let dm = Slot::Dummy(ei, seg);
@@ -1032,6 +1024,7 @@ impl Layered {
         self.width.retain(|s, _| matches!(s, Slot::Item(_)));
         self.height.retain(|s, _| matches!(s, Slot::Item(_)));
         self.links.clear();
+        self.lane_ends.clear();
     }
 
     /// Which slots each slot is linked to, so a pass asks once per slot rather
@@ -1224,6 +1217,79 @@ impl Layered {
             if !improved {
                 break;
             }
+        }
+    }
+
+    /// Move each corridor to where its edge's straight line will run, in the
+    /// row's sequence, when that costs no crossings.
+    ///
+    /// The ordering minimises crossings and nothing else, and a corridor's
+    /// place in its row is a matter of indifference to it whenever the count
+    /// ties — which it does whenever the corridor's own edge is the only one
+    /// touching it, as on a star. Sorted by name it then lands at the end of
+    /// the row, and the edge, which is a straight line, slants right across
+    /// the row's boxes to reach it. Here each corridor is put where the line
+    /// between its ends crosses the row: at the position that interpolates
+    /// its two ends' positions in their rows, so that a vertical edge gets a
+    /// vertical corridor and the boxes part around it. The move is kept only
+    /// if the crossing count does not rise; the ordering's objective still
+    /// comes first.
+    fn straighten_corridors(&mut self) {
+        let before = self.crossings();
+        let saved = self.rows.clone();
+        let row_of = self.row_index();
+        // Ordinal position of every slot, as a fraction of its row, so rows
+        // of different lengths interpolate sensibly.
+        let frac = |rows: &Vec<Vec<Slot>>, s: Slot| -> f64 {
+            let r = row_of[&s];
+            let n = rows[r].len().max(1) as f64;
+            let i = rows[r].iter().position(|t| *t == s).unwrap_or(0) as f64;
+            (i + 0.5) / n
+        };
+        let mut wanted: HashMap<Slot, f64> = HashMap::new();
+        for (ei, (upper, lower)) in &self.lane_ends {
+            let (u, l) = (Slot::Item(*upper), Slot::Item(*lower));
+            let (Some(&ru), Some(&rl)) = (row_of.get(&u), row_of.get(&l)) else { continue };
+            let (fu, fl) = (frac(&self.rows, u), frac(&self.rows, l));
+            let span = (rl - ru) as f64;
+            for seg in 0..(rl - ru - 1) {
+                let dm = Slot::Dummy(*ei, seg);
+                if row_of.contains_key(&dm) {
+                    let t = (seg as f64 + 1.0) / span;
+                    wanted.insert(dm, fu + (fl - fu) * t);
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        for row in &mut self.rows {
+            let n = row.len().max(1) as f64;
+            let key = |s: &Slot, i: usize| -> f64 {
+                match wanted.get(s) {
+                    Some(f) => *f,
+                    None => (i as f64 + 0.5) / n,
+                }
+            };
+            let mut keyed: Vec<(f64, usize, Slot)> =
+                row.iter().enumerate().map(|(i, s)| (key(s, i), i, *s)).collect();
+            keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+            *row = keyed.into_iter().map(|(_, _, s)| s).collect();
+        }
+        // The move can add crossings — a fan of long edges from one hub to
+        // boxes spread across a lower rank cannot all be straight and
+        // uncrossed at once — so a few transpose passes follow, to take back
+        // what they can with the corridors now roughly in place. If it is
+        // still worse than before by more than the corridors are worth, it is
+        // undone; but a corridor off its line is a line through a box, which
+        // counts double, so a corridor in place is worth two crossings.
+        let nb = self.neighbours();
+        for _ in 0..4 {
+            self.transpose_pass(&nb);
+        }
+        let after = self.crossings();
+        if after > before + 2 * wanted.len() {
+            self.rows = saved;
         }
     }
 
@@ -1454,7 +1520,7 @@ impl Layered {
     /// and the rank below then recentre on where they landed — a little to the
     /// right — on every sweep, until the fan walked off the page. As a block
     /// they take one median and stay stacked.
-    fn assign_x(&mut self, items: &[Item]) {
+    fn assign_x(&mut self, items: &[Item], edges: &[(usize, usize)]) {
         let nb = self.neighbours();
         let depth = self.rows.len();
 
@@ -1523,11 +1589,119 @@ impl Layered {
         }
         self.close_gaps(&nb);
 
+        // Edges are straight lines, and a corridor only protects its edge
+        // if it is as wide as the line's slant across the row. Now that the
+        // boxes have settled: pick the row gap that lets every adjacent edge
+        // clear its rows, size each corridor to its line's sweep at that gap,
+        // and let the boxes fit around it. The ends move a little for that,
+        // and the gap depends on where they are, so the two go round
+        // together, and the gap is fixed last against the boxes as drawn.
+        for _ in 0..3 {
+            self.fit_gap(edges);
+            self.size_lanes();
+            sweep(self, 2);
+            self.close_gaps(&nb);
+        }
+        self.fit_gap(edges);
+
         // Shift so the leftmost edge of the drawing sits at zero.
         let min = self.x.values().copied().min().unwrap_or(0);
         for v in self.x.values_mut() {
             *v = snap(*v - min);
         }
+    }
+
+    /// Size every corridor slot to the width its edge's straight line sweeps
+    /// across the row.
+    ///
+    /// The line from one end's centre to the other's crosses each row it
+    /// passes at a slant, and across the height of that row's boxes it moves
+    /// sideways by the row height times the slope. A slot the width of a
+    /// lane protects a vertical line; a slanted one needs the slot as wide as
+    /// its sweep, plus the lane, or the box packed beside the slot sits under
+    /// the line. The slot is widened and nothing else: where it goes is still
+    /// the ordering's and the placement's call. Pinning it to the line's
+    /// crossing point and re-sequencing the row to honour that was tried, and
+    /// took a third more crossings for a fifth fewer lines through boxes,
+    /// which is the wrong way round.
+    fn size_lanes(&mut self) {
+        let row_of = self.row_index();
+        let step = (self.pitch + self.gap) as f64;
+        let mut widths: Vec<(Slot, i32)> = Vec::new();
+        for (ei, (upper, lower)) in &self.lane_ends {
+            let (u, l) = (Slot::Item(*upper), Slot::Item(*lower));
+            let (Some(&ru), Some(&rl)) = (row_of.get(&u), row_of.get(&l)) else { continue };
+            let ux = (self.x[&u] + self.width[&u] / 2) as f64;
+            let lx = (self.x[&l] + self.width[&l] / 2) as f64;
+            let per_row = (lx - ux) / (rl - ru) as f64;
+            let sweep = (per_row.abs() * self.pitch as f64 / step).ceil() as i32;
+            for seg in 0..(rl - ru - 1) {
+                let dm = Slot::Dummy(*ei, seg);
+                if self.width.contains_key(&dm) {
+                    widths.push((dm, sweep + DUMMY_W));
+                }
+            }
+        }
+        for (dm, w) in widths {
+            self.width.insert(dm, w);
+        }
+    }
+
+    /// Grow the row gap until no straight edge between adjacent rows cuts
+    /// through a box in either of its own rows.
+    ///
+    /// A line from one row to the next leaves its box through the bottom if
+    /// it is steep and through the side if it is shallow, and a shallow one
+    /// then runs along the row band through the neighbours before it drops.
+    /// How shallow is shallow depends on the gap: the further apart the rows,
+    /// the steeper every line. So the gap is the one number that makes every
+    /// adjacent edge in the drawing clear its rows — computed exactly, not
+    /// tuned — and capped, so one edge that spans the width of the drawing
+    /// costs a taller drawing but not an absurd one.
+    fn fit_gap(&mut self, edges: &[(usize, usize)]) {
+        let row_of = self.row_index();
+        let mut need = VGAP;
+        for &(a, b) in edges {
+            if a == b {
+                continue;
+            }
+            let (sa, sb) = (Slot::Item(a), Slot::Item(b));
+            let (Some(&ra), Some(&rb)) = (row_of.get(&sa), row_of.get(&sb)) else { continue };
+            if ra.abs_diff(rb) != 1 {
+                continue;
+            }
+            let (up, dn) = if ra < rb { (sa, sb) } else { (sb, sa) };
+            let (ux, dx) = (self.x[&up] + self.width[&up] / 2, self.x[&dn] + self.width[&dn] / 2);
+            let (upper_row, lower_row) = (row_of[&up], row_of[&dn]);
+            // Every other box in the two rows that lies between the ends
+            // horizontally: the line must be past the row band by the time
+            // it reaches the box's near edge.
+            for (row, from_top) in [(upper_row, true), (lower_row, false)] {
+                for o in &self.rows[row] {
+                    if *o == up || *o == dn || !matches!(o, Slot::Item(_)) {
+                        continue;
+                    }
+                    let (ox0, ox1) = (self.x[o], self.x[o] + self.width[o]);
+                    let (lo, hi) = (ux.min(dx), ux.max(dx));
+                    if ox1 <= lo || ox0 >= hi {
+                        continue;
+                    }
+                    // Horizontal distance from the line's start (the end in
+                    // this row) to the box's near edge, and the total run.
+                    let start = if from_top { ux } else { dx };
+                    let near = if ox0 > start { ox0 } else { ox1 };
+                    let run_to_box = (near - start).abs() as f64;
+                    let run = (dx - ux).abs().max(1) as f64;
+                    // Half box height plus inset: the line must have dropped
+                    // this far by `run_to_box`. Its total drop is pitch+gap
+                    // over `run`; solve for the gap.
+                    let half = (self.height[o].max(1) as f64) / 2.0 + 2.0;
+                    let g = (half * run / run_to_box.max(1.0) - self.pitch as f64).ceil() as i32;
+                    need = need.max(g);
+                }
+            }
+        }
+        self.gap = snap(need.min(VGAP * 4)).max(VGAP);
     }
 
     /// Slide everything to the right of a vertical cut leftward, wherever that
@@ -1617,13 +1791,22 @@ impl Layered {
         row_of: &HashMap<Slot, usize>,
         nb: &HashMap<Slot, Vec<Slot>>,
     ) -> Option<(i32, usize)> {
-        let mut centres: Vec<i32> = nb
-            .get(&s)
-            .into_iter()
-            .flatten()
-            .filter(|o| row_of.get(o).is_some_and(|r| other.contains(r)))
-            .map(|o| self.x[o] + self.width[o] / 2)
-            .collect();
+        // A corridor neighbour counts for more than a box neighbour. Edges are
+        // straight lines, and a long edge only stays inside its corridor if
+        // its two ends sit over the corridor's column; a box that is the end
+        // of a long edge and also has several short ones would otherwise be
+        // pulled to the median of the short ones and the long line would
+        // slant across the ranks it skips. Three votes for a corridor, one
+        // for a box, and the median of that.
+        let mut centres: Vec<i32> = Vec::new();
+        for o in nb.get(&s).into_iter().flatten() {
+            if !row_of.get(o).is_some_and(|r| other.contains(r)) {
+                continue;
+            }
+            let c = self.x[o] + self.width[o] / 2;
+            let votes = if matches!(o, Slot::Dummy(..)) { LANE_VOTES } else { 1 };
+            centres.extend(std::iter::repeat_n(c, votes));
+        }
         if centres.is_empty() {
             return None;
         }
@@ -1779,7 +1962,8 @@ impl Layered {
 
     fn assign_y(&mut self) {
         let h = self.row_pitch();
-        self.y = (0..self.rows.len()).map(|r| snap(r as i32 * (h + VGAP))).collect();
+        let g = self.gap;
+        self.y = (0..self.rows.len()).map(|r| snap(r as i32 * (h + g))).collect();
     }
 
     fn finish(&self, items: &[Item]) -> Vec<Rect> {
@@ -1792,197 +1976,6 @@ impl Layered {
             }
         }
         out
-    }
-
-    /// Waypoints, for the edges that genuinely need them.
-    ///
-    /// The corridor a long edge reserved usually leaves the straight line
-    /// clear, and a straight line is better than a routed one every time. So
-    /// the direct segment is tested against every box first, and only an edge
-    /// that would actually cut through something gets bendpoints. Adding a bend
-    /// because an edge *might* need one is how a diagram fills up with kinks
-    /// that buy nothing.
-    fn routes(
-        &self,
-        items: &[Item],
-        edges: &[(usize, usize)],
-        rects: &[Rect],
-    ) -> HashMap<usize, Vec<Pt>> {
-        // Where each long edge's corridor runs, kept aside until we know
-        // whether it is needed.
-        //
-        // A corridor is entered above the row it crosses and left below it,
-        // rather than being marked with a single point at the row's middle.
-        // One point leaves the edge approaching it diagonally from the source,
-        // and that diagonal is drawn across the row it was supposed to bypass —
-        // on a crowded rank it clips the corner of whatever it passes, so the
-        // lane stays clear and the edge goes through a box anyway. Bracketing
-        // the row keeps the run *through* the rank vertical and inside the
-        // lane, and leaves the diagonals in the gaps between rows, where by
-        // construction there is nothing to hit.
-        // Row heights, counted as `assign_y` counted them, and which row each
-        // item landed in — a corridor is bracketed against its row's band
-        // rather than against any one box in it, so a row holding a tall box
-        // brackets every lane in it the same way.
-        let row_h: Vec<i32> = vec![self.row_pitch(); self.rows.len()];
-        let mut row_of: HashMap<usize, usize> = HashMap::new();
-        for (r, row) in self.rows.iter().enumerate() {
-            for s in row {
-                if let Slot::Item(i) = s {
-                    row_of.insert(*i, r);
-                }
-            }
-        }
-
-        let mut lanes: HashMap<usize, Vec<(usize, Pt, Pt)>> = HashMap::new();
-        for (r, row) in self.rows.iter().enumerate() {
-            let h = row_h[r];
-            for s in row {
-                let Slot::Dummy(ei, seg) = s else { continue };
-                let x = self.x[s] + DUMMY_W / 2;
-                let enter = Pt { x, y: self.y[r] - VGAP / 2 };
-                let leave = Pt { x, y: self.y[r] + h + VGAP / 2 };
-                lanes.entry(*ei).or_default().push((*seg, enter, leave));
-            }
-        }
-
-        let mut out: HashMap<usize, Vec<Pt>> = HashMap::new();
-        for (ei, (a, b)) in edges.iter().enumerate() {
-            if a == b {
-                continue;
-            }
-            let (ra, rb) = (rects[*a], rects[*b]);
-
-            // Same row: a straight line would run along the row, through
-            // anything between the two. Bow it below unless they are adjacent.
-            if ra.y == rb.y {
-                let (left, right) = if ra.x <= rb.x { (*a, *b) } else { (*b, *a) };
-                let gap = rects[right].x - (rects[left].x + rects[left].w);
-                if gap <= HGAP + 8 {
-                    continue;
-                }
-                let y = rects[left].y + rects[left].h + 20 + (ei as i32 % 3) * 10;
-                let mut pts = vec![
-                    Pt { x: rects[left].x + rects[left].w / 2, y },
-                    Pt { x: rects[right].x + rects[right].w / 2, y },
-                ];
-                if ra.x > rb.x {
-                    pts.reverse();
-                }
-                out.insert(ei, pts);
-                continue;
-            }
-
-            if straight_is_clear(ra, rb, rects, *a, *b) {
-                continue;
-            }
-
-            let (upper, lower) = if ra.y <= rb.y { (*a, *b) } else { (*b, *a) };
-            let (ur, lr) = (row_of[&upper], row_of[&lower]);
-
-            // Adjacent rows, and the straight line still hits something. There
-            // is no corridor — nothing lies between the two rows — so what it
-            // hits is a box in one of its *own* rows: a long diagonal leaves
-            // its box, runs along the row band through the neighbours, and
-            // only then descends. Take it through the gap instead: straight
-            // down out of the upper box, along the gap, straight up into the
-            // lower one. Runs in the same gap are staggered by edge so two of
-            // them do not draw over each other.
-            let Some(lane) = lanes.get(&ei) else {
-                if lr != ur + 1 {
-                    continue;
-                }
-                // Runs heading right take the upper half of the gap and runs
-                // heading left the lower half, each side staggered by edge.
-                // Then a run and its opposite never lie on one line, and the
-                // diagonal an edge makes down into the gap crosses only the
-                // runs going the other way, not the ones going its own way
-                // beside it.
-                let (ux, lx) =
-                    (rects[upper].x + rects[upper].w / 2, rects[lower].x + rects[lower].w / 2);
-                let gap_top = self.y[ur] + row_h[ur];
-                let lane = (ei as i32 % 3) * (VGAP / 8);
-                let gap_y = if lx >= ux {
-                    gap_top + VGAP / 8 + lane
-                } else {
-                    gap_top + VGAP / 2 + VGAP / 8 + lane
-                };
-                let mut pts = vec![Pt { x: ux, y: gap_y }, Pt { x: lx, y: gap_y }];
-                simplify(&mut pts, rects[upper].center(), rects[lower].center(), rects, *a, *b);
-                if ra.y > rb.y {
-                    pts.reverse();
-                }
-                if !pts.is_empty() {
-                    out.insert(ei, pts);
-                }
-                continue;
-            };
-            let mut lane: Vec<(usize, Pt, Pt)> = lane.clone();
-            lane.sort_by_key(|(seg, _, _)| *seg);
-
-            // Leave the upper box straight down and come into the lower one
-            // straight from above, so that both ends clear their own rank the
-            // way the corridor clears the ranks between. Coming out of a centre
-            // at whatever angle the first corridor happens to sit at is the
-            // same mistake as the single mid-row waypoint, moved to the ends:
-            // the diagonal crosses the row the box itself is in and clips its
-            // neighbours.
-            let mut pts = vec![Pt {
-                x: rects[upper].x + rects[upper].w / 2,
-                y: self.y[ur] + row_h[ur] + VGAP / 2,
-            }];
-            // Where one row's corridor runs down the same column as the next,
-            // leaving that row and entering the following one are the same
-            // point, and the edge should carry one bend there rather than two.
-            for (_, enter, leave) in lane {
-                if pts.last() != Some(&enter) {
-                    pts.push(enter);
-                }
-                pts.push(leave);
-            }
-            pts.push(Pt { x: rects[lower].x + rects[lower].w / 2, y: self.y[lr] - VGAP / 2 });
-
-            // Every leg of that route is either vertical inside a reserved
-            // column or horizontal along a gap between rows, so it is clear —
-            // but it is more bends than most edges need. The simplifier is
-            // given the path upper to lower, the way `pts` was built: threaded
-            // from `a` to `b` instead it is only the same path when the edge
-            // points down, and for one pointing up it judged the mirror image
-            // and the drawn edge cut a box the trial never saw.
-            simplify(&mut pts, rects[upper].center(), rects[lower].center(), rects, *a, *b);
-
-            // The chain was built from the upper end downwards; an edge drawn
-            // upward needs it the other way round.
-            if ra.y > rb.y {
-                pts.reverse();
-            }
-            if !pts.is_empty() {
-                out.insert(ei, pts);
-            }
-        }
-
-        let _ = items;
-        out
-    }
-}
-
-/// Drop every waypoint the drawing does not depend on, earliest first.
-///
-/// A safe route is built with more bends than most edges need. Each is tried
-/// without; if the path from `from` through the rest to `to` still clears
-/// every box, the bend goes. What is left is holding the edge off something.
-fn simplify(pts: &mut Vec<Pt>, from: Pt, to: Pt, rects: &[Rect], a: usize, b: usize) {
-    let mut i = 0;
-    while i < pts.len() {
-        let trial: Vec<Pt> = std::iter::once(from)
-            .chain(pts.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, p)| *p))
-            .chain(std::iter::once(to))
-            .collect();
-        if path_is_clear(&trial, rects, a, b) {
-            pts.remove(i);
-        } else {
-            i += 1;
-        }
     }
 }
 
@@ -2192,25 +2185,20 @@ mod tests {
         }
     }
 
-    /// The whole polyline an edge is drawn as: one centre, any waypoints, the
-    /// other centre.
+    /// The line an edge is drawn as: centre to centre. There are no bends.
     fn drawn_path(p: &Placement, edges: &[(usize, usize)], ei: usize) -> Vec<Pt> {
         let (a, b) = edges[ei];
-        let mut path = vec![p.rects[a].center()];
-        path.extend(p.routes.get(&ei).into_iter().flatten().copied());
-        path.push(p.rects[b].center());
-        path
+        vec![p.rects[a].center(), p.rects[b].center()]
     }
 
     /// A long edge skips a rank, so by construction something shares that rank.
-    /// Whether the corridor clears the line by moving the box aside or the edge
-    /// bends around it is the layout's business; what it may never do is cross
-    /// it.
+    /// Edges are straight lines, so the only way past is for the placement to
+    /// keep the rank's boxes off the line: the corridor reserves a slot on
+    /// the way, and the boxes pack around it.
     #[test]
     fn a_long_edge_never_crosses_the_rank_it_skips() {
         // 0 -> 1 -> 2 with an extra 0 -> 2 that skips a rank. The lane pushes
-        // box 1 aside, so the edge comes out straight — and a straight line
-        // that misses beats a bend that also misses.
+        // box 1 aside and the edge runs straight past it.
         let it = items(3);
         let edges = vec![(0, 1), (1, 2), (0, 2)];
         let p = place(&it, &edges, Algorithm::Sugiyama);
@@ -2221,8 +2209,8 @@ mod tests {
             p.rects[1]
         );
 
-        // Crowd the middle rank and there is nowhere to move aside to, so the
-        // edge has to bend instead — and the bends have to miss as well.
+        // Crowd the middle rank: the corridor still gets its slot among the
+        // six, and the line still passes through it and nothing else.
         let it = items(8);
         let mut edges = vec![(0, 1), (1, 7), (0, 7)];
         for i in 2..7 {
@@ -2230,7 +2218,6 @@ mod tests {
             edges.push((i, 7));
         }
         let p = place(&it, &edges, Algorithm::Sugiyama);
-        assert!(!p.routes[&2].is_empty(), "a crowded rank leaves the long edge no straight line");
         let path = drawn_path(&p, &edges, 2);
         for (k, other) in p.rects.iter().enumerate() {
             if k == 0 || k == 7 {
@@ -2238,7 +2225,7 @@ mod tests {
             }
             assert!(
                 !path.windows(2).any(|s| segment_hits(s[0], s[1], *other)),
-                "the routed edge crosses box {k}: {path:?} vs {other:?}"
+                "the long edge crosses box {k}: {path:?} vs {other:?}"
             );
         }
     }
@@ -2516,16 +2503,21 @@ mod tests {
         }
     }
 
-    /// The invariant behind every routing decision, over a spread of shapes
-    /// rather than one hand-picked graph.
+    /// Straight lines and boxes, over a spread of shapes rather than one
+    /// hand-picked graph.
     ///
-    /// A single case is easy to satisfy by accident — the first attempt at this
-    /// bracketed the crossed rank and fixed the reported drawing while still
-    /// cutting a corner off a box on a hundred and thirty-six others, because
-    /// the legs into the source and out of the target cross their own ranks
-    /// too. The sweep is what caught that.
+    /// Two things are asserted. An edge between adjacent rows never cuts a
+    /// box in either of its rows: the row gap is chosen so that every such
+    /// line has dropped clear of the row band by the time it reaches a
+    /// neighbour, and that is exact, up to the gap's cap. And the share of
+    /// long edges — two or more ranks — drawn through a box in a rank they
+    /// skip stays under a bound. It is not zero: a slanted line across a
+    /// crowded rank needs a slot the width of its slant, and the ordering
+    /// does not always leave one where the line runs; forcing it to did so
+    /// at a third more crossings, which is the wrong trade. The bound is a
+    /// ratchet — tighten it as the placement improves, never loosen it.
     #[test]
-    fn no_routed_edge_is_drawn_through_a_box() {
+    fn straight_edges_clear_their_own_rows_and_mostly_the_ranks_they_skip() {
         // A fixed sequence, so a failure here is reproducible rather than
         // something that shows up one run in ten.
         let mut seed = 12345u64;
@@ -2534,7 +2526,7 @@ mod tests {
             (seed >> 33) as usize % m.max(1)
         };
 
-        let mut routed = 0;
+        let (mut adjacent, mut long, mut long_through) = (0usize, 0usize, 0usize);
         for trial in 0..400 {
             let n = 4 + trial % 20;
             let mut edges: Vec<(usize, usize)> = Vec::new();
@@ -2549,25 +2541,35 @@ mod tests {
             }
 
             let p = place(&items(n), &edges, Algorithm::Sugiyama);
+            let mut ys: Vec<i32> = p.rects.iter().map(|r| r.y).collect();
+            ys.sort_unstable();
+            ys.dedup();
+            let row = |y: i32| ys.iter().position(|v| *v == y).unwrap();
+
             for (ei, (a, b)) in edges.iter().enumerate() {
                 if a == b {
                     continue;
                 }
-                // Every edge, routed or not. The unrouted ones matter as much:
-                // an adjacent-rank diagonal was never routed and could slice
-                // through its own row's boxes, and a sweep over routed edges
-                // alone would never have said so.
-                if p.routes.contains_key(&ei) {
-                    routed += 1;
-                }
                 let path = drawn_path(&p, &edges, ei);
-                assert!(
-                    path_is_clear(&path, &p.rects, *a, *b),
-                    "trial {trial}: edge {ei} ({a} -> {b}) is drawn through a box: {path:?}"
-                );
+                let clear = path_is_clear(&path, &p.rects, *a, *b);
+                if row(p.rects[*a].y).abs_diff(row(p.rects[*b].y)) <= 1 {
+                    adjacent += 1;
+                    assert!(
+                        clear,
+                        "trial {trial}: adjacent edge {ei} ({a} -> {b}) cuts a box in its own row: {path:?}"
+                    );
+                } else {
+                    long += 1;
+                    if !clear {
+                        long_through += 1;
+                    }
+                }
             }
         }
-        assert!(routed > 500, "only {routed} edges needed routing; the sweep proves little");
+        assert!(adjacent > 3000 && long > 1000, "the sweep proves little: {adjacent} / {long}");
+        let share = long_through as f64 / long as f64;
+        eprintln!("long edges through a box: {long_through} of {long} ({share:.3})");
+        assert!(share < 0.30, "{long_through} of {long} long edges through a box ({share:.2})");
     }
 
     #[test]

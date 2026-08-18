@@ -231,10 +231,11 @@ running it off the page — and only lays out a grid when that would be both
 squarer and no more tangled, which in practice means an edgeless set. The row
 reports which algorithm actually ran.
 
-Layout sizes each box to its label and routes every edge clear of every box,
-and `view layout` writes sizes and routing back along with positions — so
-`--relayout-all` redraws the view, it does not just shuffle it. Run it after a
-batch of edits rather than after each one.
+Layout sizes each box to its label and draws every edge as one straight line
+— no bendpoints, ever — placing the boxes so the lines stay off them. `view
+layout` writes sizes back along with positions and straightens every
+connection, so `--relayout-all` redraws the view, it does not just shuffle it.
+Run it after a batch of edits rather than after each one.
 
 `view render` draws the geometry the model actually stores. `export mermaid`
 and `export dot` re-lay-out, so they are for a quick look, not for reproducing

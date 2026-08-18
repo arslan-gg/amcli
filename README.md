@@ -138,18 +138,24 @@ opposite ends of the drawing. A rank too wide to read — a hundred motivation
 elements two ranks deep gives layering nothing to stack — is folded onto
 several lines instead of run off the page.
 
-Every edge is drawn clear of every box. A long one reserves a corridor in each
-row it crosses; a short one that would slice through its own row goes down,
-along the gap, and up; and each is then simplified so it keeps only the bends
-that are holding it off something. On a graph that admits a clean drawing the
-result has no bends, no edge through a box, and no two edges crossing; a test
-asserts all three, and another sweeps four hundred random graphs asserting no
-edge — routed or straight — ever passes through a box.
+Every edge is one straight line, centre to centre; no bendpoints are ever
+written. The layout keeps lines off boxes by where it puts the boxes: a long
+edge reserves a corridor in each row it crosses, sequenced where the line
+will run and as wide as its slant, and the boxes pack around it; an edge
+between neighbouring rows is kept off its own row's boxes by the row gap,
+which is computed so that every such line has dropped clear of the row band
+before it reaches a neighbour. On a graph that admits a clean drawing the
+result has no edge through a box and no two edges crossing; a test asserts
+both, and another sweeps four hundred random graphs asserting that no edge
+between neighbouring rows ever cuts a box, and that the share of long edges
+drawn through a rank they skip stays under a bound. That share is not zero —
+a slanted line across a crowded rank sometimes has no seat for its corridor
+that does not cost more crossings than it saves — and it is reported.
 
 Boxes are sized to their labels: the width a name wraps into two lines at,
 from the stock 120 up to 264, and taller only when it must be. `view layout`
-writes sizes and routing back along with positions, so a relaid view is
-redrawn, not just shuffled.
+writes sizes back along with positions and straightens every connection, so a
+relaid view is redrawn, not just shuffled.
 
 `--layout auto` is layered unless a grid would be both squarer and no more
 tangled — crossings plus edges through boxes, which a grid can never route

@@ -4,7 +4,6 @@ use amcli_graph::{Dir, EdgeFilter, Graph, Resolution, Selector};
 use amcli_model::{ConceptId, ConceptKind, Model, ViewId, viewpoints};
 use amcli_render::Options;
 use amcli_view::geometry::Rect;
-use amcli_view::geometry::bendpoint_for;
 use amcli_view::layout::{Algorithm, Item, fit_size, free_slot, place};
 use clap::Subcommand;
 
@@ -536,27 +535,11 @@ fn auto(
         object_ids.push(id);
     }
 
+    // Every connection is a straight line: the layout keeps lines off boxes
+    // by where it puts the boxes, and writes no bendpoints.
     let mut drawn = 0;
-    let mut routed = 0;
-    for (edge_index, (rel, a, b)) in rels.into_iter().enumerate() {
-        // Waypoints the layout produced are stored as bendpoints, so the
-        // routing lives in the file and Archi draws the same line we do.
-        let bends: Vec<(i32, i32, i32, i32)> = placed
-            .routes
-            .get(&edge_index)
-            .map(|pts| {
-                pts.iter()
-                    .map(|p| {
-                        let bp = bendpoint_for(placed.rects[a], placed.rects[b], *p);
-                        (bp.start_x, bp.start_y, bp.end_x, bp.end_y)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !bends.is_empty() {
-            routed += 1;
-        }
-        if m.add_view_connection(v, rel, &object_ids[a], &object_ids[b], &bends).is_ok() {
+    for (rel, a, b) in rels {
+        if m.add_view_connection(v, rel, &object_ids[a], &object_ids[b], &[]).is_ok() {
             drawn += 1;
         }
     }
@@ -566,7 +549,6 @@ fn auto(
         .s("name", name.to_string())
         .n("objects", object_ids.len() as i64)
         .n("connections", drawn)
-        .n("routed", routed)
         // Which algorithm ran, because under `auto` it may not be the one the
         // caller would have guessed.
         .s("algorithm", placed.algorithm.as_str())
@@ -647,28 +629,12 @@ fn relayout(
         m.set_view_object_rect(v, &item.id, r.x, r.y, Some((r.w, r.h)))
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     }
-    // And the routing goes back with it. Moving the boxes and leaving the old
-    // bendpoints where they were drew every routed edge through whatever now
-    // sat on its former path; a connection whose route the layout dropped is
-    // straightened, not left with stale kinks.
-    let mut routed = 0;
-    for (edge_index, (conn_id, a, b)) in connections.iter().enumerate() {
-        let bends: Vec<(i32, i32, i32, i32)> = placed
-            .routes
-            .get(&edge_index)
-            .map(|pts| {
-                pts.iter()
-                    .map(|p| {
-                        let bp = bendpoint_for(placed.rects[*a], placed.rects[*b], *p);
-                        (bp.start_x, bp.start_y, bp.end_x, bp.end_y)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !bends.is_empty() {
-            routed += 1;
-        }
-        m.set_view_connection_bendpoints(v, conn_id, &bends)
+    // And every connection among them is straightened. Moving the boxes and
+    // leaving old bendpoints where they were drew each such line through
+    // whatever now sat on its former path; a relaid view has straight lines,
+    // and the layout is what keeps them off the boxes.
+    for (conn_id, _, _) in &connections {
+        m.set_view_connection_bendpoints(v, conn_id, &[])
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     }
 
@@ -676,7 +642,6 @@ fn relayout(
         .s("view", m.view(v).id.clone())
         .n("moved", movable.len() as i64)
         .n("edges", edges.len() as i64)
-        .n("routed", routed)
         .s("algorithm", placed.algorithm.as_str())
         .b("dry_run", opts.dry_run);
     let out = finish(opts, m, row)?;
