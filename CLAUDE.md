@@ -43,10 +43,16 @@ Consequences worth knowing before you edit it:
   skill is normally the *newer* of the two. Never tell an agent to reconcile
   that by reinstalling the skill — it would downgrade itself. The reconciliation
   lives in `parse_or_hint` in `main.rs`.
-- **The skill names the version it is written for** ("written for **amcli
-  X.Y.Z**" in `SKILL.md`), and a test pins that to the workspace version. A
-  release commit therefore bumps `Cargo.toml`, `Cargo.lock` *and* that line, or
-  `cargo test` is red.
+- **Every release updates the skill, and the version line is only half of it.**
+  "written for **amcli X.Y.Z**" in `SKILL.md` is pinned to the workspace
+  version by a test, so a release commit bumps `Cargo.toml`, `Cargo.lock` *and*
+  that line or `cargo test` is red. The half no test can check is the prose:
+  a command or flag the release adds is invisible to an agent until `SKILL.md`
+  describes it, because that file — not `--help` — is what it reads. So before
+  tagging, diff the release against `amcli skill commands` and ask of each new
+  subcommand, flag and batch op: is it in `SKILL.md`, or in
+  `references/batch.md` if it only matters inside a batch? Shipping a feature
+  nobody is told about is the same as not shipping it.
 - **The skill's Setup runs the installer every session.** That is only fine
   because `install.sh` / `install.ps1` short-circuit when the newest release is
   already installed and keep the installed binary when there is no network.

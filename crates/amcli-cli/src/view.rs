@@ -139,19 +139,27 @@ pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError
 /// Creating a second view with the same name used to succeed silently, which
 /// left two indistinguishable views behind and no CLI way to remove either. A
 /// name clash is a conflict (exit 6) unless the caller says what to do about it.
+/// Where a replaced view sat, so its replacement can take the same place.
+///
+/// `--replace` used to delete and let the new view be appended, which moved it
+/// to the end of its folder. That is invisible with three views and fatal to a
+/// script that regenerates all of them: each pass reorders the file, so the
+/// diff is the whole views section every time and two passes never agree.
+type Slot = (amcli_model::FolderId, usize);
+
 fn claim_name(
     m: &mut Model,
     name: &str,
     except: Option<ViewId>,
     replace: bool,
-) -> Result<Vec<String>, CliError> {
+) -> Result<(Vec<String>, Option<Slot>), CliError> {
     let clash: Vec<ViewId> = m
         .views_with_ids()
         .filter(|(i, v)| v.name == name && Some(*i) != except)
         .map(|(i, _)| i)
         .collect();
     if clash.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
     if !replace {
         return Err(CliError::new(
@@ -172,13 +180,24 @@ fn claim_name(
         ));
     }
 
+    // The first clash's position is the one worth keeping: it is the view the
+    // caller is regenerating. Read it before the delete, when it still exists.
+    let slot = clash.first().and_then(|v| m.view_position(*v));
+
     let mut replaced = Vec::new();
     for v in clash {
         let id = m.view(v).id.clone();
         m.delete_view(v).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
         replaced.push(id);
     }
-    Ok(replaced)
+    Ok((replaced, slot))
+}
+
+/// Put a freshly made view back where the one it replaced was.
+fn reseat(m: &mut Model, v: ViewId, slot: Option<Slot>) {
+    if let Some((folder, at)) = slot {
+        m.place_view_at(v, folder, at);
+    }
 }
 
 fn find_view(m: &Model, sel: &str) -> Result<ViewId, CliError> {
@@ -255,13 +274,14 @@ fn create(
     // Resolved before anything is created, so a misspelt folder leaves no
     // half-made view behind.
     let dest = folder.map(|f| views_folder(m, f)).transpose()?;
-    let replaced = claim_name(m, name, None, replace)?;
+    let (replaced, slot) = claim_name(m, name, None, replace)?;
     let v =
         m.add_view(name, vp).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     if let Some(f) = dest {
         m.move_view_to_folder(v, f)
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     }
+    reseat(m, v, slot);
     let row = Row::new()
         .s("id", m.view(v).id.clone())
         .s("name", name.to_string())
@@ -322,6 +342,7 @@ fn move_view(opts: &Opts, m: &mut Model, view: &str, folder: &str) -> Result<Out
 fn rename(opts: &Opts, m: &mut Model, view: &str, name: &str) -> Result<Output, CliError> {
     let v = find_view(m, view)?;
     claim_name(m, name, Some(v), false)?;
+
     let old = m.view(v).name.clone();
     m.rename_view(v, name);
     let row = Row::new()
@@ -555,7 +576,7 @@ fn auto(
         CliError::new(Code::Usage, "usage", format!("`{dir}` is not a direction"))
             .hint("one of: out, in, both")
     })?;
-    let replaced = claim_name(m, name, None, replace)?;
+    let (replaced, slot) = claim_name(m, name, None, replace)?;
 
     // Gather first, mutate second: the graph borrows the model.
     let (items, edges, concepts, rels) = {
@@ -613,6 +634,7 @@ fn auto(
         m.move_view_to_folder(v, f)
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     }
+    reseat(m, v, slot);
 
     let mut object_ids = Vec::with_capacity(concepts.len());
     for (c, r) in concepts.iter().zip(placed.rects.iter()) {

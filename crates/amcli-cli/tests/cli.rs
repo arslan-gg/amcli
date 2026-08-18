@@ -1390,3 +1390,122 @@ fn declaring_a_folder_twice_gives_one_folder() {
 
     assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
 }
+
+/// `export views` and `apply` are inverses, and stay inverses.
+///
+/// A view has no declarative form in the file — what it holds is only geometry
+/// — so "which elements are on this view, and why those" is not a question a
+/// diff can answer. Keeping member lists beside the model answers it and
+/// invents a second source of truth that goes stale; deriving them from the
+/// model does not. That only works if the round trip is exact, so this asserts
+/// byte identity rather than "looks right", and asserts it twice: an export
+/// that reorders the views it rebuilds would still pass a one-shot check while
+/// making every regeneration churn the whole file.
+#[test]
+fn exported_views_rebuild_the_model_byte_for_byte() {
+    let m = Model::new("modelimporter_test.archimate");
+    let model_file = m.dir.path().join("m.archimate");
+
+    // The fixture's own views were drawn in Archi and hold notes and nested
+    // objects, which `view.add` cannot put back — the export says so in a
+    // comment rather than pretending otherwise. The round trip is exact for
+    // views amcli built, which is what a regenerated model is made of.
+    for stale in ["View 1", "View 2"] {
+        assert_eq!(m.run(&["view", "delete", stale, "-y"]).0, 0);
+    }
+    // Seeded, because that is the only way a rebuild can be byte-identical:
+    // without it every recreated view draws a fresh random id. Each `run` is
+    // its own process, so the seed does not leak into the other tests here.
+    let seed = ["--id-seed", "roundtrip"];
+    let seeded = |args: &[&str]| -> (i32, String, String) {
+        let mut all = args.to_vec();
+        all.extend_from_slice(&seed);
+        m.run(&all)
+    };
+
+    assert_eq!(seeded(&["folder", "add", "/Views", "Group"]).0, 0);
+    for name in ["V1", "V2", "V3", "V4", "V5"] {
+        assert_eq!(seeded(&["view", "create", name, "-f", "/Views/Group"]).0, 0);
+        assert_eq!(seeded(&["view", "add", name, "BA1"]).0, 0);
+    }
+
+    let spec = m.dir.path().join("views.jsonl");
+    let (code, _, err) = m.run(&["export", "views", "-o", spec.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let text = std::fs::read_to_string(&spec).unwrap();
+    assert!(text.contains(r#""op":"folder.add""#), "declares its folders: {text}");
+    assert!(text.contains(r#""folder":"/Views/Group""#), "files the views: {text}");
+    assert!(text.contains("# V3"), "readable, one comment per view: {text}");
+
+    let before = std::fs::read_to_string(&model_file).unwrap();
+    assert_eq!(seeded(&["apply", spec.to_str().unwrap()]).0, 0);
+    let once = std::fs::read_to_string(&model_file).unwrap();
+    assert_eq!(first_difference(&before, &once), None, "one round trip changes nothing");
+
+    // Twice, because a rebuild that reorders is stable only on odd passes.
+    assert_eq!(seeded(&["apply", spec.to_str().unwrap()]).0, 0);
+    let twice = std::fs::read_to_string(&model_file).unwrap();
+    assert_eq!(first_difference(&before, &twice), None, "and neither does a second");
+
+    // And the spec is the same spec, so it can be reviewed in a diff.
+    let again = m.dir.path().join("views2.jsonl");
+    assert_eq!(m.run(&["export", "views", "-o", again.to_str().unwrap()]).0, 0);
+    assert_eq!(std::fs::read_to_string(&again).unwrap(), text);
+
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}
+
+/// A replaced view is rebuilt where it was, not appended.
+///
+/// `--replace` deletes and recreates, and a recreated view used to land at the
+/// end of its folder. With three views nobody notices; with thirty, every
+/// regeneration rewrites the whole views section and the diff stops being
+/// worth reading — which is the one thing this tool exists to protect.
+#[test]
+fn replacing_a_view_keeps_its_place_in_the_folder() {
+    let m = Model::new("modelimporter_test.archimate");
+    let order = |m: &Model| -> Vec<String> {
+        let (_, out, _) = m.run(&["view", "list", "-q", "--fields", "name"]);
+        rows(&out).iter().filter_map(|r| r.first()).map(|s| s.to_string()).collect()
+    };
+
+    assert_eq!(m.run(&["folder", "add", "/Views", "Group"]).0, 0);
+    for name in ["V1", "V2", "V3"] {
+        assert_eq!(m.run(&["view", "create", name, "-f", "/Views/Group"]).0, 0);
+    }
+    let before = order(&m);
+
+    // One at a time, and in a batch — the batch is where it went wrong, because
+    // the deleted node keeps its seat in the child list until the file is
+    // written, so an index counted over live children pointed one place early.
+    assert_eq!(m.run(&["view", "create", "V2", "-f", "/Views/Group", "--replace"]).0, 0);
+    assert_eq!(order(&m), before, "a single replace holds the order");
+
+    let ops = m.dir.path().join("all.jsonl");
+    std::fs::write(
+        &ops,
+        concat!(
+            r#"{"op":"view.create","name":"V1","folder":"/Views/Group","replace":true}"#,
+            "\n",
+            r#"{"op":"view.create","name":"V2","folder":"/Views/Group","replace":true}"#,
+            "\n",
+            r#"{"op":"view.create","name":"V3","folder":"/Views/Group","replace":true}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    assert_eq!(m.run(&["apply", ops.to_str().unwrap()]).0, 0);
+    assert_eq!(order(&m), before, "and so does a batch that replaces every one");
+}
+
+/// The first line where two model files differ, for an assertion that has to
+/// print something a person can read rather than half a megabyte of bytes.
+fn first_difference(a: &str, b: &str) -> Option<String> {
+    for (n, (x, y)) in a.lines().zip(b.lines()).enumerate() {
+        if x != y {
+            return Some(format!("line {}:\n  before: {x}\n   after: {y}", n + 1));
+        }
+    }
+    (a.lines().count() != b.lines().count())
+        .then(|| format!("{} lines before, {} after", a.lines().count(), b.lines().count()))
+}

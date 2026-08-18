@@ -813,6 +813,34 @@ impl Model {
         Ok(())
     }
 
+    /// Where a view sits among its folder's children.
+    ///
+    /// Paired with `place_view_at` so that regenerating a view can put it back
+    /// exactly where it was. Without that, "delete and recreate" moves it to
+    /// the end of the folder, and a script that regenerates every view rewrites
+    /// the whole views section on each run — the diff then shows everything and
+    /// therefore nothing.
+    pub fn view_position(&self, view: ViewId) -> Option<(FolderId, usize)> {
+        let node = self.view(view).node;
+        let parent = self.doc.parent(node)?;
+        let at = self.doc.children(parent).position(|c| c == node)?;
+        Some((self.view(view).folder, at))
+    }
+
+    /// Move a view to a given index among its folder's children.
+    pub fn place_view_at(&mut self, view: ViewId, folder: FolderId, at: usize) {
+        let node = self.view(view).node;
+        let parent = self.folder(folder).node;
+        if self.doc.parent(node) == Some(parent)
+            && self.doc.children(parent).position(|c| c == node) == Some(at)
+        {
+            return;
+        }
+        let at = at.min(self.doc.children(parent).count());
+        self.doc.move_child(node, parent, at);
+        self.reindex();
+    }
+
     /// Whether a folder is the views folder or nested inside it.
     pub fn is_views_folder(&self, folder: FolderId) -> bool {
         let Some(root) = self.top_folder(FolderType::Diagrams) else { return false };

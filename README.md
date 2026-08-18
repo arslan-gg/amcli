@@ -73,7 +73,10 @@ $ amcli view render "Payments" -o payments.svg
   between lines and writes once. If any line fails, the file is byte-identical.
 - **Reproducible rebuilds.** Keep the batches in git and pass `--id-seed`: ids
   derive from what they name, so regenerating an unchanged model produces an
-  unchanged file.
+  unchanged file. `amcli export views` goes the other way — it derives the
+  batch that rebuilds every view from the model, so a drawing gets a
+  declarative form to review without a second source of truth to keep in step.
+  Export, apply, and the file is byte-identical.
 - **Views drawn to be read.** Layout works from the graph alone, tries several
   layerings and keeps the least tangled: every edge one straight line, kept off
   the boxes, boxes sized to their labels, and — wherever the graph allows it —
@@ -132,6 +135,7 @@ amcli apply batch.jsonl                       # many edits, one write, all or no
 amcli validate                                # rules, with a `fix` per finding
 amcli view auto "Refunds" --from "Refund Service" -n 2
 amcli view move "Refunds" -f /Views/Payments  # file it; the id does not change
+amcli export views                            # the batch that rebuilds every view
 amcli export mermaid                          # a quick diagram for a chat window
 ```
 

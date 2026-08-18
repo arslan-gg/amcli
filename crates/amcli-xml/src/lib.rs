@@ -265,6 +265,30 @@ impl Doc {
         self.node(id).children.iter().copied().filter(move |c| !self.node(*c).removed)
     }
 
+    /// Translate a position among a node's *live* children into a position in
+    /// the raw child vector.
+    ///
+    /// A removed node keeps its seat in that vector — `remove_subtree` only
+    /// marks it — so the two numbering schemes drift apart the moment anything
+    /// is deleted. Every caller counts with `children()`, which skips the
+    /// removed, so insertion must translate or the new node lands as many
+    /// places early as there are removed siblings before it. That is invisible
+    /// until something is deleted and re-added in one session, which is exactly
+    /// what a batch does.
+    fn raw_child_index(&self, parent: NodeId, live_at: usize) -> usize {
+        let kids = &self.node(parent).children;
+        let mut live = 0;
+        for (raw, c) in kids.iter().enumerate() {
+            if live == live_at {
+                return raw;
+            }
+            if !self.node(*c).removed {
+                live += 1;
+            }
+        }
+        kids.len()
+    }
+
     /// First child whose qualified name matches.
     pub fn child_named(&self, id: NodeId, name: &str) -> Option<NodeId> {
         self.children(id).find(|c| self.name(*c) == name)
@@ -478,7 +502,7 @@ impl Doc {
             removed: false,
             lead_synthetic: true,
         });
-        let at = at.min(self.nodes[parent.idx()].children.len());
+        let at = self.raw_child_index(parent, at);
         self.nodes[parent.idx()].children.insert(at, id);
         self.mark_subtree_dirty(parent);
         id
@@ -503,7 +527,9 @@ impl Doc {
             self.nodes[old.idx()].children.retain(|c| *c != id);
             self.mark_subtree_dirty(old);
         }
-        let at = at.min(self.nodes[new_parent.idx()].children.len());
+        // After the removal above, so that moving within one parent indexes the
+        // list the node is no longer in.
+        let at = self.raw_child_index(new_parent, at);
         self.nodes[new_parent.idx()].children.insert(at, id);
         self.nodes[id.idx()].parent = Some(new_parent);
         self.nodes[id.idx()].lead_synthetic = true;

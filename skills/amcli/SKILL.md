@@ -67,7 +67,7 @@ Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
 
-This skill is written for **amcli 0.5.2**. The installer always gives you the
+This skill is written for **amcli 0.6.0**. The installer always gives you the
 newest *release*, and this file ships from the repository's main branch, so
 for a short while after a change lands the binary can be one release behind
 what is described here. If a command or flag below is refused, the binary
@@ -130,6 +130,7 @@ Filter expressions, quoted as one argument:
     amcli query 'layer=Application and deg>10'
     amcli query 'out:Access~Customer'    # everything that accesses something matching
     amcli query 'kind=element and view=0'  # in the model but on no diagram
+    amcli query 'kind=element and view~"Refunds"'   # what a view holds
 
 Operators: `=` exact · `~` contains · `^=` prefix · `=~` regex · `!=` · `>` `<`
 on `deg` and `view`. Fields: `id name type kind layer folder doc deg view
@@ -200,8 +201,9 @@ an earlier turn and are writing now:
 exists. `if_absent` makes the batch safe to re-run. If any line fails, nothing
 is written and the file is byte-identical. View operations go in the same
 batch — `view.create`, `view.add`, `view.auto`, `view.layout`, `view.rename`,
-`view.delete`, same fields as the commands — so a view is built and laid out
-with the concepts it shows, in one write; `references/batch.md` has them all.
+`view.move`, `view.delete`, same fields as the commands — so a view is built
+and laid out with the concepts it shows, in one write; `references/batch.md`
+has those and the folder ops.
 
 **If the model is regenerated from batches you keep in the repository**, pass the
 same `--id-seed` every time (or set `$AMCLI_ID_SEED`). Ids are then derived from
@@ -229,6 +231,7 @@ mirrors — and never deletes anyone's modelling.
     amcli view move "Refunds" -f /Views/Payments   # re-file, id unchanged
     amcli view delete "Refunds"                # removes the drawing, no concept
     amcli view render "Refunds" -o refund.svg
+    amcli export views                         # the batch that rebuilds every view
     amcli export mermaid                       # a quick inline diagram for chat
 
 A view name is unique: creating a second view with a name already in use is exit
@@ -237,16 +240,35 @@ regenerate-everything script re-runnable:
 
     amcli view auto "Refund Flow" --from "Refund Service" --replace
 
-**Past about a dozen views, file them in folders.** `create`, `auto` and their
-batch ops take `-f /Views/<name>`, and `view move` re-files one already there;
-`view list` reports the folder it is in. The folder must exist first — make it
-with `amcli folder add /Views "Programme"`, which returns the folder already
-there if you ask twice, so a script may simply declare the folders it needs.
-It must be under `/Views`: Archi never shows a diagram filed anywhere else,
-so amcli refuses (exit 5) rather than writing a model with a view you cannot
-open. Re-filing never changes a view's id, so a regenerate-everything script
-keeps producing the same diff. `folder delete` removes an empty folder and
-refuses a full one.
+**Past about a dozen views, file them in folders.** `create` and `auto` take
+`-f /Views/<name>` (`"folder"` in a batch), `view move` re-files one already
+drawn, and `view list` reports where each sits. The folder must exist first:
+`amcli folder list` shows what does, and `amcli folder add /Views "Programme"`
+makes one — asked twice it returns the folder already there rather than a
+second one, so a script may simply declare the folders it needs. It must be
+under `/Views`: Archi never shows a diagram filed anywhere else, so amcli
+refuses (exit 5) rather than writing a model with a view you cannot open.
+Re-filing never changes a view's id, so a regenerate-everything script keeps
+producing the same diff. `folder delete` removes an empty folder and refuses a
+full one; both folder commands take an `id:` as well as a path, which is the
+only way to address two folders that ended up sharing one.
+
+**A view has no declarative form of its own** — what it holds is only geometry
+in the file, so a diff cannot answer "which fifteen elements are on this view".
+`amcli export views` derives one: the batch of `folder.add`, `view.create`,
+`view.add` and `view.layout` operations that rebuilds every view, readable and
+reviewable, which `amcli apply` takes straight back:
+
+    amcli export views -o views.jsonl     # read it, review it, edit it
+    amcli apply views.jsonl               # and the model is byte-identical
+
+The round trip is exact, and re-running it changes nothing, so this is the way
+to regenerate views from something a human reviewed. Do **not** keep such a
+file beside the model as the source of truth: it is derived, and a derived file
+kept by hand goes stale. Generate it when you need to read or change a view,
+apply it, and let the model stay the one record. Views drawn in Archi with
+notes, groups or nested objects are the limit — `view.add` cannot put those
+back, and the export says so in a comment rather than pretending.
 
 `--layout` takes `auto` (the default), `layered` or `grid`; `view layout` spells
 the same flag `--algorithm` and both commands accept both names. `auto` layers
@@ -268,7 +290,12 @@ Layout sizes each box to its label and draws every edge as one straight line
 — no bendpoints, ever — placing the boxes so the lines stay off them. `view
 layout` writes sizes back along with positions and straightens every
 connection, so `--relayout-all` redraws the view, it does not just shuffle it.
-Run it after a batch of edits rather than after each one.
+Run it after a batch of edits rather than after each one — and over every view
+when a new amcli lays out better, which needs no record of what each view
+holds, because the model already has it:
+
+    amcli view list -q --fields name |
+      while IFS= read -r v; do amcli view layout "$v" --relayout-all -q; done
 
 `view render` draws the geometry the model actually stores. `export mermaid`
 and `export dot` re-lay-out, so they are for a quick look, not for reproducing

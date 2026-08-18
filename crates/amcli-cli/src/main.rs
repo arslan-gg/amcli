@@ -215,7 +215,7 @@ enum Command {
     },
     /// Export the whole model.
     Export {
-        /// csv | json | mermaid | dot. Named `to` rather than `format`
+        /// csv | json | mermaid | dot | views. Named `to` rather than `format`
         /// because clap merges a same-named subcommand field into the global
         /// -F, which controls how amcli reports rather than what it writes.
         to: String,
