@@ -302,6 +302,109 @@ fn every_write_leaves_a_model_that_still_loads() {
     assert_eq!(code, 0, "{err}");
 }
 
+/// A view built member by member is a dozen commands, each writing the file
+/// and any one able to fail halfway. In a batch the view ops land with the
+/// concept edits they belong to, once, and `--dry-run` covers them too.
+#[test]
+fn a_batch_can_build_and_lay_out_a_view() {
+    let m = Model::new("modelimporter_test.archimate");
+    let ops = m.dir.path().join("view.jsonl");
+    std::fs::write(
+        &ops,
+        concat!(
+            r#"{"op":"element.add","type":"ApplicationComponent","name":"Refund Service","ref":"r","if_absent":true}"#,
+            "\n",
+            r#"{"op":"element.add","type":"DataObject","name":"Refund Record","ref":"rec","if_absent":true}"#,
+            "\n",
+            r#"{"op":"relation.add","type":"Access","source":"ref:r","target":"ref:rec","access":"rw","if_absent":true}"#,
+            "\n",
+            r#"{"op":"view.create","name":"Refunds","replace":true}"#,
+            "\n",
+            // A ref, a plain name, and something already in the model.
+            r#"{"op":"view.add","view":"Refunds","target":"ref:r"}"#,
+            "\n",
+            r#"{"op":"view.add","view":"Refunds","target":"Refund Record"}"#,
+            "\n",
+            r#"{"op":"view.add","view":"Refunds","target":"BA1"}"#,
+            "\n",
+            r#"{"op":"view.layout","view":"Refunds","relayout_all":true}"#,
+            "\n",
+            r#"{"op":"view.auto","name":"Around Refunds","from":"ref:r","depth":1,"replace":true}"#,
+            "\n",
+            r#"{"op":"view.rename","view":"Around Refunds","name":"Refund Neighbourhood"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    // Dry run: every line reports, nothing is written.
+    let before = m.text();
+    let (code, out, _) = m.run(&["apply", ops.to_str().unwrap(), "--dry-run"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(rows(&out).len(), 10);
+    assert_eq!(m.text(), before, "a dry run writes nothing");
+    assert!(
+        !out.contains("dry_run"),
+        "the view rows do not each claim dry-run; the batch says so once: {out}"
+    );
+
+    // For real: the view exists with three objects, the access relationship
+    // drawn between two of them, and the second view renamed.
+    let (code, out, err) = m.run(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("view.create") && out.contains("view.layout"), "{out}");
+    let (_, listing, _) = m.run(&["view", "list", "-q"]);
+    assert!(listing.contains("Refunds"), "{listing}");
+    assert!(listing.contains("Refund Neighbourhood"), "{listing}");
+    assert!(!listing.contains("Around Refunds"), "renamed, not duplicated: {listing}");
+    let (_, json, _) = m.run(&["view", "render", "Refunds", "--as", "json"]);
+    let scene: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(scene["nodes"].as_array().unwrap().len(), 3);
+    assert_eq!(scene["edges"].as_array().unwrap().len(), 1, "the access edge is drawn");
+
+    // Seeded, a re-run is a no-op byte for byte — the property the whole
+    // batch design exists for, and view ops must not break it. The rename is
+    // left out of this batch: a rename cannot be re-run, and the batch says
+    // so like a second `view rename` at the prompt would.
+    let again = m.dir.path().join("again.jsonl");
+    let text = std::fs::read_to_string(&ops).unwrap();
+    let text: String =
+        text.lines().filter(|l| !l.contains("view.rename")).map(|l| format!("{l}\n")).collect();
+    std::fs::write(&again, text).unwrap();
+    let seeded = |m: &Model| {
+        Command::cargo_bin("amcli")
+            .unwrap()
+            .env("AMCLI_ID_SEED", "t")
+            .arg("-m")
+            .arg(m.path())
+            .args(["apply", again.to_str().unwrap()])
+            .output()
+            .unwrap()
+    };
+    let r = seeded(&m);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let first = m.text();
+    assert!(seeded(&m).status.success());
+    assert_eq!(m.text(), first, "a seeded re-run changes nothing");
+
+    // A bad view line abandons the batch like any other.
+    let bad = m.dir.path().join("bad.jsonl");
+    std::fs::write(
+        &bad,
+        concat!(
+            r#"{"op":"element.add","type":"Goal","name":"Would Be Added"}"#,
+            "\n",
+            r#"{"op":"view.add","view":"Refunds","target":"No Such Thing"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let (code, _, err) = m.run(&["apply", bad.to_str().unwrap()]);
+    assert_ne!(code, 0);
+    assert!(err.contains("line 2"), "{err}");
+    assert_eq!(m.text(), first, "nothing from the failed batch was written");
+}
+
 #[test]
 fn a_batch_lands_completely_or_not_at_all() {
     let m = Model::new("modelimporter_test.archimate");

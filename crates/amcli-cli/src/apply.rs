@@ -9,6 +9,13 @@
 //! can point at it before its id exists, which is what makes a batch composable
 //! at all. `if_absent` binds the ref to an existing concept instead of failing,
 //! which makes a batch re-runnable after a half-finished attempt.
+//!
+//! View operations ride along. A view built member by member — create it,
+//! add each element, lay it out — is a dozen or a hundred commands, and run
+//! one at a time each parses and writes the whole file and a failure halfway
+//! leaves the view half drawn. In a batch they land together with the
+//! concept edits they belong to, once, or not at all, and `--dry-run` covers
+//! them too. They reuse the `view` subcommand's own code, told not to write.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -18,6 +25,7 @@ use amcli_model::{ConceptId, ElementType, Model, RelType};
 use serde::Deserialize;
 
 use crate::output::{CliError, Code, Output, Row};
+use crate::view::ViewCmd;
 use crate::write::{Opts, guard_checksum, save};
 
 #[derive(Deserialize)]
@@ -60,6 +68,61 @@ enum Op {
     PropSet { target: String, key: String, value: String },
     #[serde(rename = "folder.add")]
     FolderAdd { parent: String, name: String },
+
+    // View operations. Each mirrors a `view` subcommand and takes the same
+    // names for the same things; a concept may be given as `ref:name`.
+    #[serde(rename = "view.create")]
+    ViewCreate {
+        name: String,
+        viewpoint: Option<String>,
+        #[serde(default)]
+        replace: bool,
+    },
+    #[serde(rename = "view.add")]
+    ViewAdd {
+        view: String,
+        target: String,
+        x: Option<i32>,
+        y: Option<i32>,
+        #[serde(default)]
+        no_connect: bool,
+    },
+    #[serde(rename = "view.auto")]
+    ViewAuto {
+        name: String,
+        from: String,
+        #[serde(default = "default_depth")]
+        depth: u32,
+        #[serde(default = "default_direction")]
+        direction: String,
+        #[serde(default = "default_layout")]
+        layout: String,
+        viewpoint: Option<String>,
+        #[serde(default)]
+        replace: bool,
+    },
+    #[serde(rename = "view.layout")]
+    ViewLayout {
+        view: String,
+        #[serde(default = "default_layout")]
+        algorithm: String,
+        #[serde(default)]
+        relayout_all: bool,
+    },
+    #[serde(rename = "view.delete")]
+    ViewDelete { view: String },
+    #[serde(rename = "view.rename")]
+    ViewRename { view: String, name: String },
+}
+
+fn default_depth() -> u32 {
+    2
+}
+fn default_direction() -> String {
+    "both".into()
+}
+fn default_layout() -> String {
+    "auto".into()
 }
 
 pub fn run(opts: &Opts, m: &mut Model, file: Option<&str>) -> Result<Output, CliError> {
@@ -92,7 +155,7 @@ pub fn run(opts: &Opts, m: &mut Model, file: Option<&str>) -> Result<Output, Cli
                 .hint("one JSON operation per line; see `amcli apply --help`")
         })?;
 
-        match apply_one(m, &op, &mut refs) {
+        match apply_one(opts, m, &op, &mut refs) {
             Ok(row) => rows.push(row.n("line", n as i64)),
             Err(e) => {
                 // The in-memory model may well have changed by now — earlier
@@ -129,7 +192,12 @@ pub fn run(opts: &Opts, m: &mut Model, file: Option<&str>) -> Result<Output, Cli
     Ok(out)
 }
 
-fn apply_one(m: &mut Model, op: &Op, refs: &mut HashMap<String, String>) -> Result<Row, CliError> {
+fn apply_one(
+    opts: &Opts,
+    m: &mut Model,
+    op: &Op,
+    refs: &mut HashMap<String, String>,
+) -> Result<Row, CliError> {
     match op {
         Op::ElementAdd { ty, name, folder, doc, props, reference, if_absent } => {
             let t = ElementType::from_str(ty).ok_or_else(|| {
@@ -228,6 +296,63 @@ fn apply_one(m: &mut Model, op: &Op, refs: &mut HashMap<String, String>) -> Resu
                 .s("id", m.concept(c).id.clone())
                 .s("key", key.clone()))
         }
+        Op::ViewCreate { name, viewpoint, replace } => view_op(
+            opts,
+            m,
+            "view.create",
+            ViewCmd::Create { name: name.clone(), viewpoint: viewpoint.clone(), replace: *replace },
+        ),
+        Op::ViewAdd { view, target, x, y, no_connect } => {
+            let selector = deref(m, refs, target)?;
+            view_op(
+                opts,
+                m,
+                "view.add",
+                ViewCmd::Add {
+                    view: view.clone(),
+                    selector,
+                    x: *x,
+                    y: *y,
+                    no_connect: *no_connect,
+                },
+            )
+        }
+        Op::ViewAuto { name, from, depth, direction, layout, viewpoint, replace } => {
+            let from = deref(m, refs, from)?;
+            view_op(
+                opts,
+                m,
+                "view.auto",
+                ViewCmd::Auto {
+                    name: name.clone(),
+                    from,
+                    depth: *depth,
+                    direction: direction.clone(),
+                    layout: layout.clone(),
+                    viewpoint: viewpoint.clone(),
+                    replace: *replace,
+                },
+            )
+        }
+        Op::ViewLayout { view, algorithm, relayout_all } => view_op(
+            opts,
+            m,
+            "view.layout",
+            ViewCmd::Layout {
+                view: view.clone(),
+                algorithm: algorithm.clone(),
+                relayout_all: *relayout_all,
+            },
+        ),
+        Op::ViewDelete { view } => {
+            view_op(opts, m, "view.delete", ViewCmd::Delete { view: view.clone() })
+        }
+        Op::ViewRename { view, name } => view_op(
+            opts,
+            m,
+            "view.rename",
+            ViewCmd::Rename { view: view.clone(), name: name.clone() },
+        ),
         Op::FolderAdd { parent, name } => {
             let p = folder_of(m, parent)?;
             let f = m
@@ -247,6 +372,31 @@ fn find_by_type_and_name(m: &Model, ty: &str, name: &str) -> Option<ConceptId> {
 /// `ref:name` refers to something an earlier line produced; anything else is an
 /// ordinary selector. Refs resolve forwards only, so a typo is an error at the
 /// line that used it rather than a mystery later on.
+/// Run one `view` subcommand against the in-memory model without writing.
+///
+/// The batch writes once at the end, so the command is handed a copy of the
+/// options marked dry-run: it does everything it would do at the prompt except
+/// save, and its row comes back with the op named the way the batch names it.
+fn view_op(opts: &Opts, m: &mut Model, op: &str, cmd: ViewCmd) -> Result<Row, CliError> {
+    let deferred = Opts { dry_run: true, yes: opts.yes, expect_checksum: None };
+    let out = crate::view::run(&deferred, m, &cmd)?;
+    let row = out.rows.into_iter().next().unwrap_or_default();
+    // The command's own `dry_run` column would say `true` on a batch that is
+    // about to write; the batch reports `written` for all its lines at once.
+    Ok(row.without("dry_run").s("op", op))
+}
+
+/// A concept selector for a view op: `ref:name` becomes the id an earlier line
+/// bound, checked the same way `resolve` checks it; anything else passes
+/// through and the view command resolves it itself.
+fn deref(m: &Model, refs: &HashMap<String, String>, sel: &str) -> Result<String, CliError> {
+    if sel.starts_with("ref:") {
+        let c = resolve(m, sel, refs)?;
+        return Ok(format!("id:{}", m.concept(c).id));
+    }
+    Ok(sel.to_string())
+}
+
 fn resolve(m: &Model, sel: &str, refs: &HashMap<String, String>) -> Result<ConceptId, CliError> {
     if let Some(name) = sel.strip_prefix("ref:") {
         let id = refs.get(name).ok_or_else(|| {

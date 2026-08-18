@@ -21,6 +21,27 @@ up, and no rollback step that could itself fail.
     {"op":"prop.set","target":"ref:x","key":"owner","value":"team-a"}
     {"op":"folder.add","parent":"/Application","name":"Payments"}
 
+Views too — each mirrors the `view` subcommand of the same name, with the
+same fields, and takes a `ref:` wherever it takes a concept:
+
+    {"op":"view.create","name":"Payments","viewpoint":"application_cooperation","replace":true}
+    {"op":"view.add","view":"Payments","target":"ref:x"}
+    {"op":"view.add","view":"Payments","target":"Checkout","x":240,"y":0,"no_connect":true}
+    {"op":"view.auto","name":"Around X","from":"ref:x","depth":2,"direction":"both","layout":"auto","replace":true}
+    {"op":"view.layout","view":"Payments","algorithm":"auto","relayout_all":true}
+    {"op":"view.rename","view":"Payments","name":"Payments and Checkout"}
+    {"op":"view.delete","view":"Old Sketch"}
+
+A view built member by member — create it, add each element, lay it out —
+is a dozen or a hundred lines that would otherwise be a dozen or a hundred
+`amcli` invocations, each parsing and writing the whole file, and any one
+of them able to fail and leave the view half drawn. In a batch they land
+with the concept edits they belong to, once, or not at all; `--dry-run`
+covers them; and with `replace` on the create and a seed set, re-running
+the batch is a no-op in git. `view.rename` is the exception: like a second
+`view rename` at the prompt it fails on the re-run, so keep it out of a
+batch meant to be re-run.
+
 ## `ref`
 
 A line names its result; later lines address it as `ref:name`. This is what

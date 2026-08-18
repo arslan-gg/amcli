@@ -103,6 +103,12 @@ impl Row {
         self
     }
 
+    /// The row without a column, for a caller that reports that fact itself.
+    pub fn without(mut self, k: &str) -> Row {
+        self.0.retain(|(key, _)| *key != k);
+        self
+    }
+
     pub fn list(mut self, k: &'static str, v: Vec<Row>) -> Row {
         self.0.push((k, Value::Rows(v)));
         self

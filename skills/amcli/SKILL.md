@@ -186,7 +186,10 @@ an earlier turn and are writing now:
 
 `ref` names a line's result so a later line can point at it before its id
 exists. `if_absent` makes the batch safe to re-run. If any line fails, nothing
-is written and the file is byte-identical.
+is written and the file is byte-identical. View operations go in the same
+batch — `view.create`, `view.add`, `view.auto`, `view.layout`, `view.rename`,
+`view.delete`, same fields as the commands — so a view is built and laid out
+with the concepts it shows, in one write; `references/batch.md` has them all.
 
 **If the model is regenerated from batches you keep in the repository**, pass the
 same `--id-seed` every time (or set `$AMCLI_ID_SEED`). Ids are then derived from
