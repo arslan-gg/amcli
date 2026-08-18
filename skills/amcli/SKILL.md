@@ -161,6 +161,7 @@ another search. On **4**, it lists candidates, each with a ready-to-paste
     amcli path "Web App" "Customer Database"   # how are these connected?
     amcli impact id:5dde26f7 -D in             # what breaks if this changes?
     amcli neighbors id:5dde26f7 -r Serving     # only Serving relationships
+    amcli ancestors "Payment API"              # what composes or aggregates it
     amcli descendants "Payments Capability"    # the composition tree
     amcli cycles                               # dependency cycles
 
@@ -170,6 +171,8 @@ another search. On **4**, it lists candidates, each with a ready-to-paste
     amcli element  add ApplicationComponent "Refund Service" --doc "…"
     amcli element  rename id:c40a19b7 "Refunds Service"
     amcli relation add Access "Refunds Service" "Refund Record" --access rw
+    amcli element  doc id:c40a19b7 "What it is for"
+    amcli element  move id:c40a19b7 -f /Application/Payments
     amcli prop set id:c40a19b7 owner team-payments
     amcli element  delete id:c40a19b7 -y
 
@@ -224,6 +227,7 @@ mirrors — and never deletes anyone's modelling.
 ## Views and diagrams
 
     amcli view list                            # columns are named on stderr
+    amcli view create "Refund Flow" -f /Views/Payments
     amcli view auto "Refund Flow" --from "Refund Service" -n 2
     amcli view add "Refund Flow" "Fraud Check" # drawn *and* wired to what is there
     amcli view layout "Refund Flow" --relayout-all
