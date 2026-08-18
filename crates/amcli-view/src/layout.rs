@@ -121,6 +121,48 @@ impl Algorithm {
 /// fault would throw away the layering on exactly the graphs it suits best.
 pub const MAX_WIDTH_RATIO: f64 = 4.0;
 
+/// A box sized so its label fits.
+///
+/// Archi draws the label inside the box, wrapped by word, at its default 9pt
+/// font — around seven pixels a character and fifteen a line, inside five
+/// pixels of padding each side. The stock 120×55 box holds three lines of
+/// fifteen characters, which is enough for a name of twenty-odd characters
+/// and not for one of forty; on a real model the median name was twenty-six
+/// characters and one in ten was over thirty-eight, and those were cut off.
+///
+/// The width is chosen so the name wraps into two lines, from the stock 120
+/// up to 264 — a little over two boxes — and the height grows to three lines
+/// only if two will not do at that width. Word wrap breaks at spaces, so the
+/// estimate is padded by the longest word: a line cannot be narrower than
+/// that. Everything is snapped to the grid.
+pub fn fit_size(label: &str) -> (i32, i32) {
+    const CHAR_W: i32 = 7;
+    const LINE_H: i32 = 15;
+    const PAD_W: i32 = 10;
+    const PAD_H: i32 = 10;
+    const MIN_W: i32 = 120;
+    const MAX_W: i32 = 264;
+    const MIN_H: i32 = 55;
+
+    let chars = label.chars().count() as i32;
+    let longest_word =
+        label.split_whitespace().map(|w| w.chars().count() as i32).max().unwrap_or(0);
+
+    // Two lines' worth of characters, no narrower than the longest word.
+    let per_line = ((chars + 1) / 2).max(longest_word);
+    let want = per_line * CHAR_W + PAD_W;
+    let w = snap(want.clamp(MIN_W, MAX_W));
+
+    // At that width, how many lines does it actually take? Word wrap loses
+    // the tail of most lines, so allow one more than the arithmetic says
+    // whenever it wraps at all. Three fit in the stock height; past that the
+    // box grows a line at a time.
+    let cpl = ((w - PAD_W) / CHAR_W).max(1);
+    let lines = (chars + cpl - 1) / cpl + i32::from(chars > cpl);
+    let h = if lines <= 3 { MIN_H } else { snap(lines * LINE_H + PAD_H) };
+    (w, h)
+}
+
 /// Where everything goes, and how the long edges get there.
 #[derive(Clone, Debug, Default)]
 pub struct Placement {

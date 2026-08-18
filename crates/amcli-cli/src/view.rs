@@ -5,7 +5,7 @@ use amcli_model::{ConceptId, ConceptKind, Model, ViewId, viewpoints};
 use amcli_render::Options;
 use amcli_view::geometry::Rect;
 use amcli_view::geometry::bendpoint_for;
-use amcli_view::layout::{Algorithm, Item, free_slot, place};
+use amcli_view::layout::{Algorithm, Item, fit_size, free_slot, place};
 use clap::Subcommand;
 
 use crate::output::{CliError, Code, Output, Row};
@@ -499,6 +499,9 @@ fn auto(
                     ConceptKind::Element(e) => e.info().default_wh,
                     _ => (120, 55),
                 };
+                // Sized to the label, unless the figure has its own size — a
+                // junction is a small circle whatever it is called.
+                let (w, h) = if (w, h) == (120, 55) { fit_size(&concept.name) } else { (w, h) };
                 Item { id: concept.id.clone(), name: concept.name.clone(), w, h }
             })
             .collect();
@@ -613,7 +616,18 @@ fn relayout(
         // The label has to come from the node being moved. Indexing the scene by
         // the *filtered* position read some other node's name, which fed the
         // wrong sort key into a layout that is otherwise deterministic.
-        .map(|n| Item { id: n.id.clone(), name: n.label.clone(), w: n.abs.w, h: n.abs.h })
+        // Every box being moved is also sized to its label. A box the user
+        // widened by hand is a box being relaid, and it comes back at the
+        // width its name needs; a junction and other small figures keep
+        // theirs.
+        .map(|n| {
+            let (w, h) = if n.abs.w >= 60 && n.abs.h >= 30 {
+                fit_size(&n.label)
+            } else {
+                (n.abs.w, n.abs.h)
+            };
+            Item { id: n.id.clone(), name: n.label.clone(), w, h }
+        })
         .collect();
 
     if movable.is_empty() {
