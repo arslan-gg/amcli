@@ -22,6 +22,10 @@ pub enum EditError {
     #[error("no folder at `{0}`")]
     NoSuchFolder(String),
     #[error(
+        "`{0}` is not under the views folder; a diagram filed elsewhere does not load in Archi"
+    )]
+    NotAViewsFolder(String),
+    #[error(
         "ArchiMate does not permit {rel} from {source_type} to {target_type}{}",
         permitted_hint(.permitted)
     )]
@@ -746,6 +750,42 @@ impl Model {
         let node = self.view(view).node;
         self.doc.set_attr(node, "name", name);
         self.reindex();
+    }
+
+    /// Re-file a view under another folder in the views tree.
+    ///
+    /// Archi files every diagram somewhere under the single top-level folder of
+    /// type `diagrams`, and nests user folders inside it freely. A diagram moved
+    /// outside that subtree still parses, but Archi will not show it, so the
+    /// destination is checked rather than trusted: an ordinary typo like
+    /// `/Business` should be an error the caller can read, not a model that
+    /// opens with a view missing.
+    pub fn move_view_to_folder(&mut self, view: ViewId, folder: FolderId) -> Result<(), EditError> {
+        if !self.is_views_folder(folder) {
+            return Err(EditError::NotAViewsFolder(self.folder(folder).path.clone()));
+        }
+        let node = self.view(view).node;
+        let target = self.folder(folder).node;
+        if self.doc.parent(node) == Some(target) {
+            return Ok(());
+        }
+        let at = self.doc.children(target).count();
+        self.doc.move_child(node, target, at);
+        self.reindex();
+        Ok(())
+    }
+
+    /// Whether a folder is the views folder or nested inside it.
+    pub fn is_views_folder(&self, folder: FolderId) -> bool {
+        let Some(root) = self.top_folder(FolderType::Diagrams) else { return false };
+        let mut at = Some(folder);
+        while let Some(f) = at {
+            if f == root {
+                return true;
+            }
+            at = self.folder(f).parent;
+        }
+        false
     }
 
     /// Objects on *other* views that point at this one, as (view id, object id).

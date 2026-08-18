@@ -67,7 +67,7 @@ Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
 
-This skill is written for **amcli 0.5.0**. The installer always gives you the
+This skill is written for **amcli 0.5.1**. The installer always gives you the
 newest *release*, and this file ships from the repository's main branch, so
 for a short while after a change lands the binary can be one release behind
 what is described here. If a command or flag below is refused, the binary
@@ -226,6 +226,7 @@ mirrors — and never deletes anyone's modelling.
     amcli view add "Refund Flow" "Fraud Check" # drawn *and* wired to what is there
     amcli view layout "Refund Flow" --relayout-all
     amcli view rename "Refund Flow" "Refunds"
+    amcli view move "Refunds" -f /Views/Payments   # re-file, id unchanged
     amcli view delete "Refunds"                # removes the drawing, no concept
     amcli view render "Refunds" -o refund.svg
     amcli export mermaid                       # a quick inline diagram for chat
@@ -235,6 +236,15 @@ A view name is unique: creating a second view with a name already in use is exit
 regenerate-everything script re-runnable:
 
     amcli view auto "Refund Flow" --from "Refund Service" --replace
+
+**Past about a dozen views, file them in folders.** `create`, `auto` and their
+batch ops take `-f /Views/<name>`, and `view move` re-files one already there;
+`view list` reports the folder it is in. The folder must exist first — make it
+with `amcli folder add /Views "Programme"` — and it must be under `/Views`,
+because Archi never shows a diagram filed anywhere else, which is why amcli
+refuses (exit 5) rather than writing a model with a view you cannot open.
+Re-filing never changes a view's id, so a regenerate-everything script keeps
+producing the same diff.
 
 `--layout` takes `auto` (the default), `layered` or `grid`; `view layout` spells
 the same flag `--algorithm` and both commands accept both names. `auto` layers

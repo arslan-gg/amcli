@@ -20,6 +20,10 @@ pub enum ViewCmd {
         /// One of the 25 ArchiMate viewpoint ids, e.g. layered.
         #[arg(long)]
         viewpoint: Option<String>,
+        /// File it here instead of at the top of the views folder, e.g.
+        /// `/Views/Motivation`. The folder must already exist.
+        #[arg(short = 'f', long)]
+        folder: Option<String>,
         /// Delete any view already using this name instead of refusing.
         #[arg(long)]
         replace: bool,
@@ -51,6 +55,9 @@ pub enum ViewCmd {
         layout: String,
         #[arg(long)]
         viewpoint: Option<String>,
+        /// File it here instead of at the top of the views folder.
+        #[arg(short = 'f', long)]
+        folder: Option<String>,
         /// Delete any view already using this name instead of refusing.
         #[arg(long)]
         replace: bool,
@@ -69,6 +76,12 @@ pub enum ViewCmd {
     Delete { view: String },
     /// Change a view's name.
     Rename { view: String, name: String },
+    /// Re-file a view under another folder in the views tree.
+    Move {
+        view: String,
+        #[arg(short = 'f', long)]
+        folder: String,
+    },
     /// Draw a view.
     Render {
         view: String,
@@ -91,20 +104,30 @@ pub enum ViewCmd {
 pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError> {
     match cmd {
         ViewCmd::List => list(m),
-        ViewCmd::Create { name, viewpoint, replace } => {
-            create(opts, m, name, viewpoint.as_deref(), *replace)
+        ViewCmd::Create { name, viewpoint, folder, replace } => {
+            create(opts, m, name, viewpoint.as_deref(), folder.as_deref(), *replace)
         }
         ViewCmd::Add { view, selector, x, y, no_connect } => {
             add(opts, m, view, selector, *x, *y, !*no_connect)
         }
-        ViewCmd::Auto { name, from, depth, direction, layout, viewpoint, replace } => {
-            auto(opts, m, name, from, *depth, direction, layout, viewpoint.as_deref(), *replace)
-        }
+        ViewCmd::Auto { name, from, depth, direction, layout, viewpoint, folder, replace } => auto(
+            opts,
+            m,
+            name,
+            from,
+            *depth,
+            direction,
+            layout,
+            viewpoint.as_deref(),
+            folder.as_deref(),
+            *replace,
+        ),
         ViewCmd::Layout { view, algorithm, relayout_all } => {
             relayout(opts, m, view, algorithm, *relayout_all)
         }
         ViewCmd::Delete { view } => delete(opts, m, view),
         ViewCmd::Rename { view, name } => rename(opts, m, view, name),
+        ViewCmd::Move { view, folder } => move_view(opts, m, view, folder),
         ViewCmd::Render { view, draw_as, out, margin, scale } => {
             render(m, view, draw_as, out.as_deref(), *margin, *scale)
         }
@@ -202,6 +225,7 @@ fn list(m: &Model) -> Result<Output, CliError> {
                 .s("name", v.name.clone())
                 .s("kind", if v.is_sketch { "sketch" } else { "archimate" })
                 .s("viewpoint", v.viewpoint.clone())
+                .s("folder", m.folder(v.folder).path.clone())
         })
         .collect();
     let total = rows.len();
@@ -224,16 +248,73 @@ fn create(
     m: &mut Model,
     name: &str,
     vp: Option<&str>,
+    folder: Option<&str>,
     replace: bool,
 ) -> Result<Output, CliError> {
     check_viewpoint(vp)?;
+    // Resolved before anything is created, so a misspelt folder leaves no
+    // half-made view behind.
+    let dest = folder.map(|f| views_folder(m, f)).transpose()?;
     let replaced = claim_name(m, name, None, replace)?;
     let v =
         m.add_view(name, vp).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    if let Some(f) = dest {
+        m.move_view_to_folder(v, f)
+            .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    }
     let row = Row::new()
         .s("id", m.view(v).id.clone())
         .s("name", name.to_string())
+        .s("folder", m.folder(m.view(v).folder).path.clone())
         .n("replaced", replaced.len() as i64)
+        .b("dry_run", opts.dry_run);
+    finish(opts, m, row)
+}
+
+/// A folder path that must exist and must be in the views tree.
+///
+/// Both halves are reported the same way `element move` reports a bad path —
+/// with every folder listed — because the usual cause is a typo and the usual
+/// fix is reading the real name off the list.
+fn views_folder(m: &Model, path: &str) -> Result<amcli_model::FolderId, CliError> {
+    let f = m.folder_by_path(path).ok_or_else(|| {
+        let mut paths: Vec<String> = m.folders().map(|f| f.path.clone()).collect();
+        paths.sort();
+        CliError::new(Code::NotFound, "not_found", format!("no folder at `{path}`"))
+            .hint("existing folders below; create one with `amcli folder add`")
+            .rows(paths.into_iter().map(|p| Row::new().s("folder", p)).collect())
+    })?;
+    if !m.is_views_folder(f) {
+        let mut paths: Vec<String> = m
+            .folders_with_ids()
+            .filter(|(i, _)| m.is_views_folder(*i))
+            .map(|(_, f)| f.path.clone())
+            .collect();
+        paths.sort();
+        return Err(CliError::new(
+            Code::Invalid,
+            "invalid",
+            format!(
+                "`{path}` is not under the views folder; Archi would not show a view filed there"
+            ),
+        )
+        .hint("views folders below")
+        .rows(paths.into_iter().map(|p| Row::new().s("folder", p)).collect()));
+    }
+    Ok(f)
+}
+
+fn move_view(opts: &Opts, m: &mut Model, view: &str, folder: &str) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    let f = views_folder(m, folder)?;
+    let from = m.folder(m.view(v).folder).path.clone();
+    m.move_view_to_folder(v, f)
+        .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    let row = Row::new()
+        .s("id", m.view(v).id.clone())
+        .s("name", m.view(v).name.clone())
+        .s("from", from)
+        .s("to", m.folder(m.view(v).folder).path.clone())
         .b("dry_run", opts.dry_run);
     finish(opts, m, row)
 }
@@ -464,9 +545,11 @@ fn auto(
     dir: &str,
     algorithm: &str,
     vp: Option<&str>,
+    folder: Option<&str>,
     replace: bool,
 ) -> Result<Output, CliError> {
     check_viewpoint(vp)?;
+    let dest = folder.map(|f| views_folder(m, f)).transpose()?;
     let algo = parse_algorithm(algorithm)?;
     let dir = Dir::parse(dir).ok_or_else(|| {
         CliError::new(Code::Usage, "usage", format!("`{dir}` is not a direction"))
@@ -526,6 +609,10 @@ fn auto(
     let placed = place(&items, &edges, algo);
     let v =
         m.add_view(name, vp).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    if let Some(f) = dest {
+        m.move_view_to_folder(v, f)
+            .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    }
 
     let mut object_ids = Vec::with_capacity(concepts.len());
     for (c, r) in concepts.iter().zip(placed.rects.iter()) {
@@ -547,6 +634,7 @@ fn auto(
     let row = Row::new()
         .s("id", m.view(v).id.clone())
         .s("name", name.to_string())
+        .s("folder", m.folder(m.view(v).folder).path.clone())
         .n("objects", object_ids.len() as i64)
         .n("connections", drawn)
         // Which algorithm ran, because under `auto` it may not be the one the

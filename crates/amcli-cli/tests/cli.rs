@@ -1248,3 +1248,98 @@ fn segments_cross(a: (i32, i32), b: (i32, i32), c: (i32, i32), d: (i32, i32)) ->
     let sign = |v: i64| v.signum();
     sign(orient(a, b, c)) != sign(orient(a, b, d)) && sign(orient(c, d, a)) != sign(orient(c, d, b))
 }
+
+/// Views are filed in folders, and a folder is checked before a view is made.
+///
+/// Every view landing at the top of `/Views` is fine for ten views and useless
+/// for thirty, so `create`, `auto` and the batch all take a folder, and `move`
+/// re-files the ones already there. The destination is checked first: a view
+/// filed outside the views tree parses but never appears in Archi, which is the
+/// kind of breakage that is only noticed by the person who opens the model.
+#[test]
+fn views_are_filed_in_folders() {
+    let m = Model::new("modelimporter_test.archimate");
+    let folder_of = |m: &Model, name: &str| -> String {
+        let (_, out, _) = m.run(&["view", "list", "-q", "--fields", "name,folder"]);
+        rows(&out)
+            .iter()
+            .find(|r| r.first() == Some(&name))
+            .and_then(|r| r.get(1))
+            .unwrap_or(&"")
+            .to_string()
+    };
+
+    // The folder has to exist first — `folder add` is what makes one.
+    let (code, _, err) = m.run(&["view", "create", "Filed", "-f", "/Views/Motivation"]);
+    assert_eq!(code, 3, "a folder that does not exist is not found: {err}");
+    assert!(err.contains("no folder at `/Views/Motivation`"), "{err}");
+    assert_eq!(named_views(&m, "Filed"), 0, "nothing was created behind the error");
+
+    assert_eq!(m.run(&["folder", "add", "/Views", "Motivation"]).0, 0);
+    assert_eq!(m.run(&["view", "create", "Filed", "-f", "/Views/Motivation"]).0, 0);
+    assert_eq!(folder_of(&m, "Filed"), "/Views/Motivation");
+
+    // A folder outside the views tree is refused, not silently obeyed: Archi
+    // shows no diagram filed under /Business.
+    let (code, _, err) = m.run(&["view", "create", "Stray", "-f", "/Business"]);
+    assert_eq!(code, 5, "{err}");
+    assert!(err.contains("not under the views folder"), "{err}");
+
+    // An existing view moves, and reports where it came from.
+    assert_eq!(m.run(&["view", "create", "Loose"]).0, 0);
+    assert_eq!(folder_of(&m, "Loose"), "/Views");
+    let (code, out, _) = m.run(&["view", "move", "Loose", "-f", "/Views/Motivation"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("/Views\t/Views/Motivation"), "from and to: {out}");
+    assert_eq!(folder_of(&m, "Loose"), "/Views/Motivation");
+
+    // Moving somewhere it already is changes nothing and is not an error, so a
+    // regenerate-everything script stays re-runnable.
+    assert_eq!(m.run(&["view", "move", "Loose", "-f", "/Views/Motivation"]).0, 0);
+    assert_eq!(folder_of(&m, "Loose"), "/Views/Motivation");
+
+    // `view auto` and the batch file views the same way.
+    assert_eq!(
+        m.run(&["view", "auto", "Neighbourhood", "--from", "BA1", "-f", "/Views/Motivation"]).0,
+        0
+    );
+    assert_eq!(folder_of(&m, "Neighbourhood"), "/Views/Motivation");
+
+    let ops = m.dir.path().join("folders.jsonl");
+    std::fs::write(
+        &ops,
+        concat!(
+            r#"{"op":"folder.add","parent":"/Views","name":"Programme"}"#,
+            "\n",
+            r#"{"op":"view.create","name":"Batched","folder":"/Views/Programme","replace":true}"#,
+            "\n",
+            r#"{"op":"view.move","view":"Filed","folder":"/Views/Programme"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let (code, out, err) = m.run(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("view.move"), "{out}");
+    assert_eq!(folder_of(&m, "Batched"), "/Views/Programme");
+    assert_eq!(folder_of(&m, "Filed"), "/Views/Programme");
+
+    // A batch that names a bad folder writes nothing at all.
+    let model_file = m.dir.path().join("m.archimate");
+    let before = std::fs::read(&model_file).unwrap();
+    let bad = m.dir.path().join("bad.jsonl");
+    std::fs::write(
+        &bad,
+        concat!(
+            r#"{"op":"view.create","name":"Half","folder":"/Views/Programme","replace":true}"#,
+            "\n",
+            r#"{"op":"view.move","view":"Batched","folder":"/Nowhere"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    assert_eq!(m.run(&["apply", bad.to_str().unwrap()]).0, 3);
+    assert_eq!(std::fs::read(&model_file).unwrap(), before, "the file is byte-identical");
+
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}

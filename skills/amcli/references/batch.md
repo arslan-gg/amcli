@@ -24,12 +24,13 @@ up, and no rollback step that could itself fail.
 Views too — each mirrors the `view` subcommand of the same name, with the
 same fields, and takes a `ref:` wherever it takes a concept:
 
-    {"op":"view.create","name":"Payments","viewpoint":"application_cooperation","replace":true}
+    {"op":"view.create","name":"Payments","viewpoint":"application_cooperation","folder":"/Views/Payments","replace":true}
     {"op":"view.add","view":"Payments","target":"ref:x"}
     {"op":"view.add","view":"Payments","target":"Checkout","x":240,"y":0,"no_connect":true}
-    {"op":"view.auto","name":"Around X","from":"ref:x","depth":2,"direction":"both","layout":"auto","replace":true}
+    {"op":"view.auto","name":"Around X","from":"ref:x","depth":2,"direction":"both","layout":"auto","folder":"/Views/Payments","replace":true}
     {"op":"view.layout","view":"Payments","algorithm":"auto","relayout_all":true}
     {"op":"view.rename","view":"Payments","name":"Payments and Checkout"}
+    {"op":"view.move","view":"Payments","folder":"/Views/Programme"}
     {"op":"view.delete","view":"Old Sketch"}
 
 A view built member by member — create it, add each element, lay it out —

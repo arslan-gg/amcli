@@ -75,6 +75,7 @@ enum Op {
     ViewCreate {
         name: String,
         viewpoint: Option<String>,
+        folder: Option<String>,
         #[serde(default)]
         replace: bool,
     },
@@ -98,6 +99,7 @@ enum Op {
         #[serde(default = "default_layout")]
         layout: String,
         viewpoint: Option<String>,
+        folder: Option<String>,
         #[serde(default)]
         replace: bool,
     },
@@ -113,6 +115,8 @@ enum Op {
     ViewDelete { view: String },
     #[serde(rename = "view.rename")]
     ViewRename { view: String, name: String },
+    #[serde(rename = "view.move")]
+    ViewMove { view: String, folder: String },
 }
 
 fn default_depth() -> u32 {
@@ -296,11 +300,16 @@ fn apply_one(
                 .s("id", m.concept(c).id.clone())
                 .s("key", key.clone()))
         }
-        Op::ViewCreate { name, viewpoint, replace } => view_op(
+        Op::ViewCreate { name, viewpoint, folder, replace } => view_op(
             opts,
             m,
             "view.create",
-            ViewCmd::Create { name: name.clone(), viewpoint: viewpoint.clone(), replace: *replace },
+            ViewCmd::Create {
+                name: name.clone(),
+                viewpoint: viewpoint.clone(),
+                folder: folder.clone(),
+                replace: *replace,
+            },
         ),
         Op::ViewAdd { view, target, x, y, no_connect } => {
             let selector = deref(m, refs, target)?;
@@ -317,7 +326,7 @@ fn apply_one(
                 },
             )
         }
-        Op::ViewAuto { name, from, depth, direction, layout, viewpoint, replace } => {
+        Op::ViewAuto { name, from, depth, direction, layout, viewpoint, folder, replace } => {
             let from = deref(m, refs, from)?;
             view_op(
                 opts,
@@ -330,6 +339,7 @@ fn apply_one(
                     direction: direction.clone(),
                     layout: layout.clone(),
                     viewpoint: viewpoint.clone(),
+                    folder: folder.clone(),
                     replace: *replace,
                 },
             )
@@ -352,6 +362,12 @@ fn apply_one(
             m,
             "view.rename",
             ViewCmd::Rename { view: view.clone(), name: name.clone() },
+        ),
+        Op::ViewMove { view, folder } => view_op(
+            opts,
+            m,
+            "view.move",
+            ViewCmd::Move { view: view.clone(), folder: folder.clone() },
         ),
         Op::FolderAdd { parent, name } => {
             let p = folder_of(m, parent)?;

@@ -235,6 +235,44 @@ fn renaming_a_view_changes_one_attribute_and_nothing_else() {
 }
 
 #[test]
+fn a_view_moves_between_folders_without_changing_its_id() {
+    let mut m = open("testmodel1.archimate");
+    let v = m.view_by_id("17cdf396").unwrap();
+    let id = m.view(v).id.clone();
+    let views = m.top_folder(FolderType::Diagrams).unwrap();
+    let sub = m.add_folder(views, "Motivation").unwrap();
+
+    m.move_view_to_folder(v, sub).unwrap();
+    assert_eq!(m.folder(m.view(v).folder).path, "/Views/Motivation");
+    // The id is what every diagram reference and every git diff hangs on, so
+    // re-filing must not reissue it.
+    assert_eq!(m.view(v).id, id);
+
+    // Moving it where it already is is a no-op rather than a duplicate.
+    let before = text(&m);
+    m.move_view_to_folder(v, sub).unwrap();
+    assert_eq!(text(&m), before);
+
+    // The drawing travelled with the view, rather than being left behind.
+    assert!(text(&m).contains(&format!(r#"id="{id}""#)));
+    assert_eq!(m.views().filter(|w| w.id == id).count(), 1);
+}
+
+#[test]
+fn a_view_cannot_be_filed_outside_the_views_tree() {
+    let mut m = open("testmodel1.archimate");
+    let v = m.view_by_id("17cdf396").unwrap();
+    let before = text(&m);
+    let business = m.top_folder(FolderType::Business).unwrap();
+
+    // Archi shows nothing filed here, so the refusal is the whole point: a
+    // model that loads with a view missing is worse than an error.
+    let err = m.move_view_to_folder(v, business).unwrap_err();
+    assert!(matches!(err, EditError::NotAViewsFolder(_)), "{err}");
+    assert_eq!(text(&m), before, "a refused move changes nothing");
+}
+
+#[test]
 fn documentation_and_properties_round_trip_through_edits() {
     let mut m = open("testmodel1.archimate");
     let c =
