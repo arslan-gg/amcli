@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "amcli-cli"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "amcli-graph",
  "amcli-model",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "amcli-graph"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "amcli-model",
  "amcli-xml",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "amcli-model"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "amcli-xml",
  "getrandom 0.3.4",
@@ -60,14 +60,14 @@ dependencies = [
 
 [[package]]
 name = "amcli-render"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "amcli-view",
 ]
 
 [[package]]
 name = "amcli-validate"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "amcli-graph",
  "amcli-model",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "amcli-view"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "amcli-graph",
  "amcli-model",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "amcli-xml"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "proptest",
  "quick-xml",
@@ -919,7 +919,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "xtask"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "quick-xml",
