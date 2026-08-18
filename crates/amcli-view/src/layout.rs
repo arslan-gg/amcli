@@ -196,17 +196,41 @@ pub fn place(items: &[Item], edges: &[(usize, usize)], algo: Algorithm) -> Place
             // of real views, three to ten times as often. A drawing five times
             // wider than tall with a hundred crossings reads; a square one
             // with a thousand does not. So the fallback has to win on both
-            // counts — squarer, and not paying for it in tangles — or the
-            // layering stands. It still catches what it was made for, the
-            // shallow graph with almost no edges to tangle, where the grid is
-            // as good and much narrower.
+            // counts — squarer, and no more tangled — or the layering stands.
+            // It still catches what it was made for, the shallow graph with
+            // almost no edges to tangle, where the grid is as good and much
+            // narrower.
+            //
+            // Tangles are counted as crossings plus edges drawn through a box,
+            // which the grid can never avoid — it does not route — and the
+            // layering always does. A grid that crosses no more than the
+            // layering but runs forty edges through boxes is not the tidier
+            // drawing.
             let squared = grid_placement(items);
             let squarer = wideness(&squared.rects) < ratio;
-            let (lc, gc) = (drawn_crossings(&layered, edges), drawn_crossings(&squared, edges));
-            let no_worse = gc <= lc.max(1) * 3 / 2;
+            let (lc, gc) = (tangles(&layered, edges), tangles(&squared, edges));
+            let no_worse = gc <= lc;
             if squarer && no_worse { squared } else { layered }
         }
     }
+}
+
+/// How tangled a drawing is: crossings between its lines, plus lines drawn
+/// through a box, which is worse than a crossing and counted as two.
+fn tangles(p: &Placement, edges: &[(usize, usize)]) -> usize {
+    let mut through = 0;
+    for (ei, &(a, b)) in edges.iter().enumerate() {
+        if a == b {
+            continue;
+        }
+        let mut path = vec![p.rects[a].center()];
+        path.extend(p.routes.get(&ei).into_iter().flatten().copied());
+        path.push(p.rects[b].center());
+        if !path_is_clear(&path, &p.rects, a, b) {
+            through += 1;
+        }
+    }
+    drawn_crossings(p, edges) + 2 * through
 }
 
 /// Crossings between the straight centre-to-centre lines of a placement.
@@ -1309,31 +1333,127 @@ impl Layered {
             }
         }
 
-        for sweep in 0..6 {
-            let down = sweep % 2 == 0;
-            let seq: Vec<usize> = if down {
-                (1..units.len()).collect()
-            } else {
-                (0..units.len().saturating_sub(1)).rev().collect()
-            };
-            for ui in seq {
-                let unit = units[ui].clone();
-                let other: Vec<usize> =
-                    if down { units[ui - 1].clone() } else { units[ui + 1].clone() };
-                let other_set: HashSet<usize> = other.iter().copied().collect();
-                if unit.len() == 1 {
-                    self.place_row(unit[0], &other_set, &nb);
+        let sweep = |g: &mut Self, rounds: usize| {
+            for sweep in 0..rounds {
+                let down = sweep % 2 == 0;
+                let seq: Vec<usize> = if down {
+                    (1..units.len()).collect()
                 } else {
-                    self.place_block(&unit, &other_set, &nb);
+                    (0..units.len().saturating_sub(1)).rev().collect()
+                };
+                for ui in seq {
+                    let unit = units[ui].clone();
+                    let other: Vec<usize> =
+                        if down { units[ui - 1].clone() } else { units[ui + 1].clone() };
+                    let other_set: HashSet<usize> = other.iter().copied().collect();
+                    if unit.len() == 1 {
+                        g.place_row(unit[0], &other_set, &nb);
+                    } else {
+                        g.place_block(&unit, &other_set, &nb);
+                    }
                 }
             }
-        }
+        };
+        sweep(self, 6);
         let _ = items;
+
+        // Close the gaps that separate loosely joined groups. Each row is
+        // placed against its neighbours' medians, and a group whose members
+        // link mostly to each other is self-consistent wherever it sits — so
+        // two such groups joined by a few edges settle far apart with those
+        // edges stretched right across the drawing. Nothing in the sweep
+        // pulls a *group* toward another. This does: every gap in every row
+        // is tried closed, and stays closed if the drawing's edges get
+        // shorter in total. Closing a gap in one row moves the medians of the
+        // rows beside it, so a short sweep follows and the two alternate.
+        for _ in 0..3 {
+            self.close_gaps(&nb);
+            sweep(self, 2);
+        }
+        self.close_gaps(&nb);
 
         // Shift so the leftmost edge of the drawing sits at zero.
         let min = self.x.values().copied().min().unwrap_or(0);
         for v in self.x.values_mut() {
             *v = snap(*v - min);
+        }
+    }
+
+    /// Slide everything to the right of a vertical cut leftward, wherever that
+    /// shortens the drawing's edges overall.
+    ///
+    /// Two groups of boxes that link mostly to themselves are each
+    /// self-consistent wherever they sit, and the sweep leaves them wherever
+    /// the ordering happened to put them — often at opposite ends of the
+    /// drawing, with the few edges between them stretched right across it.
+    /// Closing a gap one row at a time cannot fix that: the row that moves
+    /// leaves the rows above and below behind, and its own edges to them get
+    /// longer than the cross-group edges get shorter. So the move here is
+    /// across every row at once — everything to the right of a vertical cut
+    /// slides left together, by as much as the tightest row allows — and only
+    /// the edges that cross the cut change length. Kept if they get shorter.
+    ///
+    /// The cuts tried are the right edge of every slot: the places a gap can
+    /// start. Rows in order, cuts left to right, strictly better only, and
+    /// repeated to a fixed point, so the result is determined.
+    fn close_gaps(&mut self, nb: &HashMap<Slot, Vec<Slot>>) {
+        let all: Vec<Slot> = self.rows.iter().flatten().copied().collect();
+        for _round in 0..8 {
+            let mut any = false;
+            let mut cuts: Vec<i32> = all.iter().map(|s| self.x[s] + self.width[s]).collect();
+            cuts.sort_unstable();
+            cuts.dedup();
+            for cut in cuts {
+                // How far can everything at or beyond the cut move left? The
+                // least clearance any row has at the cut.
+                let mut room = i32::MAX;
+                for row in &self.rows {
+                    let mut left_edge = i32::MIN;
+                    let mut right_start = i32::MAX;
+                    for s in row {
+                        let (x0, x1) = (self.x[s], self.x[s] + self.width[s]);
+                        if x0 >= cut {
+                            right_start = right_start.min(x0);
+                        } else {
+                            left_edge = left_edge.max(x1);
+                        }
+                    }
+                    if right_start != i32::MAX && left_edge != i32::MIN {
+                        room = room.min(right_start - left_edge - HGAP);
+                    }
+                }
+                if room == i32::MAX || room <= 0 {
+                    continue;
+                }
+                let moved: HashSet<Slot> =
+                    all.iter().copied().filter(|s| self.x[s] >= cut).collect();
+                if moved.is_empty() || moved.len() == all.len() {
+                    continue;
+                }
+                // Only edges crossing the cut change. Sum |dx| before and after.
+                let mut before: i64 = 0;
+                let mut after: i64 = 0;
+                for m in &moved {
+                    let mx = self.x[m] + self.width[m] / 2;
+                    for o in nb.get(m).into_iter().flatten() {
+                        if moved.contains(o) {
+                            continue;
+                        }
+                        let ox = self.x[o] + self.width[o] / 2;
+                        before += (mx - ox).abs() as i64;
+                        after += (mx - room - ox).abs() as i64;
+                    }
+                }
+                if after < before {
+                    for m in &moved {
+                        *self.x.get_mut(m).unwrap() -= room;
+                    }
+                    any = true;
+                }
+            }
+            if !any {
+                break;
+            }
         }
     }
 
@@ -1620,12 +1740,22 @@ impl Layered {
                 if lr != ur + 1 {
                     continue;
                 }
+                // Runs heading right take the upper half of the gap and runs
+                // heading left the lower half, each side staggered by edge.
+                // Then a run and its opposite never lie on one line, and the
+                // diagonal an edge makes down into the gap crosses only the
+                // runs going the other way, not the ones going its own way
+                // beside it.
+                let (ux, lx) =
+                    (rects[upper].x + rects[upper].w / 2, rects[lower].x + rects[lower].w / 2);
                 let gap_top = self.y[ur] + row_h[ur];
-                let gap_y = gap_top + VGAP / 4 + ((ei as i32 % 3) * VGAP / 6);
-                let mut pts = vec![
-                    Pt { x: rects[upper].x + rects[upper].w / 2, y: gap_y },
-                    Pt { x: rects[lower].x + rects[lower].w / 2, y: gap_y },
-                ];
+                let lane = (ei as i32 % 3) * (VGAP / 8);
+                let gap_y = if lx >= ux {
+                    gap_top + VGAP / 8 + lane
+                } else {
+                    gap_top + VGAP / 2 + VGAP / 8 + lane
+                };
+                let mut pts = vec![Pt { x: ux, y: gap_y }, Pt { x: lx, y: gap_y }];
                 simplify(&mut pts, rects[upper].center(), rects[lower].center(), rects, *a, *b);
                 if ra.y > rb.y {
                     pts.reverse();
