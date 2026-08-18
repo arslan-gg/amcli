@@ -1343,3 +1343,50 @@ fn views_are_filed_in_folders() {
 
     assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
 }
+
+/// Declaring a folder twice gives one folder, not two.
+///
+/// This is the shape every regenerate-everything script has — declare the
+/// folders, then file the views — so a `folder add` that appended a second
+/// folder of the same name turned each re-run into another duplicate, three
+/// deep before anyone opened Archi and saw them. `folder_by_path` can only
+/// return one of them, so the extras are not even reachable to fix.
+#[test]
+fn declaring_a_folder_twice_gives_one_folder() {
+    let m = Model::new("modelimporter_test.archimate");
+    let folders = || -> usize {
+        let (_, out, _) = m.run(&["folder", "list", "-q", "--fields", "path"]);
+        rows(&out).iter().filter(|r| r.first() == Some(&"/Views/Programme")).count()
+    };
+
+    let (code, out, _) = m.run(&["folder", "add", "/Views", "Programme"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("true"), "reports that it created one: {out}");
+    assert_eq!(folders(), 1);
+
+    let (code, out, _) = m.run(&["folder", "add", "/Views", "Programme"]);
+    assert_eq!(code, 0, "a repeat is not an error");
+    assert!(out.contains("false"), "reports that it created nothing: {out}");
+    assert_eq!(folders(), 1, "still one folder, not two");
+
+    // A view filed there survives the repeat, because the folder is the same one.
+    assert_eq!(m.run(&["view", "create", "Filed", "-f", "/Views/Programme"]).0, 0);
+    assert_eq!(m.run(&["folder", "add", "/Views", "Programme"]).0, 0);
+    let (_, out, _) = m.run(&["view", "list", "-q", "--fields", "name,folder"]);
+    assert!(out.contains("Filed\t/Views/Programme"), "{out}");
+
+    // An empty folder can be removed; one holding something cannot.
+    let (code, _, err) = m.run(&["folder", "delete", "/Views/Programme"]);
+    assert_eq!(code, 5, "refuses while the view is in it: {err}");
+    assert!(err.contains("still holds 1"), "{err}");
+
+    assert_eq!(m.run(&["view", "delete", "Filed"]).0, 0);
+    assert_eq!(m.run(&["folder", "delete", "/Views/Programme"]).0, 0);
+    assert_eq!(folders(), 0);
+
+    // The nine Archi expects are not deletable.
+    let (code, _, err) = m.run(&["folder", "delete", "/Views"]);
+    assert_eq!(code, 5, "{err}");
+
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}

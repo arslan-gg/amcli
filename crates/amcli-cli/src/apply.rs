@@ -68,6 +68,8 @@ enum Op {
     PropSet { target: String, key: String, value: String },
     #[serde(rename = "folder.add")]
     FolderAdd { parent: String, name: String },
+    #[serde(rename = "folder.delete")]
+    FolderDelete { path: String },
 
     // View operations. Each mirrors a `view` subcommand and takes the same
     // names for the same things; a concept may be given as `ref:name`.
@@ -371,10 +373,22 @@ fn apply_one(
         ),
         Op::FolderAdd { parent, name } => {
             let p = folder_of(m, parent)?;
+            let before = m.folders().count();
             let f = m
                 .add_folder(p, name)
                 .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
-            Ok(Row::new().s("op", "folder.add").s("path", m.folder(f).path.clone()))
+            let created = m.folders().count() > before;
+            Ok(Row::new()
+                .s("op", "folder.add")
+                .s("path", m.folder(f).path.clone())
+                .b("created", created))
+        }
+        Op::FolderDelete { path } => {
+            let f = folder_of(m, path)?;
+            let full = m.folder(f).path.clone();
+            m.delete_folder(f)
+                .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+            Ok(Row::new().s("op", "folder.delete").s("path", full))
         }
     }
 }

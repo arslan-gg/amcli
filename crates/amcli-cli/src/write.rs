@@ -73,12 +73,14 @@ pub enum RelationCmd {
 pub enum FolderCmd {
     /// List folders with their paths.
     List,
-    /// Create a folder under an existing one.
+    /// Create a folder under an existing one. A repeat is the folder already there.
     Add {
         /// Parent folder path, e.g. /Application.
         parent: String,
         name: String,
     },
+    /// Delete an empty folder. Refuses if it holds anything.
+    Delete { path: String },
 }
 
 #[derive(Subcommand, Clone)]
@@ -220,7 +222,18 @@ fn access_value(s: &str) -> Result<i64, CliError> {
     })
 }
 
+/// A folder by path, or by `id:` when a path is not enough.
+///
+/// Paths are normally unique and are what anyone types. The `id:` form exists
+/// for the case that broke this rule — two folders that ended up with the same
+/// path — where addressing by path can only ever reach the first of them.
 fn folder_id(m: &Model, path: &str) -> Result<amcli_model::FolderId, CliError> {
+    if let Some(id) = path.strip_prefix("id:") {
+        return m.folder_id_by_id(id).ok_or_else(|| {
+            CliError::new(Code::NotFound, "not_found", format!("no folder with id `{id}`"))
+                .hint("run `amcli folder list` for ids")
+        });
+    }
     m.folder_by_path(path).ok_or_else(|| {
         let mut paths: Vec<String> = m.folders().map(|f| f.path.clone()).collect();
         paths.sort();
@@ -395,12 +408,23 @@ fn folder(opts: &Opts, m: &mut Model, cmd: &FolderCmd) -> Result<Output, CliErro
         }
         FolderCmd::Add { parent, name } => {
             let p = folder_id(m, parent)?;
+            let before = m.folders().count();
             let f = m.add_folder(p, name).map_err(invalid)?;
+            let created = m.folders().count() > before;
             written(
                 m,
                 opts,
-                Row::new().s("path", m.folder(f).path.clone()).s("id", m.folder(f).id.clone()),
+                Row::new()
+                    .s("path", m.folder(f).path.clone())
+                    .s("id", m.folder(f).id.clone())
+                    .b("created", created),
             )
+        }
+        FolderCmd::Delete { path } => {
+            let f = folder_id(m, path)?;
+            let full = m.folder(f).path.clone();
+            m.delete_folder(f).map_err(invalid)?;
+            written(m, opts, Row::new().s("path", full))
         }
     }
 }

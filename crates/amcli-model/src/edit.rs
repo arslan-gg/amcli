@@ -25,6 +25,10 @@ pub enum EditError {
         "`{0}` is not under the views folder; a diagram filed elsewhere does not load in Archi"
     )]
     NotAViewsFolder(String),
+    #[error("`{0}` still holds {1} item(s); only an empty folder can be deleted")]
+    FolderNotEmpty(String, usize),
+    #[error("`{0}` is one of the folders Archi expects at the top; it cannot be deleted")]
+    TopFolder(String),
     #[error(
         "ArchiMate does not permit {rel} from {source_type} to {target_type}{}",
         permitted_hint(.permitted)
@@ -234,7 +238,20 @@ impl Model {
         })
     }
 
+    /// Create a folder under `parent`, or return the one already there.
+    ///
+    /// Two folders with the same path make `folder_by_path` a coin toss and
+    /// show up in Archi as duplicates, so a repeat is the existing folder
+    /// rather than a second one — which is also what makes a script that
+    /// declares the folders it needs safe to run twice.
     pub fn add_folder(&mut self, parent: FolderId, name: &str) -> Result<FolderId, EditError> {
+        if let Some(existing) = self
+            .folders_with_ids()
+            .find(|(_, f)| f.parent == Some(parent) && f.name == name)
+            .map(|(i, _)| i)
+        {
+            return Ok(existing);
+        }
         let parent_path = self.folder(parent).path.clone();
         let id = self.fresh_id(&["folder", &parent_path, name]);
         let parent_node = self.folder(parent).node;
@@ -335,6 +352,27 @@ impl Model {
     }
 
     // ---- deleting -------------------------------------------------------
+
+    /// Remove an empty folder.
+    ///
+    /// Empty is the whole contract: deleting a folder that holds concepts or
+    /// views would be a cascading delete wearing a filing operation's clothes,
+    /// and there is already a command for deleting things. Refusing keeps this
+    /// usable for the one job it is for — tidying folders that should not have
+    /// been made.
+    pub fn delete_folder(&mut self, folder: FolderId) -> Result<(), EditError> {
+        let node = self.folder(folder).node;
+        let held = self.doc.children(node).count();
+        if held > 0 {
+            return Err(EditError::FolderNotEmpty(self.folder(folder).path.clone(), held));
+        }
+        if self.folder(folder).parent.is_none() {
+            return Err(EditError::TopFolder(self.folder(folder).path.clone()));
+        }
+        self.doc.remove_subtree(node);
+        self.reindex();
+        Ok(())
+    }
 
     /// Everything a delete would remove, computed without changing anything.
     ///

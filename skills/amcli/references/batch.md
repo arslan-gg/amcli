@@ -20,6 +20,7 @@ up, and no rollback step that could itself fail.
     {"op":"element.delete","target":"id:abc"}
     {"op":"prop.set","target":"ref:x","key":"owner","value":"team-a"}
     {"op":"folder.add","parent":"/Application","name":"Payments"}
+    {"op":"folder.delete","path":"/Application/Payments"}
 
 Views too — each mirrors the `view` subcommand of the same name, with the
 same fields, and takes a `ref:` wherever it takes a concept:
