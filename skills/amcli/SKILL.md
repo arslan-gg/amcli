@@ -67,7 +67,7 @@ Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
 
-This skill is written for **amcli 0.4.0**. The installer always gives you the
+This skill is written for **amcli 0.5.0**. The installer always gives you the
 newest *release*, and this file ships from the repository's main branch, so
 for a short while after a change lands the binary can be one release behind
 what is described here. If a command or flag below is refused, the binary
@@ -242,6 +242,15 @@ the graph — folding a rank too wide to read onto several lines rather than
 running it off the page — and only lays out a grid when that would be both
 squarer and no more tangled, which in practice means an edgeless set. The row
 reports which algorithm actually ran.
+
+Layout places by the graph alone: it does not consult the ArchiMate layer,
+and it does not insist that arrows point down. Several layerings are tried
+and the least tangled drawing kept — fewest crossings and lines through boxes
+— so a hub's fan sits half above it and half below, a value stream lies along
+one row under the lifecycle that composes it, and two capabilities serving
+the same crowd take opposite sides of it. Arrows point down only when that
+costs nothing. Do not "fix" an upward arrow by moving boxes: the layout chose
+that to keep a line off a box.
 
 Layout sizes each box to its label and draws every edge as one straight line
 — no bendpoints, ever — placing the boxes so the lines stay off them. `view

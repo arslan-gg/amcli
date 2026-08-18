@@ -1,55 +1,81 @@
 //! Placing concepts on a new view.
 //!
-//! Rows come from the dependency graph and from nothing else. The ArchiMate
-//! layer is deliberately not consulted: most relationships in a real model run
-//! *within* a layer, so ranking by layer puts them all in one row and turns each
-//! into a horizontal line slicing through whatever sits between its ends.
+//! Rows come from the graph and from nothing else. The ArchiMate layer is
+//! deliberately not consulted: most relationships in a real model run
+//! *within* a layer, so ranking by layer puts them all in one row and turns
+//! each into a horizontal line slicing through whatever sits between its
+//! ends. Nor, in the end, does the direction of the arrows decide: what the
+//! drawing is for is being read, and a line through a box or across another
+//! line is what stops that. So several layerings are tried and the least
+//! tangled drawing is kept, and the arrows point down only when that costs
+//! nothing.
 //!
-//! This is Sugiyama's method as Gansner et al. describe it for `dot`, and the
-//! stages are the ones from that paper. Six things do the work.
+//! This is Sugiyama's method as Gansner et al. describe it for `dot`, with
+//! the layering step opened up. Seven things do the work.
 //!
-//! **Ranking by network simplex.** Longest-path layering is a valid start but
-//! shoves every node as high as it can go and anchors every sink wherever the
-//! longest chain into it ends, so a hub reached by one long chain and thirty
-//! single hops sits far below the thirty. The simplex moves whole subtrees to
-//! minimise total edge length, so most edges span exactly one row.
+//! **Layering, several ways.** The first candidate follows the arrows:
+//! longest path shoves every node as high as it can go and anchors every
+//! sink wherever the longest chain into it ends, so network simplex then
+//! moves whole subtrees to minimise total edge length and most edges span
+//! one row. The others ignore direction and grow rings out from a hub — the
+//! three of highest degree, one at a time — putting each ring's groups on
+//! whichever side of the hub most of their parents are, or the narrower
+//! side when that is a tie. That is what puts a hub's fan half above it and
+//! half below, a chain hung from a hub along one row beneath it, and two
+//! hubs sharing a crowd on opposite sides of it — none of which a layering
+//! that must point every arrow down can do. Each candidate is drawn all the
+//! way and the drawings compared: crossings plus lines through boxes, then
+//! long edges, then rows, then area, then the directed one.
+//!
+//! **Edges along a row.** Two boxes in one row joined by an edge are drawn
+//! side by side and the edge is a short line between them. Such edges form
+//! paths — the layering refuses a third at any box, and a cycle — and the
+//! ordering moves a path as one group, in order, so nothing is ever put
+//! between two of its boxes.
 //!
 //! **Folding a rank that will not fit.** A hundred motivation elements two
-//! ranks deep give layering nothing to stack, and the rank runs off the side of
-//! any screen. Such a rank is folded onto several lines, which keeps the
-//! ranking that a fallback to a grid would throw away.
+//! ranks deep give layering nothing to stack, and the rank runs off the side
+//! of any screen. Such a rank is folded onto several lines. The lines nest:
+//! the outer boxes on the line nearest the rows the rank's edges lead to,
+//! the inner boxes on the far lines, so an inner box's edge crosses the
+//! near line where the box would have stood — between the outer boxes, and
+//! never through one — and the corridors of all the inner boxes lie in one
+//! block that the outer boxes flank. Nothing narrower than a screen is
+//! folded at all.
 //!
-//! **Ordering by median, transpose and sifting.** Within each row, slots are put
-//! at the median of what they link to; adjacent pairs are then swapped wherever
-//! that uncrosses something; and once that stalls, each slot is tried at every
-//! position in its row. The three together get within a few per cent of what a
-//! far more expensive search finds on real views.
+//! **Ordering by median, transpose and sifting.** Within each row, groups
+//! are put at the median of what they link to — one with nothing to link
+//! to holds its place — adjacent pairs are then swapped wherever that
+//! uncrosses something; and once that stalls, each group is tried at every
+//! position in its row. The three together get within a few per cent of what
+//! a far more expensive search finds on real views.
 //!
 //! **Placing by Brandes and Köpf.** Slots are aligned into blocks with a
 //! median neighbour in the row above or below — a corridor with its corridor
 //! neighbour first, and the box at the end of a long edge with the corridor,
-//! so the whole edge is one column — and the blocks packed as tight as the
-//! boxes allow, four ways; the layout with the fewest slanted long edges is
-//! kept whole. Aligned slots share an x exactly, and a long edge whose ends
-//! both sit on its column cannot pass through a box.
+//! so the whole edge is one column; and of a fan that wants the same
+//! neighbour, its middle slot first, so a hub stands over the middle of its
+//! fan and not at its end — and the blocks packed as tight as the boxes
+//! allow, four ways; the layout with the fewest slanted long edges is kept
+//! whole. Aligned slots share an x exactly, and a long edge whose ends both
+//! sit on its column cannot pass through a box.
 //!
 //! **Straight lines, and lanes to keep them clear.** Every edge is one
 //! straight line from centre to centre; there are no bendpoints. An edge
 //! crossing several rows reserves a corridor in each — sequenced where the
 //! line will run and as wide as its slant across the row — and the boxes
-//! pack around it. An edge between neighbouring rows is kept off its own
-//! row's boxes by the row gap, which is chosen so that every such line has
-//! dropped clear of the row band before it reaches a neighbour: one number
-//! per drawing, computed rather than tuned. What is left is a slanted long
-//! edge across a crowded rank whose corridor the ordering could not seat
-//! where the line runs without more crossings than it saves; those are drawn
-//! through, and counted.
+//! pack around it. An edge is kept off the boxes of the rows it ends in by
+//! the row gaps, which are chosen so that every line has dropped clear of
+//! the row band before it reaches a neighbour: computed rather than tuned,
+//! and per gap. What is left is a slanted long edge across a crowded rank
+//! whose corridor the ordering could not seat where the line runs without
+//! more crossings than it saves; those are drawn through, and counted.
 //!
-//! What this cannot do is make a dense graph sparse. A rank of thirty
-//! requirements over thirty drivers with seventy-five edges between them has a
-//! crossing number in the low hundreds however it is ordered, and most of the
-//! crossings that remain on a real model touch a handful of hubs with twenty
-//! or more edges each. That is the model, not the drawing.
+//! What this cannot do is make a non-planar graph planar. Three hubs
+//! sharing three boxes cross at least once however they are drawn, and in
+//! rows they cross more; a rank of thirty requirements over thirty drivers
+//! with seventy-five edges between them has a crossing number in the low
+//! hundreds however it is ordered. That is the model, not the drawing.
 //!
 //! Everything is deterministic by construction: no randomness, no seeds, no
 //! iteration over a hash map, ties broken by `(name, id)`, all coordinates
@@ -81,7 +107,7 @@ pub enum Algorithm {
     /// Layered, unless that degenerates — see [`MAX_WIDTH_RATIO`].
     #[default]
     Auto,
-    /// Rows by dependency, straight lines wherever they fit.
+    /// Rows from the graph, every edge one straight line.
     Sugiyama,
     /// Sorted into a square grid. Never pretty, never fails.
     Grid,
