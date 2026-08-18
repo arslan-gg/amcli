@@ -106,7 +106,7 @@ http://127.0.0.1:52341/
 **For an agent** — the skill installs and updates the binary itself:
 
 ```bash
-npx skills add arslan-gg/amcli -y
+npx skills add arslan-gg/amcli
 ```
 
 **Just the binary** — checked against the release's SHA256SUMS before it is
