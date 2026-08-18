@@ -59,6 +59,16 @@ jobs:
           $out = & .\skills\amcli\scripts\install.ps1 -DryRun -InstallDir C:\amcli-test
           if ($out -ne 'C:\amcli-test\amcli.exe') { throw "stdout was: [$out]" }
 
+      # -Version is interpolated into the download URL, so anything that is
+      # not a tag has to be refused before it gets there.
+      - name: the PowerShell installer refuses a version that is not a tag
+        shell: pwsh
+        run: |
+          foreach ($v in @('v0.6.0/../../evil', 'main', '../../etc')) {
+            & .\skills\amcli\scripts\install.ps1 -DryRun -Version $v -InstallDir C:\amcli-test 2>$null
+            if ($LASTEXITCODE -eq 0) { throw "accepted -Version $v" }
+          }
+
   installer:
     runs-on: ubuntu-24.04
     steps:
@@ -75,6 +85,18 @@ jobs:
         run: |
           out=$(AMCLI_DRY_RUN=1 AMCLI_INSTALL_DIR=/tmp/bin sh skills/amcli/scripts/install.sh 2>/dev/null)
           test "$out" = "/tmp/bin/amcli" || { echo "stdout was: $out" >&2; exit 1; }
+
+      # AMCLI_VERSION is interpolated into the download URL and into
+      # `cargo install --tag`, so anything that is not a tag has to be refused
+      # before it gets to either. A dry run is enough: the check comes first.
+      - name: refuses a version that is not a tag
+        run: |
+          for v in 'v0.6.0/../../evil' 'main' '../../etc' 'v1;id'; do
+            if AMCLI_DRY_RUN=1 AMCLI_VERSION="$v" sh skills/amcli/scripts/install.sh >/dev/null 2>&1; then
+              echo "accepted AMCLI_VERSION=$v" >&2
+              exit 1
+            fi
+          done
 
       # `npx skills add` loses the executable bit whenever it takes its blob
       # fast path, so the installer must work without it. The first real

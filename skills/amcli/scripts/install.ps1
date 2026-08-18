@@ -14,6 +14,11 @@
 #   -Version v0.1.0   install that tag instead of the newest
 #   -InstallDir PATH  default %LOCALAPPDATA%\Programs\amcli
 #   -DryRun           report what would happen, download nothing
+#
+# It trusts what install.sh trusts, and the header there says it in full: one
+# hardcoded host, a tag that is checked to be a tag before it reaches a URL,
+# a SHA256 check against the release's SHA256SUMS that nothing can skip, and
+# only the binary taken out of the archive by name.
 
 [CmdletBinding()]
 param(
@@ -25,11 +30,26 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # the progress bar corrupts a non-interactive host
 
+# Windows PowerShell 5.1, which is what ships with Windows, still defaults to
+# TLS 1.0 on many builds. github.com refuses that, so without this line the
+# download fails on exactly the hosts this script exists for. PowerShell 7
+# negotiates on its own and the assignment is harmless there.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {}
+
 $Repo = 'arslan-gg/amcli'
 $Base = "https://github.com/$Repo"
 
 function Say([string]$m) { [Console]::Error.WriteLine($m) }
 function Die([string]$m) { [Console]::Error.WriteLine("amcli install: $m"); exit 1 }
+
+# -Version is interpolated into a download URL, so it is checked to be a tag
+# rather than passed along: a slash in it would aim the download elsewhere.
+if ($Version -and $Version -notmatch '^v[0-9][A-Za-z0-9._-]*$') {
+    Die "-Version must be a release tag such as v0.6.0"
+}
 
 # Windows on ARM runs x64 binaries under emulation, and there is no arm64
 # build yet, so x64 is the right answer for both.
@@ -157,8 +177,11 @@ try {
 
     # tar.exe has shipped in Windows since 10 1803, so the release uses one
     # archive format for every platform.
-    tar -xzf (Join-Path $tmp $asset) -C $tmp
-    if ($LASTEXITCODE -ne 0) { Die "could not unpack $asset" }
+    #
+    # Verified before it is opened, and only the member named here comes out
+    # of it, so nothing else the archive carries is ever written to disk.
+    tar -xzf (Join-Path $tmp $asset) -C $tmp $bin
+    if ($LASTEXITCODE -ne 0) { Die "could not unpack $bin from $asset" }
     if (-not (Test-Path (Join-Path $tmp $bin))) { Die "$asset does not contain $bin" }
 
     Move-Item -Force (Join-Path $tmp $bin) (Join-Path $InstallDir $bin)

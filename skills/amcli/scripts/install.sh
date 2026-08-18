@@ -19,10 +19,25 @@
 # the network is down it keeps whatever is installed rather than failing. So
 # "check amcli is there and up to date" is this one line, every time.
 #
-#   AMCLI_VERSION=v0.1.0            install that tag instead of the newest
-#   AMCLI_INSTALL_DIR=/path/bin     default ~/.local/bin
-#   AMCLI_DRY_RUN=1                 report what would happen, download nothing
-#   AMCLI_INSECURE_SKIP_CHECKSUM=1  last resort when no sha256 tool exists
+#   AMCLI_VERSION=v0.1.0         install that tag instead of the newest
+#   AMCLI_INSTALL_DIR=/path/bin  default ~/.local/bin
+#   AMCLI_DRY_RUN=1              report what would happen, download nothing
+#
+# What it trusts, this being a script that downloads a binary and runs it:
+#
+#   - One host, written into the script: https://github.com/arslan-gg/amcli.
+#     No variable can point it elsewhere. AMCLI_VERSION selects a tag and is
+#     checked to be one, so it cannot climb out of the URL path.
+#   - HTTPS for every request, redirects included.
+#   - The archive is checked against the release's SHA256SUMS before it is
+#     opened, and only the binary is taken out of it, by name. There is no
+#     flag to skip that check and no path that reaches an unverified binary.
+#   - A source build is of the same release tag, never of the branch.
+#
+# What none of that protects against is the release itself: whoever can
+# publish a release to that repository publishes its SHA256SUMS in the same
+# breath. The guarantee is "exactly the bytes that release published", which
+# is what `cargo install` and `npm i` give too, and is not a stronger claim.
 
 set -eu
 
@@ -93,13 +108,29 @@ detect_target() {
 
 # ---------------------------------------------------------------- transport
 
+# GNU wget follows a redirect from https down to plain http unless --https-only
+# says otherwise. Busybox wget, which is what Alpine ships and therefore what a
+# lot of agent containers have, does not know that option and exits on it, so
+# ask once rather than assume either way. Only when there is no curl: curl says
+# the same thing with --proto '=https' and is tried first.
+HTTPS_ONLY=
+if ! have curl && have wget && wget --help 2>&1 | grep -q -- '--https-only'; then
+    HTTPS_ONLY=1
+fi
+
 # Without -f a 404 page is written into the tarball and tar then reports
 # "not in gzip format", which is the single most common naive-installer bug.
+# curl's --proto '=https' covers redirects as well as the first request, which
+# is the whole reason for spelling it out.
 fetch() {
     if have curl; then
         curl -fsSL --proto '=https' --tlsv1.2 -o "$2" "$1"
     elif have wget; then
-        wget -q -O "$2" "$1"
+        if [ -n "$HTTPS_ONLY" ]; then
+            wget -q --https-only -O "$2" "$1"
+        else
+            wget -q -O "$2" "$1"
+        fi
     else
         return 127
     fi
@@ -111,7 +142,7 @@ fetch() {
 resolve_tag() {
     url=
     if have curl; then
-        url=$(curl -sSL -o /dev/null -w '%{url_effective}' "$BASE/releases/latest" 2>/dev/null || true)
+        url=$(curl -sSL --proto '=https' -o /dev/null -w '%{url_effective}' "$BASE/releases/latest" 2>/dev/null || true)
     elif have wget; then
         url=$(wget --max-redirect=0 -S -O /dev/null "$BASE/releases/latest" 2>&1 |
             sed -n 's/^[[:space:]]*[Ll]ocation:[[:space:]]*//p' | tr -d '\r' | tail -1)
@@ -122,9 +153,11 @@ resolve_tag() {
     # With no releases at all GitHub redirects to the list page, so the last
     # segment is "releases" rather than a tag. That is the day-one state of a
     # fresh repository and must route to the cargo fallback, not to a 404.
+    # Clear TAG on the way out: a caller that ignores the status must not end
+    # up building or downloading something named after a redirect.
     case $TAG in
     v[0-9]*) return 0 ;;
-    *) return 1 ;;
+    *) TAG=; return 1 ;;
     esac
 }
 
@@ -150,15 +183,12 @@ verify() {
     name=$3
     want=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1; exit }' "$sums")
     [ -n "$want" ] || die "$name is not listed in SHA256SUMS"
-    got=$(sha256_of "$file") || {
-        if [ "${AMCLI_INSECURE_SKIP_CHECKSUM:-0}" = 1 ]; then
-            say "warning: no sha256 tool found, skipping verification as asked"
-            return 0
-        fi
-        die "no sha256sum, shasum or openssl found, so the download cannot be
-verified. Install one of them, or re-run with AMCLI_INSECURE_SKIP_CHECKSUM=1
-if you accept an unverified binary."
-    }
+    got=$(sha256_of "$file") || die "no sha256sum, shasum or openssl found, so
+the download cannot be verified. Install any one of them and re-run. There is
+deliberately no flag that installs an unverified binary."
+    # sha256_of ends in a pipe, so a tool that fails still exits 0 through cut
+    # with nothing to show for it. An empty hash is a failure, not a mismatch.
+    [ -n "$got" ] || die "could not compute the sha256 of $name"
     [ "$got" = "$want" ] || die "checksum mismatch for $name
   expected $want
   got      $got"
@@ -168,19 +198,29 @@ if you accept an unverified binary."
 
 # Reached when there is no prebuilt binary for this platform, when no release
 # exists yet, or when any download 404s.
+#
+# It builds the tag, not the branch. A source install should be the same
+# version a binary install would have been, and the default branch is a moving
+# target that nobody reviewed as a release. TAG is empty only on a repository
+# with no releases at all, which is the one case with nothing to pin to.
 cargo_fallback() {
     say "$1"
     have cargo || die "no prebuilt binary for this platform and cargo is not
 installed. Install Rust from https://rustup.rs and re-run this script, or run:
   cargo install --git $BASE --locked amcli-cli"
 
-    say "building from source with cargo (a few minutes)..."
     mkdir -p "$DIR"
     TMP=$(mktemp -d "$DIR/.amcli-install.XXXXXX")
-    if ! cargo install --git "$BASE" --locked --root "$TMP" amcli-cli >&2; then
-        die "cargo could not build amcli. amcli needs Rust 1.90 or newer
-(edition 2024); if yours is older, run \`rustup update\` and try again."
+    built=
+    if [ -n "$TAG" ]; then
+        say "building amcli $TAG from source with cargo (a few minutes)..."
+        cargo install --git "$BASE" --tag "$TAG" --locked --root "$TMP" amcli-cli >&2 && built=1
+    else
+        say "building from source with cargo (a few minutes)..."
+        cargo install --git "$BASE" --locked --root "$TMP" amcli-cli >&2 && built=1
     fi
+    [ -n "$built" ] || die "cargo could not build amcli. amcli needs Rust 1.90
+or newer (edition 2024); if yours is older, run \`rustup update\` and try again."
     install_from "$TMP/bin/$BIN"
 }
 
@@ -216,9 +256,23 @@ install_from() {
 
 # ---------------------------------------------------------------- main
 
+# AMCLI_VERSION ends up in a download URL and in `cargo install --tag`, so it
+# is checked here rather than passed along: a slash in it would aim the
+# download at some other path on the host.
+if [ -n "${AMCLI_VERSION:-}" ]; then
+    case $AMCLI_VERSION in
+    *[!A-Za-z0-9._-]*) die "AMCLI_VERSION must be a release tag such as v0.6.0" ;;
+    v[0-9]*) TAG=$AMCLI_VERSION ;;
+    *) die "AMCLI_VERSION must be a release tag such as v0.6.0" ;;
+    esac
+fi
+
 rc=0
 detect_target || rc=$?
 if [ "$rc" != 0 ]; then
+    # Resolve the tag first so the source build is of a release rather than of
+    # whatever the branch holds today.
+    if [ -z "$TAG" ]; then resolve_tag || :; fi
     cargo_fallback "no prebuilt binary for $(uname -s)/$(uname -m)."
     exit 0
 fi
@@ -230,9 +284,7 @@ installed_tag() {
     printf 'v%s\n' "$v"
 }
 
-if [ -n "${AMCLI_VERSION:-}" ]; then
-    TAG=$AMCLI_VERSION
-elif ! resolve_tag; then
+if [ -z "$TAG" ] && ! resolve_tag; then
     # No release, or no network. If a binary is installed, that is the one to
     # use: a session that starts offline should not lose a working amcli.
     if have_installed=$(installed_tag); then
@@ -285,7 +337,11 @@ if ! fetch "$BASE/releases/download/$TAG/SHA256SUMS" "$TMP/SHA256SUMS"; then
 fi
 
 verify "$TMP/$ASSET" "$TMP/SHA256SUMS" "$ASSET"
-tar -xzf "$TMP/$ASSET" -C "$TMP" || die "could not unpack $ASSET"
+
+# Verified before it is opened, and only the member named here comes out of
+# it, so nothing else the archive carries is written to disk: not the LICENSE
+# and NOTICE it is meant to hold, and not a path trying to climb out of $TMP.
+tar -xzf "$TMP/$ASSET" -C "$TMP" "$BIN" || die "could not unpack $BIN from $ASSET"
 [ -f "$TMP/$BIN" ] || die "$ASSET does not contain $BIN"
 
 install_from "$TMP/$BIN"

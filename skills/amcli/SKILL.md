@@ -54,9 +54,10 @@ install succeeded — that is the single most likely way this goes wrong.
 
 Running it every time is cheap and safe: it always asks GitHub for the newest
 release (one HTTP redirect); if that is what is installed it downloads
-nothing; if it is newer it fetches it, verified against the release's
-SHA256SUMS; and only when there is no network at all does it keep whatever is
-installed, and it says so on stderr.
+nothing; if it is newer it fetches it, checked against the release's SHA256SUMS
+before it is unpacked and with no flag that skips the check; and only when
+there is no network at all does it keep whatever is installed, and it says so
+on stderr.
 
 **Native Windows PowerShell**, where there is no `sh`, use the PowerShell one
 instead. It follows the same contract:

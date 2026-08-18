@@ -95,8 +95,9 @@ $ amcli view render "Payments" -o payments.svg
 npx skills add arslan-gg/amcli -y
 ```
 
-**Just the binary** — verified against the release's SHA256SUMS, into
-`~/.local/bin`, no `sudo`, no shell config edited:
+**Just the binary** — checked against the release's SHA256SUMS before it is
+unpacked, with no flag that skips that, into `~/.local/bin`, no `sudo`, no
+shell config edited:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/arslan-gg/amcli/main/skills/amcli/scripts/install.sh | sh
@@ -112,6 +113,9 @@ binary — the installers fall back to it on their own):
 ```bash
 cargo install --git https://github.com/arslan-gg/amcli --locked amcli-cli
 ```
+
+Add `--tag vX.Y.Z` to build a release rather than the branch, which is what
+the installers do when they take this route themselves.
 
 Prebuilt for macOS (Apple silicon, Intel), Linux (x86_64, aarch64, static
 musl) and Windows x64. `amcli skill install` writes the skill from the binary
