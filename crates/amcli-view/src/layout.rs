@@ -291,19 +291,10 @@ fn row_width(row: &[Slot], width: &HashMap<Slot, i32>) -> i32 {
 ///
 /// Height is counted exactly as [`Layered::assign_y`] will count it, so the
 /// ratio the fold is judged against is the one the drawing actually gets.
-fn extent(
-    rows: &[Vec<Slot>],
-    width: &HashMap<Slot, i32>,
-    height: &HashMap<Slot, i32>,
-) -> (i32, i32) {
+fn extent(rows: &[Vec<Slot>], width: &HashMap<Slot, i32>, pitch: i32) -> (i32, i32) {
     let w = rows.iter().map(|r| row_width(r, width)).max().unwrap_or(0);
-    let mut h = 0;
-    for (i, row) in rows.iter().enumerate() {
-        h += row.iter().map(|s| height[s]).max().unwrap_or(55).max(55);
-        if i + 1 < rows.len() {
-            h += VGAP;
-        }
-    }
+    let n = rows.len() as i32;
+    let h = if n == 0 { 0 } else { n * pitch + (n - 1) * VGAP };
     (w, h)
 }
 
@@ -721,10 +712,159 @@ fn network_simplex(n: usize, edges: &[(usize, usize)], init: Vec<usize>) -> Vec<
     rank.iter().map(|&r| (r - min).max(0) as usize).collect()
 }
 
+/// Lay out each connected component on its own, then pack the components.
+///
+/// Laid out together, components interfere: they share ranks, so a fold cuts
+/// across them and ten unconnected pairs come out as two folded rows with
+/// every pair's edge slanting across the fold; and the placement sweeps,
+/// which pull a node toward its neighbours, have nothing to say about where
+/// one component sits relative to another, so one drifts off to the right
+/// during the sweeps and — with no edge crossing the gap for the compaction
+/// to shorten — is never pulled back, leaving two thousand pixels of nothing.
+///
+/// Apart, each component is a drawing of its own — a pair is two boxes one
+/// above the other — and the packing decides where they go: largest first,
+/// left to right, a shelf at a time, wrapping when a shelf would run past
+/// the width bound. Nothing else can put daylight between them.
 fn sugiyama(items: &[Item], edges: &[(usize, usize)]) -> Placement {
+    let mut comps = components(items.len(), edges);
+    let pitch = items.iter().map(|i| i.h).max().unwrap_or(55).max(55);
+    if comps.len() <= 1 {
+        return sugiyama_connected(items, edges, pitch);
+    }
+    // Largest first, then by the name and id of the first member — content,
+    // not index, so reversing the input does not reorder the packing.
+    let first_key = |c: &Vec<usize>| {
+        c.iter().map(|i| key(items, *i)).min().map(|(n, id)| (n.to_string(), id.to_string()))
+    };
+    comps.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| first_key(a).cmp(&first_key(b))));
+
+    // Each component laid out in its own coordinates, with a mapping back to
+    // the caller's indices for both items and edges.
+    let mut drawn: Vec<(Vec<usize>, Placement, Vec<usize>)> = Vec::with_capacity(comps.len());
+    for members in &comps {
+        let local: HashMap<usize, usize> =
+            members.iter().enumerate().map(|(li, gi)| (*gi, li)).collect();
+        let sub_items: Vec<Item> = members.iter().map(|gi| items[*gi].clone()).collect();
+        let mut sub_edges: Vec<(usize, usize)> = Vec::new();
+        let mut edge_map: Vec<usize> = Vec::new();
+        for (ei, (a, b)) in edges.iter().enumerate() {
+            if let (Some(&la), Some(&lb)) = (local.get(a), local.get(b)) {
+                sub_edges.push((la, lb));
+                edge_map.push(ei);
+            }
+        }
+        let p = sugiyama_connected(&sub_items, &sub_edges, pitch);
+        drawn.push((members.clone(), p, edge_map));
+    }
+
+    // Pack: shelves left to right, wrapping at the width bound. The bound is
+    // taken from the total area, the same way the fold judges a row: a
+    // drawing of area A drawn r times wider than tall is sqrt(A·r) across.
+    // A component's extent takes in its routes as well as its boxes: a
+    // corridor can run just outside the outermost box, and packing the next
+    // component into that strip puts it under someone else's edge.
+    let extent = |p: &Placement| -> Rect {
+        let mut b = p.rects.iter().copied().reduce(|a, b| a.union(b)).unwrap_or_default();
+        for q in p.routes.values().flatten() {
+            b = b.union(Rect { x: q.x - DUMMY_W / 2, y: q.y, w: DUMMY_W, h: 1 });
+        }
+        b
+    };
+    let bbox = |p: &Placement| -> (i32, i32) {
+        let b = extent(p);
+        (b.w, b.h)
+    };
+    // The shelf width is what a square-ish packing of the whole set would
+    // come to, from its area — the same sqrt(A·r) the fold uses — but never
+    // less than the widest component, and never so tight that a shelf holds
+    // one component when two would still be inside the bound. Wrapping is
+    // decided against that width.
+    let area: f64 = drawn
+        .iter()
+        .map(|(_, p, _)| {
+            let (w, h) = bbox(p);
+            (w + HGAP) as f64 * (h + VGAP) as f64
+        })
+        .sum();
+    let widest = drawn.iter().map(|(_, p, _)| bbox(p).0).max().unwrap_or(0);
+    let tallest = drawn.iter().map(|(_, p, _)| bbox(p).1).max().unwrap_or(0);
+    let by_area = (area * MAX_WIDTH_RATIO).sqrt() as i32;
+    // A single shelf as wide as the bound allows for the tallest component.
+    let by_ratio = (tallest as f64 * MAX_WIDTH_RATIO) as i32;
+    let shelf_w = by_area.max(by_ratio).max(widest);
+
+    let mut rects = vec![Rect::default(); items.len()];
+    let mut routes: HashMap<usize, Vec<Pt>> = HashMap::new();
+    let (mut x, mut y, mut shelf_h) = (0, 0, 0);
+    for (members, p, edge_map) in &drawn {
+        let (w, h) = bbox(p);
+        if x > 0 && x + w > shelf_w {
+            x = 0;
+            y = snap(y + shelf_h + VGAP);
+            shelf_h = 0;
+        }
+        // Move by whole grid steps, so a route point that overhangs the
+        // boxes by half a lane cannot pull the boxes off the grid.
+        let origin = extent(p);
+        let (dx, dy) = (snap(x - origin.x), snap(y - origin.y));
+        for (li, gi) in members.iter().enumerate() {
+            let r = p.rects[li];
+            rects[*gi] = Rect { x: r.x + dx, y: r.y + dy, w: r.w, h: r.h };
+        }
+        for (lei, pts) in &p.routes {
+            routes.insert(
+                edge_map[*lei],
+                pts.iter().map(|q| Pt { x: q.x + dx, y: q.y + dy }).collect(),
+            );
+        }
+        x = snap(x + w + HGAP);
+        shelf_h = shelf_h.max(h);
+    }
+    Placement { rects, routes, algorithm: Algorithm::Sugiyama }
+}
+
+/// The connected components of the graph, each a sorted list of item
+/// indices, in discovery order. The caller sorts them by content, so that the
+/// packing is determined by the graph and not by the order it was given in.
+fn components(n: usize, edges: &[(usize, usize)]) -> Vec<Vec<usize>> {
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (a, b) in edges {
+        if a != b {
+            adj[*a].push(*b);
+            adj[*b].push(*a);
+        }
+    }
+    let mut seen = vec![false; n];
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for start in 0..n {
+        if seen[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        let mut members = Vec::new();
+        seen[start] = true;
+        while let Some(v) = stack.pop() {
+            members.push(v);
+            for &w in &adj[v] {
+                if !seen[w] {
+                    seen[w] = true;
+                    stack.push(w);
+                }
+            }
+        }
+        members.sort_unstable();
+        out.push(members);
+    }
+    out
+}
+
+/// One connected component, laid out. `min_pitch` is the row height the
+/// whole drawing uses, so components packed side by side share it.
+fn sugiyama_connected(items: &[Item], edges: &[(usize, usize)], min_pitch: i32) -> Placement {
     let (raw_rank, reversed) = rank_by_dependency(items.len(), edges);
     let ranks = compact(&raw_rank);
-    let g = build(items, edges, &ranks, &reversed.iter().copied().collect::<Vec<_>>());
+    let g = build(items, edges, &ranks, &reversed.iter().copied().collect::<Vec<_>>(), min_pitch);
     let rects = g.finish(items);
     let routes = g.routes(items, edges, &rects);
     Placement { rects, routes, algorithm: Algorithm::Sugiyama }
@@ -762,9 +902,19 @@ struct Layered {
     /// Rows that are lines of a folded rank rather than ranks in their own
     /// right. See [`Self::assign_x`] for why they are held still.
     folded: HashSet<usize>,
+    /// The height every row is given. At least the tallest box here, and
+    /// when this is one component of several, the tallest box in any of
+    /// them — so rows line up across the packed drawing.
+    pitch: i32,
 }
 
-fn build(items: &[Item], edges: &[(usize, usize)], ranks: &[usize], reversed: &[usize]) -> Layered {
+fn build(
+    items: &[Item],
+    edges: &[(usize, usize)],
+    ranks: &[usize],
+    reversed: &[usize],
+    min_pitch: i32,
+) -> Layered {
     let depth = ranks.iter().copied().max().unwrap_or(0) + 1;
     let mut rows: Vec<Vec<Slot>> = vec![Vec::new(); depth];
     let mut width = HashMap::new();
@@ -796,6 +946,7 @@ fn build(items: &[Item], edges: &[(usize, usize)], ranks: &[usize], reversed: &[
         x: HashMap::new(),
         y: Vec::new(),
         folded: HashSet::new(),
+        pitch: min_pitch.max(items.iter().map(|i| i.h).max().unwrap_or(55)).max(55),
     };
 
     // Order on the boxes alone, then fold. Folding wants an ordering to cut
@@ -817,7 +968,7 @@ fn build(items: &[Item], edges: &[(usize, usize)], ranks: &[usize], reversed: &[
     // is bounded either way.
     for round in 0..3 {
         g.lay_corridors(&drawn);
-        let (w, h) = extent(&g.rows, &g.width, &g.height);
+        let (w, h) = extent(&g.rows, &g.width, g.pitch);
         if round == 2 || w as f64 <= h as f64 * MAX_WIDTH_RATIO {
             break;
         }
@@ -1264,7 +1415,7 @@ impl Layered {
     /// If no fold fits — a single row wider than the bound allows even one
     /// box per line, which does not happen — the rows are left as they were.
     fn fold_to_fit(&mut self) {
-        let (w, h) = extent(&self.rows, &self.width, &self.height);
+        let (w, h) = extent(&self.rows, &self.width, self.pitch);
         if w as f64 <= h as f64 * MAX_WIDTH_RATIO {
             return;
         }
@@ -1273,7 +1424,7 @@ impl Layered {
         for lines in 2..=most {
             let budget = (widest + lines as i32 - 1) / lines as i32;
             let (rows, folded) = fold_rows(&self.rows, budget, &self.width);
-            let (w, h) = extent(&rows, &self.width, &self.height);
+            let (w, h) = extent(&rows, &self.width, self.pitch);
             if w as f64 <= h as f64 * MAX_WIDTH_RATIO {
                 self.rows = rows;
                 self.folded = folded;
@@ -1616,14 +1767,19 @@ impl Layered {
         }
     }
 
+    /// The height every row is given: the tallest box in the drawing.
+    ///
+    /// One pitch for all rows rather than each row's own tallest, so that a
+    /// drawing reads as a grid — and so that when components are laid out
+    /// separately and packed side by side, their rows line up across the
+    /// shelf instead of drifting by the height of one taller box.
+    fn row_pitch(&self) -> i32 {
+        self.pitch
+    }
+
     fn assign_y(&mut self) {
-        self.y = Vec::with_capacity(self.rows.len());
-        let mut cursor = 0;
-        for row in &self.rows {
-            self.y.push(snap(cursor));
-            let h = row.iter().map(|s| self.height[s]).max().unwrap_or(55).max(55);
-            cursor += h + VGAP;
-        }
+        let h = self.row_pitch();
+        self.y = (0..self.rows.len()).map(|r| snap(r as i32 * (h + VGAP))).collect();
     }
 
     fn finish(&self, items: &[Item]) -> Vec<Rect> {
@@ -1668,11 +1824,7 @@ impl Layered {
         // item landed in — a corridor is bracketed against its row's band
         // rather than against any one box in it, so a row holding a tall box
         // brackets every lane in it the same way.
-        let row_h: Vec<i32> = self
-            .rows
-            .iter()
-            .map(|row| row.iter().map(|s| self.height[s]).max().unwrap_or(55).max(55))
-            .collect();
+        let row_h: Vec<i32> = vec![self.row_pitch(); self.rows.len()];
         let mut row_of: HashMap<usize, usize> = HashMap::new();
         for (r, row) in self.rows.iter().enumerate() {
             for s in row {
@@ -2183,11 +2335,21 @@ mod tests {
             wideness(&layered.rects)
         );
 
-        // The fold must not cost the ranking: every source still sits above
-        // every target, which is the whole reason not to fall back to a grid.
-        let lowest_source = (0..30).map(|i| layered.rects[i].y).max().unwrap();
-        let highest_target = (30..60).map(|i| layered.rects[i].y).min().unwrap();
-        assert!(lowest_source < highest_target, "the fold broke the ranking");
+        // Thirty pairs are thirty components, each drawn on its own and then
+        // packed on shelves — so a source is above *its* target, not above
+        // every target on a lower shelf. That is the ranking that matters,
+        // and it is what a grid would throw away.
+        for i in 0..30 {
+            assert!(
+                layered.rects[i].y < layered.rects[i + 30].y,
+                "pair {i}: source not above its target"
+            );
+            assert_eq!(
+                layered.rects[i].x,
+                layered.rects[i + 30].x,
+                "pair {i}: not a vertical pair"
+            );
+        }
 
         // `auto` keeps the layering: a grid would be squarer but crosses the
         // thirty edges of a perfect matching where the layering crosses none.
@@ -2201,6 +2363,56 @@ mod tests {
         assert_eq!(tall.rects.len(), 12);
         let rows: HashSet<i32> = tall.rects.iter().map(|r| r.y).collect();
         assert_eq!(rows.len(), 12, "a chain is one node per row, unfolded");
+    }
+
+    /// Components are laid out apart and packed, so nothing can leave a hole
+    /// between them. Laid out together, one component drifted off to the right
+    /// during the placement sweeps and — with no edge crossing the gap for the
+    /// compaction to shorten — was never pulled back, leaving two thousand
+    /// pixels of nothing in a fourteen-box drawing.
+    #[test]
+    fn components_are_packed_without_a_hole_between_them() {
+        // Three components of different shapes: a fan of three into one, a
+        // chain of four, and a lone pair. Names chosen so the by-name order
+        // interleaves them, which is what let the drift happen.
+        let names = [
+            "Alpha", "Bravo", "Charlie", "Delta", // fan: 0,1,2 -> 3
+            "Echo", "Foxtrot", "Golf", "Hotel", // chain: 4 -> 5 -> 6 -> 7
+            "India", "Juliet", // pair: 8 -> 9
+        ];
+        let it: Vec<Item> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| Item { id: format!("i{i}"), name: n.to_string(), w: 120, h: 55 })
+            .collect();
+        let edges = vec![(0, 3), (1, 3), (2, 3), (4, 5), (5, 6), (6, 7), (8, 9)];
+        let p = place(&it, &edges, Algorithm::Sugiyama);
+
+        // No horizontal gap between consecutive boxes wider than a box.
+        let mut spans: Vec<(i32, i32)> = p.rects.iter().map(|r| (r.x, r.x + r.w)).collect();
+        spans.sort_unstable();
+        let mut reach = spans[0].1;
+        for (x0, x1) in &spans[1..] {
+            assert!(x0 - reach <= 120 + HGAP, "a hole of {} px before x={x0}", x0 - reach);
+            reach = reach.max(*x1);
+        }
+
+        // Each component keeps its own shape: the pair is vertical, the chain
+        // is a column, the fan's three sources sit above its sink.
+        assert_eq!(p.rects[8].x, p.rects[9].x, "the pair is a vertical pair");
+        assert!(p.rects[8].y < p.rects[9].y);
+        for w in [(4, 5), (5, 6), (6, 7)] {
+            assert!(p.rects[w.0].y < p.rects[w.1].y, "chain {w:?} is a column");
+        }
+        for src in 0..3 {
+            assert!(p.rects[src].y < p.rects[3].y, "fan source {src} above the sink");
+        }
+
+        // And rows line up across components: every y is on the same pitch.
+        let mut ys: Vec<i32> = p.rects.iter().map(|r| r.y).collect();
+        ys.sort_unstable();
+        ys.dedup();
+        assert!(ys.len() <= 4, "components share rows rather than each taking its own: {ys:?}");
     }
 
     /// The fold is bounded by width, so it must not fire on a row that fits —

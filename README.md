@@ -127,8 +127,11 @@ layer is deliberately not consulted: most relationships in a real model run
 *within* a layer, so ranking by layer puts them in one row and turns each into a
 horizontal line through whatever sits between its ends.
 
-Nodes are ranked by network simplex, so the rows are as few as the edges allow
-and each edge is as short as it can be; ordered within a row by median and
+Each connected component is laid out on its own and the components are packed
+side by side, so ten unconnected pairs come out as ten vertical pairs and
+nothing can leave a hole between them. Within a component, nodes are ranked by
+network simplex, so the rows are as few as the edges allow and each edge is as
+short as it can be; ordered within a row by median and
 sifting to cut crossings; and placed against the medians of their neighbours,
 with loosely joined groups pulled together afterwards rather than left at
 opposite ends of the drawing. A rank too wide to read — a hundred motivation
