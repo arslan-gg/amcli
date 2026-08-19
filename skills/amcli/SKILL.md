@@ -70,7 +70,7 @@ Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
 
-This skill is written for **amcli 0.9.0**. The installer always gives you the
+This skill is written for **amcli 0.10.0**. The installer always gives you the
 newest *release*, and this file ships from the repository's main branch, so
 for a short while after a change lands the binary can be one release behind
 what is described here. If a command or flag below is refused, the binary
@@ -340,12 +340,15 @@ for a quick look, not for reproducing someone's diagram.
 
 `amcli web` serves the model on `127.0.0.1` only: the views in their folder
 tree, each drawn as Archi draws it (colours, figures, type icons) with SVG and
-PNG a click away, a table of every element and relationship, a graph laid out
-by the same code `view auto` runs — centre it on an element, choose a depth,
-filter by layer, element type and relationship type — and stats.
-Nothing on the page edits anything, and the process writes nothing — it is the
-one command that keeps running after it has answered, so **run it in the
-background** (`amcli web --no-open &`, or a second terminal) and hand the URL
+PNG a click away; a table of every element and of every relationship; and a
+graph laid out by the same code `view auto` runs — centred on an element to a
+chosen depth, or the whole model when nothing is centred, with SVG and PNG of
+whatever is on screen. What narrows a page — the folder tree, the filters, the
+pinned elements — is in the sidebar on the left; whatever was last clicked is
+described in the panel on the right; and ⌘K searches the whole model from
+anywhere. Nothing on the page edits anything, and the process writes nothing —
+it is the one command that keeps running after it has answered, so **run it in
+the background** (`amcli web --no-open &`, or a second terminal) and hand the URL
 to the person. `-q` prints the URL and nothing else on stdout; `-F json` puts
 it in the usual envelope. Ctrl-C stops it, and nothing needs cleaning up.
 
