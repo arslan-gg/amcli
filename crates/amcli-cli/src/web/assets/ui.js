@@ -594,6 +594,13 @@ export function tree({ nodes, active, onPick, onToggle, isOpen, label }) {
 
 /* ---- odds and ends -------------------------------------------------------- */
 
+// A short explanation of a control that has nothing in it yet — what it is for
+// and how to put something there. Loud enough to be read once: the rail's
+// ground is --surface-1, so a hint takes --surface-0 and stands up off it.
+export function hint(text, iconName = "info") {
+  return h("p", { class: "hint" }, icon(iconName), h("span", null, text));
+}
+
 export function emptyState({ iconName, title, body, actions }) {
   return h("div", { class: "empty" },
     iconName ? icon(iconName, { size: 24, class: "empty-icon" }) : null,
@@ -602,37 +609,7 @@ export function emptyState({ iconName, title, body, actions }) {
     actions?.length ? h("div", { class: "empty-actions" }, actions) : null);
 }
 
-export function card({ value, label, href, hint }) {
-  const inner = h("div", { class: "card" },
-    h("span", { class: "card-value" }, value),
-    h("span", { class: "card-label" }, label),
-    hint ? h("span", { class: "card-hint" }, hint) : null);
-  return href ? h("a", { class: "card-link", href, title: `Open ${label}` }, inner) : inner;
-}
 
-// A labelled bar chart. `max` is passed in so two charts side by side can
-// share a scale instead of each normalising to its own tallest bar.
-export function barChart({ rows, max }) {
-  const top = max || Math.max(1, ...rows.map((r) => r.value));
-  const box = h("div", { class: "bars" });
-  for (const r of rows) {
-    // The .ellipsis goes on the text, not on the flex box around it: a bare
-    // text node in a flex container is an anonymous item, and text-overflow
-    // never applies to it, so a long type name was cut through a letter.
-    const kids = [
-      r.swatch ? h("span", { class: "swatch", style: { background: r.swatch } }) : null,
-      h("span", { class: "ellipsis" }, r.label),
-    ];
-    const label = r.href
-      ? h("a", { class: "bar-label", href: r.href, title: r.label }, kids)
-      : h("span", { class: "bar-label", title: r.label }, kids);
-    box.append(label,
-      h("div", { class: "bar", role: "img", "aria-label": `${r.label}: ${fmt(r.value)}` },
-        h("i", { style: { width: `${(100 * r.value) / top}%` } })),
-      h("span", { class: "bar-n" }, fmt(r.value)));
-  }
-  return box;
-}
 
 export function section(title, ...children) {
   return h("section", { class: "sec" }, h("h2", { class: "caps" }, title), ...children);

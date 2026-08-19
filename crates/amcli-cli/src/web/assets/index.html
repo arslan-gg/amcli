@@ -15,10 +15,12 @@
      the thing they describe. -->
 <div id="app">
   <aside id="rail">
+    <!-- The fold control leads, in both panes, so it is the one thing that never
+         moves when a pane folds. -->
     <div class="rail-head">
+      <button id="rail-toggle" class="btn btn-icon btn-quiet" type="button" title="Collapse the sidebar (⌘B)" aria-label="Collapse the sidebar"></button>
       <span class="brand"><span class="brand-mark">amcli</span></span>
       <span class="spacer"></span>
-      <button id="rail-toggle" class="btn btn-icon btn-quiet" type="button" title="Collapse the sidebar (⌘B)" aria-label="Collapse the sidebar"></button>
     </div>
     <div class="rail-body">
       <button id="open-palette" class="btn rail-search" type="button" title="Search the model (⌘K)" disabled>

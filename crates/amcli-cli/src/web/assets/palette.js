@@ -27,7 +27,6 @@ function commands() {
     { label: "Elements", hint: "Go to", iconName: "elements", run: () => (location.hash = href("elements")) },
     { label: "Relationships", hint: "Go to", iconName: "relations", run: () => (location.hash = href("relations")) },
     { label: "Graph", hint: "Go to", iconName: "graph", run: () => (location.hash = href("graph")) },
-    { label: "Statistics", hint: "Go to", iconName: "stats", run: () => (location.hash = href("stats")) },
   ];
 }
 

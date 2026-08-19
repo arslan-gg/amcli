@@ -394,6 +394,121 @@ function subtreeCounts(byFolder) {
   return all;
 }
 
+
+/* ---- the rail on a single drawing -------------------------------------------
+   Opening a view used to empty the rail: the folder tree went, and with it the
+   only way to see where the drawing sits and what is beside it. The scope of a
+   view page is *which view*, so the same tree stays, over the same folders,
+   with the drawings in the chosen branch listed under it. That is also where
+   the toolbar's picker went — a <select> of eighty-six names was a third route
+   to this, and a worse one. */
+
+let scopeFolder = null;              // remembered while flipping between drawings
+const scopeHidden = new Set();       // viewpoints the reader has switched off
+
+export function viewsScope(viewId) {
+  const kind = "views";
+  if (!folded.has(kind)) folded.set(kind, new Set());
+  const collapsed = folded.get(kind);
+
+  const under = subtreeCounts(store.folderViews);
+  const roots = store.roots.filter((i) => under.get(i).length);
+  const here = store.byId.get(viewId);
+  const mine = here && here.kind === "view" ? folderPath(view(here.i).folder) : "";
+
+  // Follow the drawing unless the reader has said otherwise this session.
+  if (scopeFolder === null) scopeFolder = mine;
+
+  const treePane = h("div", { class: "rail-scope" });
+  const listPane = h("div", { class: "rail-scope" });
+
+  // The same dimension the Views list offers, in the same place and the same
+  // shape. A drawing's scope is which drawing, and that is narrowed by folder
+  // and by viewpoint on both pages or on neither.
+  const vpValues = () => tally(store.data.views.map((v) => v.viewpoint || "(none)"));
+  const filters = filterBar([{
+    key: "viewpoint", label: "Viewpoints", noun: "viewpoints", hidden: scopeHidden,
+    values: vpValues,
+    onChange: () => { drawTree(); drawList(); },
+  }]);
+  // Both halves grow and both scroll, so a deep tree cannot push the list of
+  // drawings off the bottom of the rail — which is the half you came for.
+  // Both list halves grow and both scroll, so a deep tree cannot push the list
+  // of drawings off the bottom of the rail — which is the half you came for.
+  const box = h("div", { class: "rail-split" },
+    h("div", { class: "rail-group" }, h("h2", { class: "caps rail-group-title" }, "Filter"), filters),
+    h("div", { class: "rail-group rail-group-grow" }, h("h2", { class: "caps rail-group-title" }, "Folders"), treePane),
+    h("div", { class: "rail-group rail-group-grow" }, h("h2", { class: "caps rail-group-title" }, "Views"), listPane));
+
+  const passesVp = (vi) => !scopeHidden.has(view(vi).viewpoint || "(none)");
+  const inFolder = (vi) => {
+    if (!scopeFolder) return true;
+    const f = folderPath(view(vi).folder);
+    return f === scopeFolder || f.startsWith(scopeFolder + "/");
+  };
+  const inScope = (vi) => passesVp(vi) && inFolder(vi);
+
+  function nodes() {
+    const count = (i) => under.get(i).reduce((n, vi) => n + (passesVp(vi) ? 1 : 0), 0);
+    const shown = store.data.views.reduce((n, _, vi) => n + (passesVp(vi) ? 1 : 0), 0);
+    const out = [{ key: "", label: "All views", count: shown, depth: 0, hasKids: false, title: "Every view the filter allows" }];
+    const walk = (i, depth) => {
+      const path = folderPath(i);
+      const kids = store.folderKids[i].filter((k) => under.get(k).length);
+      out.push({ key: path, label: folder(i).name, count: count(i), depth, hasKids: kids.length > 0, title: `${folder(i).name}\n${path}` });
+      if (!collapsed.has(path)) for (const k of kids) walk(k, depth + 1);
+    };
+    for (const r of roots) walk(r, 1);
+    return out;
+  }
+
+  function drawTree() {
+    const held = treePane.contains(document.activeElement)
+      ? document.activeElement.closest(".tree-row")?.dataset.key
+      : null;
+    clear(treePane);
+    treePane.appendChild(tree({
+      nodes: nodes(),
+      active: scopeFolder,
+      label: "Folders",
+      isOpen: (k) => !collapsed.has(k),
+      onToggle: (k) => { collapsed.has(k) ? collapsed.delete(k) : collapsed.add(k); drawTree(); },
+      // Picking a folder narrows the list below; it does not navigate, because
+      // the reader is looking at a drawing and did not ask to leave it.
+      onPick: (k) => { scopeFolder = k; collapsed.delete(k); drawTree(); drawList(); },
+    }));
+    if (held != null) {
+      const row = treePane.querySelector(`.tree-row[data-key="${esc(held)}"]`);
+      if (row) { treePane.querySelectorAll(".tree-row").forEach((r) => r.setAttribute("tabindex", "-1")); row.setAttribute("tabindex", "0"); row.focus(); }
+    }
+  }
+
+  function drawList() {
+    clear(listPane);
+    const mates = store.data.views
+      .map((_, i) => i)
+      .filter(inScope)
+      .sort((a, b) => view(a).name.localeCompare(view(b).name, undefined, { numeric: true }));
+    const list = h("div", { class: "link-list" });
+    for (const i of mates) {
+      const v = view(i);
+      list.appendChild(h("a", {
+        class: v.id === viewId ? "is-current" : "",
+        href: href("view", v.id),
+        title: `${v.name}\n${fmt(v.elements.length)} elements`,
+        "aria-current": v.id === viewId ? "page" : null,
+      }, icon("view"), h("span", { class: "ellipsis" }, v.name)));
+    }
+    listPane.appendChild(list);
+  }
+
+  drawTree();
+  drawList();
+  // The drawing the rail is following changed, so let it follow again.
+  box.forget = () => { scopeFolder = null; };
+  return box;
+}
+
 // Where a "back to the list" button should go.
 export function lastListParams(kind) {
   return lastLeft.get(kind) || {};

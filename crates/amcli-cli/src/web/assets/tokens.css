@@ -108,7 +108,7 @@
 
   /* -- layout ------------------------------------------------------------- */
   --rail-w: 232px;
-  --rail-w-min: 52px;
+  --rail-w-min: 48px;
   --inspector-w: 340px;
   --inspector-min: 280px;
   --inspector-max: 640px;

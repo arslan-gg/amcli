@@ -46,7 +46,6 @@ pub const ASSETS: &[(&str, &str, &str)] = &[
     ),
     ("/pages/view.js", "text/javascript; charset=utf-8", include_str!("assets/pages/view.js")),
     ("/pages/graph.js", "text/javascript; charset=utf-8", include_str!("assets/pages/graph.js")),
-    ("/pages/stats.js", "text/javascript; charset=utf-8", include_str!("assets/pages/stats.js")),
     ("/pages/detail.js", "text/javascript; charset=utf-8", include_str!("assets/pages/detail.js")),
 ];
 

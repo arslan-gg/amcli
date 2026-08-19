@@ -14,7 +14,7 @@ import { h, s, clear, fmt, relLabel } from "../dom.js";
 import { store, elem, rel, search } from "../store.js";
 import { ensureSymbols, nodeGroup, relStyle, typeOf, typeIcon } from "../notation.js";
 import { icon } from "../icons.js";
-import { toolbar, filterBar, chip, button, iconButton, segmented, selectField, searchField, emptyState, anchorTo } from "../ui.js";
+import { toolbar, filterBar, chip, button, iconButton, segmented, selectField, searchField, emptyState, hint, anchorTo } from "../ui.js";
 import { replaceParams } from "../router.js";
 import { attachPanZoom } from "../panzoom.js";
 import { select, selectedId, clearSelection, railContext } from "../app.js";
@@ -127,7 +127,7 @@ export function mount(main, route) {
     clear(pinRow);
     const live = [...state.pinned].filter((id) => store.byId.get(id)?.kind === "element");
     if (!live.length) {
-      pinRow.appendChild(h("span", { class: "subtle small" }, "nothing — shift-click a box to keep it on the graph"));
+      pinRow.appendChild(hint("Shift-click a box on the graph to keep it here. It stays even when a filter or the hop limit would drop it."));
       return;
     }
     for (const id of live) {

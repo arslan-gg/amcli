@@ -1,5 +1,5 @@
 // Hash routes: #/views, #/view/ID, #/elements?type=X, #/element/ID,
-// #/relations, #/relation/ID, #/graph?focus=ID&depth=2, #/stats.
+// #/relations, #/relation/ID, #/graph?focus=ID&depth=2.
 
 const handlers = new Set();
 

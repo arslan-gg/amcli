@@ -7,8 +7,8 @@ import { store, view } from "../store.js";
 import { href } from "../router.js";
 import { attachPanZoom } from "../panzoom.js";
 import { toolbar, button, iconButton, emptyState, badge } from "../ui.js";
-import { select, selectedId, clearSelection } from "../app.js";
-import { lastListParams } from "./collection.js";
+import { select, selectedId, clearSelection, railContext } from "../app.js";
+import { lastListParams, viewsScope } from "./collection.js";
 
 export function mount(main, route) {
   const found = store.byId.get(route.id);
@@ -47,6 +47,11 @@ function render(main, vi, focus) {
   });
   bar.querySelector(".toolbar-trail a[title^='Open the SVG']")?.setAttribute("target", "_blank");
   bar.querySelector(".toolbar-trail a[title^='Download']")?.setAttribute("download", `${safeName(v.name)}.png`);
+
+  // The rail keeps its folder tree here too: a drawing's scope is which
+  // drawing, so the tree stays and the views in the chosen branch are listed
+  // under it.
+  railContext().appendChild(viewsScope(v.id));
 
   const canvas = h("div", { class: "canvas" });
   const hud = h("div", { class: "canvas-hud" });

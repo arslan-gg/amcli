@@ -286,10 +286,18 @@ kbd {
 .rail-head {
   display: flex; align-items: center; gap: var(--sp-2);
   height: var(--toolbar-h); min-height: var(--toolbar-h);
-  padding: 0 var(--sp-2) 0 var(--sp-3);
+  padding: 0 var(--sp-2);
   border-bottom: 1px solid var(--line);
   flex: none;
 }
+/* A 32px box puts a 16px icon on the same axis as the icons in the rows below,
+   and in a folded pane that box is the whole inner width — so "at the right"
+   and "centred" are the same place and nothing moves when the pane folds. It
+   must not shrink, and the spacer beside it must not survive the fold, or the
+   gap pushes it off that axis. */
+#rail-toggle, #inspector-toggle { width: var(--sp-8); flex: none; }
+#app.rail-collapsed .rail-head .spacer,
+#app.inspector-narrow .inspector-head .spacer { display: none; }
 .brand { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
 .brand-mark { font-weight: 700; font-size: var(--fs-lg); letter-spacing: var(--track-tight); }
 .rail-body {
@@ -324,6 +332,8 @@ kbd {
 .rail-context { display: flex; flex-direction: column; gap: var(--sp-4); min-height: 0; flex: 1 1 auto; }
 .rail-group { display: flex; flex-direction: column; gap: var(--sp-2); flex: none; min-height: 0; }
 .rail-group-grow { flex: 1 1 auto; min-height: calc(var(--sp-12) * 2); }
+/* Two scrollable groups sharing what the rail has left. */
+.rail-split { display: flex; flex-direction: column; gap: var(--sp-4); min-height: 0; flex: 1 1 auto; }
 .rail-group-title { padding: 0 var(--sp-2); }
 .rail-scope { overflow-y: auto; overflow-x: hidden; min-height: 0; }
 
@@ -340,7 +350,6 @@ kbd {
 @keyframes pulse { to { transform: scale(1.7); } }
 
 /* Collapsed: icons only, labels on the hover. */
-#app.rail-collapsed .rail-head { padding: 0; justify-content: center; }
 #app.rail-collapsed .brand,
 #app.rail-collapsed .rail-foot,
 #app.rail-collapsed .rail-context,
@@ -348,8 +357,9 @@ kbd {
 #app.rail-collapsed #nav .nav-n,
 #app.rail-collapsed .rail-search span,
 #app.rail-collapsed .rail-search kbd { display: none; }
-#app.rail-collapsed #nav a,
-#app.rail-collapsed .rail-search { justify-content: center; padding: 0; }
+/* The rows keep their padding and their alignment; only the words go. An icon
+   that moves when a pane folds reads as the pane redrawing itself rather than
+   resizing, and the rail's width is chosen so that it does not have to. */
 
 /* -- main -- */
 #main { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; position: relative; }
@@ -378,7 +388,6 @@ kbd {
   flex: none;
 }
 .inspector-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: var(--sp-4); }
-#app.inspector-narrow .inspector-head { justify-content: center; padding: 0; }
 #app.inspector-narrow .inspector-label,
 #app.inspector-narrow #inspector-actions,
 #app.inspector-narrow .inspector-body { display: none; }
@@ -535,6 +544,19 @@ table.grid td.cell-arrow { color: var(--fg-subtle); padding: 0; }
 table.grid td.cell-arrow .icon { margin: 0 auto; }
 table.grid td.cell-empty { height: auto; white-space: normal; border-bottom: 0; }
 .grid-note { padding: var(--sp-2) var(--sp-3); color: var(--fg-subtle); font-size: var(--fs-sm); }
+
+/* ---- hint --------------------------------------------------------------------- */
+.hint {
+  display: flex; align-items: flex-start; gap: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-0);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+}
+.hint .icon { flex: none; margin-top: var(--sp-h); color: var(--fg-subtle); }
 
 /* ---- empty state ------------------------------------------------------------------- */
 .empty {
@@ -720,6 +742,9 @@ table.kv th { color: var(--fg-subtle); font-weight: 400; white-space: nowrap; wi
 .rel-row { width: 100%; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .rel-row[disabled] { opacity: 0.45; cursor: default; }
 .link-list a:hover, .rel-row:not([disabled]):hover { background: var(--tint); text-decoration: none; }
+/* The drawing the rail is standing on, marked the way a chosen folder is. */
+.link-list a.is-current { background: var(--invert); color: var(--invert-fg); }
+.link-list a.is-current:hover { background: var(--invert); }
 .rel-type { color: var(--fg-subtle); font-size: var(--fs-xs); white-space: nowrap; flex: none; }
 .rel-arrow { color: var(--fg-subtle); flex: none; }
 .id-line { font-family: var(--mono); font-size: var(--fs-xs); color: var(--fg-subtle); overflow-wrap: anywhere; }
@@ -744,29 +769,3 @@ svg.type-icon.boxed { color: var(--paper-ink); }
 div.type-icon.boxed { display: inline-flex; align-items: center; justify-content: center; }
 div.type-icon.boxed > .icon { width: 100%; height: 100%; }
 
-/* ---- stats ------------------------------------------------------------------------------ */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(var(--rail-w), 1fr)); gap: var(--sp-3); }
-.card-link { display: block; }
-.card-link:hover { text-decoration: none; }
-.card-link:hover .card { border-color: var(--line-firm); background: var(--tint); }
-.card {
-  display: grid; align-content: start; gap: var(--sp-h);
-  height: 100%;
-  padding: var(--sp-3) var(--sp-4);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
-}
-.card-value { font-size: var(--fs-2xl); font-weight: 600; letter-spacing: var(--track-tight); font-variant-numeric: tabular-nums; line-height: var(--lh-tight); }
-.card-label { color: var(--fg-muted); font-size: var(--fs-sm); }
-.card-hint { color: var(--fg-subtle); font-size: var(--fs-xs); }
-
-.bars { display: grid; grid-template-columns: minmax(0, max-content) minmax(var(--sp-12), 1fr) max-content; gap: var(--sp-1) var(--sp-3); align-items: center; }
-.bar-label { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-sm); max-width: var(--rail-w); min-width: 0; }
-.bar { height: var(--sp-2); background: var(--tint-firm); border-radius: var(--sp-h); overflow: hidden; }
-.bar > i { display: block; height: 100%; background: var(--fg-muted); }
-.bar-n { font-variant-numeric: tabular-nums; color: var(--fg-subtle); font-size: var(--fs-sm); text-align: right; }
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(calc(var(--palette-w) / 2), 1fr)); gap: var(--sp-6) var(--sp-8); margin-top: var(--sp-6); }
-/* Prose after the charts. The grid has no bottom margin, so without this the
-   purpose sat on the last bar. */
-.stats-prose { margin-top: var(--sp-6); max-width: var(--read-w); }

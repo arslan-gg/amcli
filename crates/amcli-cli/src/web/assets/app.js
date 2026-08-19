@@ -15,14 +15,12 @@ import { renderConcept } from "./pages/detail.js";
 import * as collection from "./pages/collection.js";
 import * as viewPage from "./pages/view.js";
 import * as graph from "./pages/graph.js";
-import * as stats from "./pages/stats.js";
 
 const NAV = [
   { page: "views", label: "Views", iconName: "view", count: (d) => d.views.length },
   { page: "elements", label: "Elements", iconName: "elements", count: (d) => d.elements.length },
   { page: "relations", label: "Relationships", iconName: "relations", count: (d) => d.relations.length },
   { page: "graph", label: "Graph", iconName: "graph" },
-  { page: "stats", label: "Statistics", iconName: "stats" },
 ];
 
 // Which nav entry a route lights up. A concept's deep link belongs to the
@@ -252,7 +250,6 @@ function pageFor(route) {
   switch (route.page) {
     case "view": return viewPage;
     case "graph": return graph;
-    case "stats": return stats;
     default: return collection;
   }
 }
