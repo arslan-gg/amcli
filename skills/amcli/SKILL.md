@@ -349,8 +349,10 @@ described in the panel on the right; and ⌘K searches the whole model from
 anywhere. Nothing on the page edits anything, and the process writes nothing —
 it is the one command that keeps running after it has answered, so **run it in
 the background** (`amcli web --no-open &`, or a second terminal) and hand the URL
-to the person. `-q` prints the URL and nothing else on stdout; `-F json` puts
-it in the usual envelope. Ctrl-C stops it, and nothing needs cleaning up.
+to the person. Stdout is one tab-separated record — the URL, then the model
+path — so the URL is `cut -f1`; `-q` drops the header and the note on stderr
+but not the second field. `-F json` puts both in the usual envelope. Ctrl-C
+stops it, and nothing needs cleaning up.
 
 The page follows the file: keep editing the model with amcli in the same
 session and the browser picks up each write within a couple of seconds, so a
