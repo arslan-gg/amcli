@@ -1,23 +1,57 @@
-// Views: a table of every view, like the element and relationship tables; a
-// click opens the drawing full width — the very SVG the server renders from
-// the file, so what is on screen is what Archi would draw, and a click on a
-// figure opens the concept it stands for.
+// Views: the folder tree on the left, a table of what is in the chosen folder
+// on the right; a click opens the drawing full width — the very SVG the server
+// renders from the file, so what is on screen is what Archi would draw, and a
+// click on a figure opens the concept it stands for.
+//
+// The tree, not a row of chips, because a real model files its views several
+// folders deep: eighty-six views under twenty-five folders came out as
+// twenty-five chips carrying their whole path, which wrapped over four lines
+// and still could not say that A1 sits inside A. A tree says it in its shape,
+// scrolls on its own, and lets a whole branch be picked at once.
 
 import { h, clear, fmt } from "../dom.js";
-import { store, view, folderPath } from "../store.js";
+import { store, view, folder, folderPath } from "../store.js";
 import { href, replaceParams } from "../router.js";
 import { attachPanZoom } from "../panzoom.js";
 import { select } from "../app.js";
+
+// Which branches are open, kept for the session so leaving a view and coming
+// back does not collapse the tree the reader just arranged.
+const collapsed = new Set();
+let treeInitialised = false;
+
+// How the table was last left — folder, filter, sort. Opening a drawing and
+// coming back should land on the rows the reader opened it from, not at the
+// top of all eighty-six of them.
+let lastList = {};
 
 export function mount(main, route) {
   if (route.page === "view" && route.id) {
     const found = store.byId.get(route.id);
     if (found && found.kind === "view") return renderView(main, found.i, route.params.get("focus"));
-    const page = h("div", { class: "page" }, h("div", { class: "page-head" }, h("a", { class: "btn sm", href: href("views") }, "‹ Views")), h("div", { class: "empty" }, `No view has id ${route.id}`));
+    const page = h("div", { class: "page" }, h("div", { class: "page-head" }, h("a", { class: "btn sm", href: href("views", null, lastList) }, "‹ Views")), h("div", { class: "empty" }, `No view has id ${route.id}`));
     main.appendChild(page);
     return () => {};
   }
   return renderTable(main, route);
+}
+
+// ---- the folder tree -------------------------------------------------------
+
+// Every view in a folder and everything under it, folder by folder. A folder
+// with nothing below it is left out: the views page is for finding a drawing,
+// and a branch that holds none is only in the way.
+function subtrees() {
+  const kids = store.folderKids;
+  const all = new Map();
+  const walk = (i) => {
+    const list = store.folderViews[i].slice();
+    for (const k of kids[i]) list.push(...walk(k));
+    all.set(i, list);
+    return list;
+  };
+  for (const r of store.roots) walk(r);
+  return all;
 }
 
 // ---- the table -------------------------------------------------------------
@@ -25,35 +59,91 @@ export function mount(main, route) {
 function renderTable(main, route) {
   const page = h("div", { class: "page" });
   const head = h("div", { class: "page-head" });
-  const body = h("div", { class: "page-body" });
-  page.append(head, body);
+  const split = h("div", { class: "split" });
+  const treePane = h("div", { class: "pane tree-pane" });
+  const tablePane = h("div", { class: "pane" });
+  split.append(treePane, tablePane);
+  page.append(head, split);
   main.appendChild(page);
 
   const p = route.params;
   const state = { folder: p.get("folder") || "", q: p.get("q") || "", sort: p.get("sort") || "name", dir: p.get("dir") || "asc" };
-  const push = () => replaceParams({ folder: state.folder, q: state.q, sort: state.sort === "name" ? "" : state.sort, dir: state.dir === "asc" ? "" : state.dir });
+  const push = () => replaceParams(remember());
+  const remember = () => (lastList = { folder: state.folder, q: state.q, sort: state.sort === "name" ? "" : state.sort, dir: state.dir === "asc" ? "" : state.dir });
+  remember();
 
   const all = store.data.views;
-  const folderCounts = {};
-  for (const v of all) { const f = folderPath(v.folder); folderCounts[f] = (folderCounts[f] || 0) + 1; }
+  const under = subtrees();
+  const roots = store.roots.filter((i) => under.get(i).length);
+  // Deep trees start folded past the top level; a small one is opened whole,
+  // because scrolling a dozen rows beats clicking a dozen twisties.
+  if (!treeInitialised) {
+    treeInitialised = true;
+    if (under.size > 40) for (const [i, list] of under) if (list.length && folder(i).parent !== null) collapsed.add(folderPath(i));
+  }
 
-  const chips = h("div", { class: "chips" });
   const q = h("input", { class: "input", type: "search", placeholder: "Filter by name…", value: state.q, style: { width: "220px" },
-    oninput: (e) => { state.q = e.target.value; push(); renderRows(); } });
+    oninput: (e) => { state.q = e.target.value; push(); renderTree(); renderRows(); } });
+  const crumb = h("span", { class: "muted small ellipsis", style: { maxWidth: "40%" } });
   const summary = h("span", { class: "muted small nowrap" });
-  head.append(chips, q, h("span", { class: "spacer" }), summary);
+  head.append(q, crumb, h("span", { class: "spacer" }), summary);
   const table = h("table", { class: "grid" });
-  body.append(table);
+  tablePane.appendChild(table);
 
-  const chip = (label, value, count) => h("button", {
-    class: "chip" + (state.folder === value ? " active" : ""),
-    onclick: () => { state.folder = state.folder === value ? "" : value; push(); renderChips(); renderRows(); },
-  }, label, count !== undefined ? h("span", { class: "muted", style: { marginLeft: "5px" } }, count) : null);
+  // A view is in the chosen folder when it is in that folder or under it, so
+  // picking "A. Vision and Compliance" gets everything filed below it too.
+  const inFolder = (v) => {
+    if (!state.folder) return true;
+    const f = folderPath(v.folder);
+    return f === state.folder || f.startsWith(state.folder + "/");
+  };
+  const matches = (v) => {
+    const needle = state.q.trim().toLowerCase();
+    return !needle || (v.name || "").toLowerCase().includes(needle);
+  };
 
-  function renderChips() {
-    clear(chips);
-    chips.appendChild(chip("All folders", "", all.length));
-    for (const f of Object.keys(folderCounts).sort()) chips.appendChild(chip(f.replace(/^\/Views\/?/, "") || "/Views", f, folderCounts[f]));
+  function pick(path) {
+    state.folder = state.folder === path ? "" : path;
+    push();
+    renderTree();
+    renderRows();
+  }
+
+  function renderTree() {
+    clear(treePane);
+    const hits = new Set();
+    all.forEach((v, i) => { if (matches(v)) hits.add(i); });
+    const count = (i) => under.get(i).reduce((n, vi) => n + (hits.has(vi) ? 1 : 0), 0);
+
+    treePane.appendChild(row({ label: "All views", n: hits.size, path: "", depth: 0, kids: [] }));
+    const add = (i, depth) => {
+      const path = folderPath(i);
+      const branches = store.folderKids[i].filter((k) => under.get(k).length);
+      treePane.appendChild(row({ label: folder(i).name, n: count(i), path, depth, kids: branches }));
+      if (!collapsed.has(path)) for (const k of branches) add(k, depth + 1);
+    };
+    for (const r of roots) add(r, 1);
+  }
+
+  function row({ label, n, path, depth, kids }) {
+    // A folder name is long enough to be cut off in a pane this narrow, so
+    // the whole of it — and where it sits — is on the hover.
+    const el = h("div", {
+      class: "tree-row" + (state.folder === path ? " active" : "") + (n ? "" : " empty-branch"),
+      style: { paddingLeft: `${depth * 13}px` },
+      title: path ? `${label}\n${path}` : "Every view in the model",
+      onclick: () => pick(path),
+    });
+    el.append(
+      kids.length
+        ? h("button", { class: "twisty", title: collapsed.has(path) ? "Expand" : "Collapse",
+            onclick: (e) => { e.stopPropagation(); if (collapsed.has(path)) collapsed.delete(path); else collapsed.add(path); renderTree(); } },
+            collapsed.has(path) ? "▶" : "▼")
+        : h("span", { class: "twisty" }),
+      h("span", { class: "label" }, label),
+      h("span", { class: "n" }, fmt(n)),
+    );
+    return el;
   }
 
   const key = {
@@ -75,14 +165,8 @@ function renderTable(main, route) {
   }
 
   function renderRows() {
-    const needle = state.q.trim().toLowerCase();
     const list = [];
-    for (let i = 0; i < all.length; i++) {
-      const v = all[i];
-      if (state.folder && folderPath(v.folder) !== state.folder) continue;
-      if (needle && !v.name.toLowerCase().includes(needle)) continue;
-      list.push(i);
-    }
+    for (let i = 0; i < all.length; i++) if (inFolder(all[i]) && matches(all[i])) list.push(i);
     const numeric = ["elements", "relations"].includes(state.sort);
     const k = key[state.sort] || key.name;
     list.sort((a, b) => {
@@ -90,6 +174,8 @@ function renderTable(main, route) {
       return state.dir === "asc" ? c : -c;
     });
     summary.textContent = `${fmt(list.length)} of ${fmt(all.length)}`;
+    crumb.textContent = state.folder || "";
+    crumb.title = state.folder || "";
     clear(table);
     if (!list.length) {
       table.appendChild(h("tbody", null, h("tr", null, h("td", { colspan: 5 }, h("div", { class: "empty" },
@@ -102,7 +188,7 @@ function renderTable(main, route) {
       const v = view(i);
       const tr = h("tr", null,
         h("td", null, h("a", { href: href("view", v.id) }, "▣ ", v.name)),
-        h("td", { class: "mono muted" }, folderPath(v.folder)),
+        h("td", { class: "muted" }, relativePath(folderPath(v.folder), state.folder)),
         h("td", { class: "muted" }, v.viewpoint || ""),
         h("td", { class: "num" }, v.elements.length),
         h("td", { class: "num" }, v.relations.length),
@@ -113,9 +199,17 @@ function renderTable(main, route) {
     table.appendChild(tbody);
   }
 
-  renderChips();
+  renderTree();
   renderRows();
   return () => {};
+}
+
+// The part of a folder's path the chosen folder does not already say. The
+// column is there to place a view within the current branch, and repeating
+// "/Views/A. Vision and Compliance/" on every row places nothing.
+function relativePath(path, base) {
+  const rest = base && path.startsWith(base) ? path.slice(base.length) : path.replace(/^\/Views/, "");
+  return rest.replace(/^\//, "") || (base ? "" : "/");
 }
 
 // ---- one view --------------------------------------------------------------
@@ -130,7 +224,7 @@ function renderView(main, vi, focus) {
   const byFolder = new Map();
   store.data.views.forEach((w, i) => { const f = folderPath(w.folder); if (!byFolder.has(f)) byFolder.set(f, []); byFolder.get(f).push(i); });
   for (const f of [...byFolder.keys()].sort()) {
-    const grp = h("optgroup", { label: f });
+    const grp = h("optgroup", { label: f.replace(/^\/Views\/?/, "") || "/Views" });
     for (const i of byFolder.get(f).sort((a, b) => view(a).name.localeCompare(view(b).name, undefined, { numeric: true }))) {
       grp.appendChild(h("option", { value: view(i).id, selected: i === vi }, view(i).name));
     }
@@ -138,7 +232,7 @@ function renderView(main, vi, focus) {
   }
 
   const head = h("div", { class: "page-head" },
-    h("a", { class: "btn sm", href: href("views"), title: "All views" }, "‹ Views"),
+    h("a", { class: "btn sm", href: href("views", null, lastList), title: "Back to the list" }, "‹ Views"),
     picker,
     v.viewpoint ? h("span", { class: "badge" }, v.viewpoint) : null,
     h("span", { class: "muted small" }, `${fmt(v.elements.length)} elements · ${fmt(v.relations.length)} relationships · ${folderPath(v.folder)}`),
@@ -193,7 +287,9 @@ function renderView(main, vi, focus) {
 }
 
 // Clicks on figures and connections open the concept; the current one is
-// outlined. Groups nested inside groups: the innermost wins.
+// outlined; a double-click goes on to the graph centred there, the same jump
+// the details panel's "Open in graph" makes. Groups nested inside groups: the
+// innermost wins.
 function wire(svg, canvas, focus) {
   let selected = null;
   const mark = (g) => {
@@ -208,6 +304,12 @@ function wire(svg, canvas, focus) {
     const id = g.dataset.concept || g.dataset.relationship;
     mark(g);
     select(id);
+  });
+  svg.addEventListener("dblclick", (e) => {
+    const g = e.target.closest("[data-concept]");
+    if (!g) return;
+    e.preventDefault();
+    location.hash = href("graph", null, { focus: g.dataset.concept, depth: 1 });
   });
   if (focus) {
     const g = svg.querySelector(`[data-concept="${cssEscape(focus)}"], [data-relationship="${cssEscape(focus)}"]`);

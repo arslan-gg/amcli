@@ -11,11 +11,12 @@
 //! JSON is written by hand here as everywhere else in the CLI: the shapes are
 //! fixed and ours, and `output::quote` is the only escaping needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 use amcli_graph::Graph;
-use amcli_model::{ConceptKind, ElementType, Model, RelType};
+use amcli_model::{ConceptId, ConceptKind, ElementType, Model, RelType};
+use amcli_view::layout::{Algorithm, Item, Lanes, fit_size, place_with};
 use amcli_view::notation::{self, Deco, Figure};
 
 use super::http::{Request, Response};
@@ -33,7 +34,6 @@ pub const ASSETS: &[(&str, &str, &str)] = &[
     ("/store.js", "text/javascript; charset=utf-8", include_str!("assets/store.js")),
     ("/router.js", "text/javascript; charset=utf-8", include_str!("assets/router.js")),
     ("/panzoom.js", "text/javascript; charset=utf-8", include_str!("assets/panzoom.js")),
-    ("/force.js", "text/javascript; charset=utf-8", include_str!("assets/force.js")),
     ("/notation.js", "text/javascript; charset=utf-8", include_str!("assets/notation.js")),
     ("/pages/views.js", "text/javascript; charset=utf-8", include_str!("assets/pages/views.js")),
     (
@@ -69,6 +69,7 @@ pub fn route(req: &Request, state: &State) -> Response {
         "/api/icons.svg" => {
             Response::new(200, "image/svg+xml; charset=utf-8", amcli_render::icon_defs())
         }
+        "/api/layout" => layout(&snap.model, req),
         _ => {
             if let Some(id) = path.strip_prefix("/api/concept/") {
                 return concept(&snap.model, id);
@@ -131,6 +132,152 @@ fn view(m: &Model, id: &str, format: &str) -> Response {
     Response::new(200, "image/svg+xml; charset=utf-8", amcli_render::svg(&scene, &o))
 }
 
+/// The most elements the page may ask to have laid out at once.
+///
+/// The layered layout is superlinear, and beyond a few hundred boxes a drawing
+/// stops being something anyone reads anyway. This is where the wait is still
+/// under a second on a model the size of a real one.
+const LAYOUT_CAP: usize = 600;
+
+/// Where the boxes go, for the graph page.
+///
+/// The page chooses *what* to draw — it holds the whole model already, so
+/// filtering on a keystroke costs nothing — and asks here *where*, because the
+/// answer is [`amcli_view::layout`], the same code `view auto` runs. That is
+/// the whole point: the graph is not a second opinion about how a model looks,
+/// it is a view that has not been saved.
+fn layout(m: &Model, req: &Request) -> Response {
+    let (elements, relations) = indexed(m);
+    let Some(want) = ranges(&req.param("e"), elements.len()) else {
+        return Response::error(400, "`e` must be element indices, e.g. `0-9,12`");
+    };
+    if want.is_empty() {
+        return Response::error(400, "nothing to lay out");
+    }
+    if want.len() > LAYOUT_CAP {
+        return Response::error(413, &format!("more than {LAYOUT_CAP} elements"));
+    }
+    let algo = match req.param("algo").as_str() {
+        "" => Algorithm::default(),
+        other => match Algorithm::parse(other) {
+            Some(a) => a,
+            None => return Response::error(400, Algorithm::NAMES),
+        },
+    };
+    // A view keeps every line clear of every box, and pays for it in width:
+    // five hundred edges each reserving a lane in each of a dozen rows made a
+    // drawing of the whole model twenty-four times wider than its own bound
+    // allows, and every line across it that long. The graph is not a drawing
+    // anyone saves, so it asks for the other side of that trade unless told
+    // otherwise.
+    let lanes = if req.param("lanes") == "reserved" { Lanes::Reserved } else { Lanes::Free };
+    let hide = req.param("hiderel");
+    let hidden: HashSet<&str> = hide.split(',').filter(|s| !s.is_empty()).collect();
+
+    // Sized exactly as `view auto` sizes them, so a box on the graph is the
+    // box the same concept would get on a view.
+    let items: Vec<Item> = want
+        .iter()
+        .map(|&i| {
+            let c = m.concept(elements[i]);
+            let (w, h) = match &c.kind {
+                ConceptKind::Element(e) => e.info().default_wh,
+                _ => (120, 55),
+            };
+            let (w, h) = if (w, h) == (120, 55) { fit_size(&c.name) } else { (w, h) };
+            Item { id: c.id.clone(), name: c.name.clone(), w, h }
+        })
+        .collect();
+
+    // Every relationship of a type still shown whose two ends are both in the
+    // set, as positions within it.
+    let g = Graph::build(m);
+    let mut at: HashMap<u32, usize> = HashMap::with_capacity(want.len());
+    for (p, &i) in want.iter().enumerate() {
+        at.insert(elements[i].0, p);
+    }
+    let mut drawn: Vec<(usize, usize, usize)> = Vec::new();
+    for (ri, rid) in relations.iter().enumerate() {
+        let ConceptKind::Relationship(rt) = &m.concept(*rid).kind else { continue };
+        if hidden.contains(rel_short(*rt)) {
+            continue;
+        }
+        let Some((s, t)) = g.ends(*rid) else { continue };
+        if let (Some(&a), Some(&b)) = (at.get(&s.0), at.get(&t.0)) {
+            drawn.push((ri, a, b));
+        }
+    }
+
+    let edges: Vec<(usize, usize)> = drawn.iter().map(|&(_, a, b)| (a, b)).collect();
+    let placed = place_with(&items, &edges, algo, lanes);
+
+    let mut s = String::with_capacity(32 * want.len());
+    let _ = write!(s, "{{\"algorithm\":{},\"nodes\":[", quote(placed.algorithm.as_str()));
+    for (i, r) in placed.rects.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        let _ = write!(s, "[{},{},{},{}]", r.x, r.y, r.w, r.h);
+    }
+    s.push_str("],\"edges\":[");
+    for (i, (ri, a, b)) in drawn.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        let _ = write!(s, "[{ri},{a},{b}]");
+    }
+    s.push_str("]}");
+    Response::json(200, s)
+}
+
+/// A list of indices written as ranges — `0-271`, or `3,7-9,12`. The page
+/// sends one per element it wants drawn, so the whole model is six characters
+/// rather than a kilobyte of them. `None` if anything in it is not an index
+/// below `max`, which is also what keeps a hand-typed URL from asking for an
+/// enormous allocation.
+fn ranges(s: &str, max: usize) -> Option<Vec<usize>> {
+    let mut out = Vec::new();
+    for part in s.split(',').filter(|p| !p.is_empty()) {
+        let (lo, hi) = match part.split_once('-') {
+            Some((a, b)) => (a.parse::<usize>().ok()?, b.parse::<usize>().ok()?),
+            None => {
+                let n = part.parse::<usize>().ok()?;
+                (n, n)
+            }
+        };
+        if lo > hi || hi >= max {
+            return None;
+        }
+        out.extend(lo..=hi);
+    }
+    Some(out)
+}
+
+/// The elements and the relationships, each in the order `/api/model` numbers
+/// them. One definition, because an index the page sends back has to mean the
+/// same concept it meant on the way out.
+fn indexed(m: &Model) -> (Vec<ConceptId>, Vec<ConceptId>) {
+    let mut elements = Vec::new();
+    let mut relations = Vec::new();
+    for (cid, c) in m.concepts_with_ids() {
+        match &c.kind {
+            ConceptKind::Relationship(_) => relations.push(cid),
+            // A relationship of a type this build does not know has no
+            // notation to draw and no ends the matrix vouches for; it is
+            // left out rather than drawn wrong. Unknown elements stay in.
+            ConceptKind::Unknown { is_relationship: true, .. } => {}
+            _ => elements.push(cid),
+        }
+    }
+    (elements, relations)
+}
+
+/// How a relationship type is named in the JSON: `AccessRelationship` as
+/// `Access`.
+fn rel_short(rt: RelType) -> &'static str {
+    rt.info().xsi.trim_start_matches("archimate:").trim_end_matches("Relationship")
+}
+
 /// The whole model, once per load. See the module docs for the shape.
 pub fn model_json(m: &Model, checksum: &str) -> String {
     let g = Graph::build(m);
@@ -177,25 +324,12 @@ pub fn model_json(m: &Model, checksum: &str) -> String {
     s.push(']');
 
     // Elements first, relationships second, each numbered within its own
-    // array; a relationship's ends are element indices.
-    let mut elem_idx: HashMap<u32, usize> = HashMap::new();
-    let mut rel_idx: HashMap<u32, usize> = HashMap::new();
-    for (cid, c) in m.concepts_with_ids() {
-        match &c.kind {
-            ConceptKind::Relationship(_) => {
-                let n = rel_idx.len();
-                rel_idx.insert(cid.0, n);
-            }
-            // A relationship of a type this build does not know has no
-            // notation to draw and no ends the matrix vouches for; it is
-            // left out rather than drawn wrong. Unknown elements stay in.
-            ConceptKind::Unknown { is_relationship: true, .. } => {}
-            _ => {
-                let n = elem_idx.len();
-                elem_idx.insert(cid.0, n);
-            }
-        }
-    }
+    // array by `indexed`; a relationship's ends are element indices.
+    let (elements, relations) = indexed(m);
+    let elem_idx: HashMap<u32, usize> =
+        elements.iter().enumerate().map(|(i, c)| (c.0, i)).collect();
+    let rel_idx: HashMap<u32, usize> =
+        relations.iter().enumerate().map(|(i, c)| (c.0, i)).collect();
     let mut view_idx: HashMap<u32, usize> = HashMap::new();
     for (i, (vid, _)) in m.views_with_ids().enumerate() {
         view_idx.insert(vid.0, i);
@@ -261,7 +395,7 @@ pub fn model_json(m: &Model, checksum: &str) -> String {
             s,
             "{{\"id\":{},\"type\":{},\"name\":{},\"src\":{src},\"tgt\":{tgt},\"srcId\":{},\"tgtId\":{},\"access\":{},\"directed\":{directed},\"folder\":{},\"doc\":{},\"props\":{}}}",
             quote(&c.id),
-            quote(rt.info().xsi.trim_start_matches("archimate:").trim_end_matches("Relationship")),
+            quote(rel_short(*rt)),
             quote(&c.name),
             quote(c.source.as_deref().unwrap_or("")),
             quote(c.target.as_deref().unwrap_or("")),
@@ -329,7 +463,7 @@ pub fn model_json(m: &Model, checksum: &str) -> String {
         let _ = write!(
             s,
             "{}:{{\"dash\":{},\"source\":{},\"target\":{}}}",
-            quote(r.info().xsi.trim_start_matches("archimate:").trim_end_matches("Relationship")),
+            quote(rel_short(*r)),
             opt(st.dash.map(str::to_string)),
             quote(deco_name(st.source)),
             quote(deco_name(st.target)),

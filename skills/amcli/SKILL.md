@@ -338,10 +338,11 @@ for a quick look, not for reproducing someone's diagram.
     amcli web --no-open           # print the URL only — a container, SSH, or when the person opens it
     amcli web --port 8080         # a fixed port; the default is a free one the OS picks
 
-`amcli web` serves the model on `127.0.0.1` only: every view drawn as Archi
-draws it (colours, figures, type icons) with SVG and PNG a click away, a table
-of every element and relationship, an interactive graph to explore from any
-element, and stats.
+`amcli web` serves the model on `127.0.0.1` only: the views in their folder
+tree, each drawn as Archi draws it (colours, figures, type icons) with SVG and
+PNG a click away, a table of every element and relationship, a graph laid out
+by the same code `view auto` runs — centre it on an element, choose a depth,
+filter by layer, element type and relationship type — and stats.
 Nothing on the page edits anything, and the process writes nothing — it is the
 one command that keeps running after it has answered, so **run it in the
 background** (`amcli web --no-open &`, or a second terminal) and hand the URL

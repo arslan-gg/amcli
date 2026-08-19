@@ -83,6 +83,18 @@ binary is the whole product, and it works offline.
 - **The page draws with the same notation as the renderer.** `/api/model`
   carries the fills, figures, icons and line ends from `amcli-view`'s
   `notation.rs` and `icons.rs`, so the graph cannot drift from a rendered view.
+- **The graph is laid out by `amcli-view`, not by the browser.** The page
+  decides *what* to draw — it has the whole model, so a filter costs nothing —
+  and `GET /api/layout?e=<index ranges>` answers *where*, from the same
+  `layout::place` that `view auto` runs. There is no second layout engine and
+  no force simulation; a graph is a view that was not saved. The one
+  difference is [`Lanes::Free`] (below), and the indices in `e` are positions
+  in `/api/model`'s arrays, which is why `indexed()` is the only place that
+  decides that order.
+- **`replaceParams` deliberately does not tell the router.** Every page
+  redraws the part of itself that changed; notifying would tear the page down
+  and rebuild it, losing what the URL does not hold and asking the server
+  again for the same answer.
 - **Type icons are hand-ported code**, in `crates/amcli-view/src/icons.rs`,
   one entry per Archi figure class named in a comment. They are not
   `assets/archi` inputs and `xtask` does not touch them. Path data must stay
@@ -95,6 +107,26 @@ records the upstream tag and checksums, and updating them is a deliberate,
 reviewable change. `cargo xtask verify` enforces both halves: the assets
 against the recorded checksums, and the generated tables against the assets.
 The refresh procedure is in the header of PROVENANCE.toml itself.
+
+## Two things about the layout that are easy to undo by accident
+
+- **The crossing counts read one precomputed thing.** `Layered::sides` gathers,
+  per row, where each slot's neighbours stand in the rows above and below;
+  `pair_crossings` and friends read only that. Sifting scores a group's
+  positions with prefix sums (`sift_scores`) instead of walking the row once
+  per position. Together these took the whole 272-element model from 91
+  seconds to 1.2 with byte-identical output — putting either back makes
+  `view auto` unusable on a real model and the web graph impossible. If you
+  change them, check identity against a known layout, not just the tests.
+- **`Lanes` is the one place a graph differs from a view.** `Reserved` — the
+  default, and what every `view` command uses — gives every line crossing a
+  row a corridor, so no line is drawn through a box. It is also where the
+  width of a dense drawing comes from: on the whole 272-element model, 504
+  edges reserving lanes made it 170,328 px wide with a median line of 15,806.
+  `Lanes::Free` drops the corridors: 14,184 px wide, median line 1,063, at the
+  cost of about seventy per cent more crossings. `/api/layout` uses `Free`
+  because nobody saves a graph; do not make it the default anywhere a diagram
+  is written to the file.
 
 ## Format traps worth knowing before you touch the model layer
 

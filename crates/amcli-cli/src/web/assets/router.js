@@ -29,10 +29,14 @@ export function navigate(page, id, params) {
 
 // Change the query of the current route without adding history entries, for
 // filters and toggles.
+//
+// The route handlers are deliberately *not* called: a page that changes its
+// own filter has already redrawn the part that changed, and telling the router
+// would tear the page down and build it again — losing whatever it holds that
+// the URL does not, and asking the server a second time for the same answer.
 export function replaceParams(params) {
   const r = parse();
   history.replaceState(null, "", href(r.page, r.id, params));
-  for (const fn of handlers) fn(parse());
 }
 
 export function onRoute(fn) {

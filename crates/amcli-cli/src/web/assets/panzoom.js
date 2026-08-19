@@ -9,11 +9,20 @@ export function attachPanZoom(svg, container, opts = {}) {
   const apply = () => svg.setAttribute("viewBox", `${state.x} ${state.y} ${state.w} ${state.h}`);
 
   // Fit `box` ({x,y,w,h}) into the container with a margin.
+  //
+  // `minFitScale` is the floor: a drawing that is a hundred times wider than
+  // the pane would otherwise be shrunk until every box is a fraction of a
+  // pixel and the canvas looks empty. Below the floor the fit gives up on
+  // showing the whole thing and shows the middle of it at a size that can be
+  // seen, leaving the rest to panning.
   const fit = (box, pad = 24) => {
     if (!box || box.w <= 0 || box.h <= 0) return;
     state.content = box;
     const cw = container.clientWidth || 800, ch = container.clientHeight || 600;
-    const scale = Math.min(cw / (box.w + 2 * pad), ch / (box.h + 2 * pad), opts.maxFitScale || 1.5);
+    const scale = Math.max(
+      Math.min(cw / (box.w + 2 * pad), ch / (box.h + 2 * pad), opts.maxFitScale || 1.5),
+      opts.minFitScale || 0,
+    );
     state.w = cw / scale;
     state.h = ch / scale;
     state.x = box.x + box.w / 2 - state.w / 2;

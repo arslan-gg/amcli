@@ -306,11 +306,42 @@ pub struct Placement {
 }
 
 pub fn place(items: &[Item], edges: &[(usize, usize)], algo: Algorithm) -> Placement {
+    place_with(items, edges, algo, Lanes::Reserved)
+}
+
+/// How much room a line crossing a row is given.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum Lanes {
+    /// A corridor in every row it crosses, so no line is ever drawn through a
+    /// box. This is what a view gets, and what a diagram someone will keep
+    /// should get: a line over a box is the one thing that stops a drawing
+    /// being read.
+    #[default]
+    Reserved,
+    /// None. Lines then run through the rows between their ends, and a few
+    /// pass over a box; in exchange the rows stay as wide as the boxes in
+    /// them and the lines stay short.
+    ///
+    /// Corridors are what the width of a dense drawing is made of — every one
+    /// of five hundred edges reserving a lane in each of a dozen rows is a
+    /// row two hundred times wider than its boxes, and every line across it
+    /// is that long. For a drawing nobody is going to save, the trade is
+    /// worth taking the other way round.
+    Free,
+}
+
+/// [`place`], choosing what to do about the lines that cross a row.
+pub fn place_with(
+    items: &[Item],
+    edges: &[(usize, usize)],
+    algo: Algorithm,
+    lanes: Lanes,
+) -> Placement {
     match algo {
         Algorithm::Grid => grid_placement(items),
-        Algorithm::Sugiyama => sugiyama(items, edges),
+        Algorithm::Sugiyama => sugiyama(items, edges, lanes),
         Algorithm::Auto => {
-            let layered = sugiyama(items, edges);
+            let layered = sugiyama(items, edges, lanes);
             let ratio = wideness(&layered.rects);
             let bbox = layered.rects.iter().copied().reduce(|a, b| a.union(b)).unwrap_or_default();
             if fits(bbox.w, bbox.h) {
@@ -915,11 +946,11 @@ fn network_simplex(n: usize, edges: &[(usize, usize)], init: Vec<usize>) -> Vec<
 /// above the other — and the packing decides where they go: largest first,
 /// left to right, a shelf at a time, wrapping when a shelf would run past
 /// the width bound. Nothing else can put daylight between them.
-fn sugiyama(items: &[Item], edges: &[(usize, usize)]) -> Placement {
+fn sugiyama(items: &[Item], edges: &[(usize, usize)], lanes: Lanes) -> Placement {
     let mut comps = components(items.len(), edges);
     let pitch = items.iter().map(|i| i.h).max().unwrap_or(55).max(55);
     if comps.len() <= 1 {
-        return sugiyama_connected(items, edges, pitch);
+        return sugiyama_connected(items, edges, pitch, lanes);
     }
     // Largest first, then by the name and id of the first member — content,
     // not index, so reversing the input does not reorder the packing.
@@ -937,7 +968,7 @@ fn sugiyama(items: &[Item], edges: &[(usize, usize)]) -> Placement {
         let sub_items: Vec<Item> = members.iter().map(|gi| items[*gi].clone()).collect();
         let sub_edges: Vec<(usize, usize)> =
             edges.iter().filter_map(|(a, b)| Some((*local.get(a)?, *local.get(b)?))).collect();
-        let p = sugiyama_connected(&sub_items, &sub_edges, pitch);
+        let p = sugiyama_connected(&sub_items, &sub_edges, pitch, lanes);
         drawn.push((members.clone(), p));
     }
 
@@ -1043,7 +1074,12 @@ fn components(n: usize, edges: &[(usize, usize)]) -> Vec<Vec<usize>> {
 /// with fewer long edges wins, then the one with fewer rows — a chain along
 /// a row under its hub rather than snaked over three — then the smaller,
 /// then the directed one.
-fn sugiyama_connected(items: &[Item], edges: &[(usize, usize)], min_pitch: i32) -> Placement {
+fn sugiyama_connected(
+    items: &[Item],
+    edges: &[(usize, usize)],
+    min_pitch: i32,
+    lanes: Lanes,
+) -> Placement {
     let n = items.len();
     let (raw_rank, _) = rank_by_dependency(n, edges);
     let mut candidates: Vec<Vec<usize>> = vec![compact(&raw_rank)];
@@ -1056,7 +1092,7 @@ fn sugiyama_connected(items: &[Item], edges: &[(usize, usize)], min_pitch: i32) 
 
     let mut best: Option<(Placement, (usize, usize, usize, i64))> = None;
     for layers in &candidates {
-        let g = build(items, edges, layers, min_pitch);
+        let g = build(items, edges, layers, min_pitch, lanes);
         let rects = g.finish(items);
         let p = Placement { rects, algorithm: Algorithm::Sugiyama };
         let long = g.rows.iter().flatten().filter(|s| matches!(s, Slot::Dummy(..))).count();
@@ -1266,6 +1302,71 @@ enum Slot {
     Dummy(usize, usize),
 }
 
+/// For each slot of one row, where its neighbours stand in the row above
+/// (side 0) and in the row below (side 1). Built by [`Layered::sides`], and
+/// the only thing the crossing counts below read.
+type Sides = HashMap<Slot, [Vec<usize>; 2]>;
+
+/// Crossings two slots of one row contribute with `u` drawn left of `v`,
+/// counted against the rows above and below.
+fn pair_crossings(sides: &Sides, u: Slot, v: Slot) -> usize {
+    static NONE: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    let us = sides.get(&u).unwrap_or(&NONE);
+    let vs = sides.get(&v).unwrap_or(&NONE);
+    let mut c = 0;
+    for side in 0..2 {
+        // With u left of v, a crossing is any u-neighbour to the right of a
+        // v-neighbour.
+        for pu in &us[side] {
+            for pv in &vs[side] {
+                if pu > pv {
+                    c += 1;
+                }
+            }
+        }
+    }
+    c
+}
+
+/// Crossings between two groups of one row, the first left of the second.
+fn group_crossings(sides: &Sides, left: &[Slot], right: &[Slot]) -> usize {
+    left.iter().map(|u| right.iter().map(|v| pair_crossings(sides, *u, *v)).sum::<usize>()).sum()
+}
+
+/// Crossings a group's own members make with each other in this order.
+fn inner_crossings(sides: &Sides, group: &[Slot]) -> usize {
+    let mut c = 0;
+    for i in 0..group.len() {
+        for j in i + 1..group.len() {
+            c += pair_crossings(sides, group[i], group[j]);
+        }
+    }
+    c
+}
+
+/// What `cand` would cost at each of the `without.len() + 1` places it could
+/// be inserted into `without`, in one pass instead of one pass per place.
+///
+/// At position `at` the groups before it are `without[..at]`, drawn to its
+/// left, and the rest are drawn to its right; the count is the sum over each.
+/// Both sums are running totals over the same row, so scoring every position
+/// takes `2n` crossing counts rather than `n` per position — the difference
+/// between a row of eighty settling in milliseconds and in a minute, and the
+/// whole reason a graph can be laid out while someone waits.
+fn sift_scores(sides: &Sides, without: &[Vec<Slot>], cand: &[Slot]) -> Vec<usize> {
+    let n = without.len();
+    let mut left = vec![0usize; n + 1];
+    let mut right = vec![0usize; n + 1];
+    for j in 0..n {
+        left[j + 1] = left[j] + group_crossings(sides, &without[j], cand);
+    }
+    for j in (0..n).rev() {
+        right[j] = right[j + 1] + group_crossings(sides, cand, &without[j]);
+    }
+    let inner = inner_crossings(sides, cand);
+    (0..=n).map(|at| inner + left[at] + right[at]).collect()
+}
+
 struct Layered {
     rows: Vec<Vec<Slot>>,
     /// Per-slot width, so a dummy reserves a thin lane rather than a whole box.
@@ -1300,7 +1401,13 @@ struct Layered {
     proj: HashMap<Slot, f64>,
 }
 
-fn build(items: &[Item], edges: &[(usize, usize)], layers: &[usize], min_pitch: i32) -> Layered {
+fn build(
+    items: &[Item],
+    edges: &[(usize, usize)],
+    layers: &[usize],
+    min_pitch: i32,
+    lanes: Lanes,
+) -> Layered {
     let depth = layers.iter().copied().max().unwrap_or(0) + 1;
     let mut rows: Vec<Vec<Slot>> = vec![Vec::new(); depth];
     let mut width = HashMap::new();
@@ -1362,14 +1469,16 @@ fn build(items: &[Item], edges: &[(usize, usize)], layers: &[usize], min_pitch: 
     // corridors in place — then rebuilt, because folding moves the rows they
     // thread — settles it; a second is never needed in practice, and the loop
     // is bounded either way.
-    for round in 0..3 {
-        g.lay_corridors(&drawn);
-        let (w, h) = extent(&g.rows, &g.width, g.pitch);
-        if round == 2 || fits(w, h) {
-            break;
+    if lanes == Lanes::Reserved {
+        for round in 0..3 {
+            g.lay_corridors(&drawn);
+            let (w, h) = extent(&g.rows, &g.width, g.pitch);
+            if round == 2 || fits(w, h) {
+                break;
+            }
+            g.strip_corridors();
+            g.fold_to_fit();
         }
-        g.strip_corridors();
-        g.fold_to_fit();
     }
 
     // Order again with the corridors in, so they thread between the boxes
@@ -1631,82 +1740,36 @@ impl Layered {
         }
     }
 
-    /// Crossings two slots of one row contribute, `u` left of `v`, counted
-    /// against the rows above and below. `pos` is every slot's index in its
-    /// row; only the neighbouring rows' entries are read.
-    fn pair_crossings(
-        &self,
-        nb: &HashMap<Slot, Vec<Slot>>,
-        row_of: &HashMap<Slot, usize>,
-        pos: &HashMap<Slot, usize>,
-        u: Slot,
-        v: Slot,
-    ) -> usize {
+    /// Where each slot of row `r` finds its neighbours in the row above and
+    /// in the row below: their positions there, side 0 above and side 1 below.
+    ///
+    /// This is everything the crossing counts read, and a sweep reads it
+    /// hundreds of thousands of times over one drawing. Gathering it once per
+    /// row turns each count into two flat loops, where looking it up through
+    /// three hash maps and building two vectors for every pair of slots
+    /// compared was most of what the layout spent its time on.
+    fn sides(&self, nb: &HashMap<Slot, Vec<Slot>>, r: usize) -> Sides {
         let depth = self.rows.len();
-        let r = row_of[&u];
-        let mut c = 0;
-        for other_row in [r.wrapping_sub(1), r + 1] {
-            if other_row >= depth {
+        let mut at: HashMap<Slot, (usize, usize)> = HashMap::new();
+        for (side, other) in [r.wrapping_sub(1), r + 1].into_iter().enumerate() {
+            if other >= depth {
                 continue;
             }
-            let us: Vec<usize> = nb
-                .get(&u)
-                .into_iter()
-                .flatten()
-                .filter(|o| row_of[o] == other_row)
-                .map(|o| pos[o])
-                .collect();
-            let vs: Vec<usize> = nb
-                .get(&v)
-                .into_iter()
-                .flatten()
-                .filter(|o| row_of[o] == other_row)
-                .map(|o| pos[o])
-                .collect();
-            // With u left of v, a crossing is any u-neighbour to the right
-            // of a v-neighbour.
-            for pu in &us {
-                for pv in &vs {
-                    if pu > pv {
-                        c += 1;
-                    }
+            for (i, s) in self.rows[other].iter().enumerate() {
+                at.insert(*s, (side, i));
+            }
+        }
+        let mut out: Sides = HashMap::with_capacity(self.rows[r].len());
+        for s in &self.rows[r] {
+            let mut ends: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+            for o in nb.get(s).into_iter().flatten() {
+                if let Some(&(side, i)) = at.get(o) {
+                    ends[side].push(i);
                 }
             }
+            out.insert(*s, ends);
         }
-        c
-    }
-
-    /// Crossings between two groups of one row, the first left of the second.
-    fn group_crossings(
-        &self,
-        nb: &HashMap<Slot, Vec<Slot>>,
-        row_of: &HashMap<Slot, usize>,
-        pos: &HashMap<Slot, usize>,
-        left: &[Slot],
-        right: &[Slot],
-    ) -> usize {
-        left.iter()
-            .map(|u| {
-                right.iter().map(|v| self.pair_crossings(nb, row_of, pos, *u, *v)).sum::<usize>()
-            })
-            .sum()
-    }
-
-    /// Crossings a group's own members make with each other in this order.
-    fn inner_crossings(
-        &self,
-        nb: &HashMap<Slot, Vec<Slot>>,
-        row_of: &HashMap<Slot, usize>,
-        pos: &HashMap<Slot, usize>,
-        group: &[Slot],
-    ) -> usize {
-        let mut c = 0;
-        for i in 0..group.len() {
-            for j in i + 1..group.len() {
-                c += self.pair_crossings(nb, row_of, pos, group[i], group[j]);
-            }
-        }
-        c
+        out
     }
 
     /// Try every group at every position in its row, keeping the best.
@@ -1716,7 +1779,6 @@ impl Layered {
     /// fixed point.
     fn sift(&mut self, nb: &HashMap<Slot, Vec<Slot>>) {
         let depth = self.rows.len();
-        let row_of: HashMap<Slot, usize> = self.row_index();
 
         for _round in 0..4 {
             let mut improved = false;
@@ -1725,19 +1787,17 @@ impl Layered {
                 if groups.len() < 3 {
                     continue;
                 }
-                // Positions in the neighbouring rows, fixed for this row.
-                let pos: HashMap<Slot, usize> = [r.wrapping_sub(1), r + 1]
-                    .into_iter()
-                    .filter(|&o| o < depth)
-                    .flat_map(|o| self.rows[o].iter().enumerate().map(move |(i, s)| (*s, i)))
-                    .collect();
+                // Where this row's slots meet the neighbouring rows, fixed
+                // for the whole of this row: only the order within row `r`
+                // changes below, and no count reads that.
+                let sides = self.sides(nb, r);
                 // Only groups that actually link to a neighbouring row can
                 // change the count.
                 let touched: Vec<Vec<Slot>> = groups
                     .iter()
                     .filter(|g| {
                         g.iter().any(|s| {
-                            nb.get(s).is_some_and(|ns| ns.iter().any(|o| pos.contains_key(o)))
+                            sides.get(s).is_some_and(|e| !e[0].is_empty() || !e[1].is_empty())
                         })
                     })
                     .cloned()
@@ -1750,50 +1810,36 @@ impl Layered {
                     // Where it is *now* — earlier moves in this pass have
                     // shifted the indices.
                     let orig_i = groups.iter().position(|t| *t == g).unwrap();
-                    // Crossings this group contributes at a position, in the
-                    // orientation given.
-                    let score = |groups: &[Vec<Slot>], at: usize, g: &[Slot]| -> usize {
-                        let mut c = self.inner_crossings(nb, &row_of, &pos, g);
-                        for (j, t) in groups.iter().enumerate() {
-                            if j == at {
-                                continue;
-                            }
-                            c += if j < at {
-                                self.group_crossings(nb, &row_of, &pos, t, g)
-                            } else {
-                                self.group_crossings(nb, &row_of, &pos, g, t)
-                            };
-                        }
-                        c
-                    };
-                    let mut best_at = orig_i;
-                    let mut best_g = g.clone();
-                    let mut best_c = score(&groups, orig_i, &g);
-                    // Try every other position, and both ways round. Strictly
-                    // better only, and the earliest such position wins, so
-                    // the result is fixed.
                     let without: Vec<Vec<Slot>> =
                         groups.iter().filter(|t| **t != g).cloned().collect();
                     let mut flipped = g.clone();
                     flipped.reverse();
+                    // Every position, scored in one pass over the row rather
+                    // than one pass per position — see `sift_scores`.
+                    let straight = sift_scores(&sides, &without, &g);
+                    let reversed = sift_scores(&sides, &without, &flipped);
+                    // Try every other position, and both ways round. Strictly
+                    // better only, and the earliest such position wins, so
+                    // the result is fixed.
+                    let mut best_at = orig_i;
+                    let mut best_flip = false;
+                    let mut best_c = straight[orig_i];
                     for at in 0..=without.len() {
-                        for cand in [&g, &flipped] {
-                            if at == orig_i && *cand == g {
+                        for flip in [false, true] {
+                            if at == orig_i && (!flip || flipped == g) {
                                 continue;
                             }
-                            let mut trial = without.clone();
-                            trial.insert(at, cand.clone());
-                            let c = score(&trial, at, cand);
+                            let c = if flip { reversed[at] } else { straight[at] };
                             if c < best_c {
                                 best_c = c;
                                 best_at = at;
-                                best_g = cand.clone();
+                                best_flip = flip;
                             }
                         }
                     }
-                    if best_at != orig_i || best_g != g {
+                    if best_at != orig_i || best_flip {
                         let mut next = without;
-                        next.insert(best_at, best_g);
+                        next.insert(best_at, if best_flip { flipped } else { g.clone() });
                         groups = next;
                         improved = true;
                     }
@@ -1981,15 +2027,6 @@ impl Layered {
     /// what is counted, and the whole-drawing count is not recomputed per swap.
     fn transpose_pass(&mut self, nb: &HashMap<Slot, Vec<Slot>>) {
         let depth = self.rows.len();
-        // Position of every slot in its row, refreshed as rows change.
-        let mut pos: HashMap<Slot, usize> = HashMap::new();
-        for row in &self.rows {
-            for (i, s) in row.iter().enumerate() {
-                pos.insert(*s, i);
-            }
-        }
-        let row_of: HashMap<Slot, usize> = self.row_index();
-
         let mut improved = true;
         let mut rounds = 0;
         while improved && rounds < 16 {
@@ -1997,6 +2034,9 @@ impl Layered {
             rounds += 1;
             for r in 0..depth {
                 let mut groups = self.groups(&self.rows[r]);
+                // Read afresh for each row: the rows it counts against are
+                // whatever the earlier rows of this pass left behind.
+                let sides = self.sides(nb, r);
                 let mut changed = false;
                 for g in groups.iter_mut() {
                     if g.len() < 2 {
@@ -2004,18 +2044,15 @@ impl Layered {
                     }
                     let mut flipped = g.clone();
                     flipped.reverse();
-                    if self.inner_crossings(nb, &row_of, &pos, &flipped)
-                        < self.inner_crossings(nb, &row_of, &pos, g)
-                    {
+                    if inner_crossings(&sides, &flipped) < inner_crossings(&sides, g) {
                         *g = flipped;
                         changed = true;
                     }
                 }
                 let mut i = 0;
                 while i + 1 < groups.len() {
-                    let before =
-                        self.group_crossings(nb, &row_of, &pos, &groups[i], &groups[i + 1]);
-                    let after = self.group_crossings(nb, &row_of, &pos, &groups[i + 1], &groups[i]);
+                    let before = group_crossings(&sides, &groups[i], &groups[i + 1]);
+                    let after = group_crossings(&sides, &groups[i + 1], &groups[i]);
                     // Strictly fewer, never equal: an equal swap would flip
                     // back on the next round and the pass would never settle.
                     if after < before {
@@ -2026,9 +2063,6 @@ impl Layered {
                 }
                 if changed {
                     self.rows[r] = groups.concat();
-                    for (i, s) in self.rows[r].iter().enumerate() {
-                        pos.insert(*s, i);
-                    }
                     improved = true;
                 }
             }

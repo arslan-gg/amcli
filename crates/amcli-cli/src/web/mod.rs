@@ -173,6 +173,79 @@ mod tests {
         assert!(body.contains("\"error\":null"), "{body}");
     }
 
+    /// The graph asks where its boxes go; the answer has to line up with the
+    /// element array `/api/model` handed out, or the page draws the wrong
+    /// concepts in the right places.
+    #[test]
+    fn lays_out_the_elements_the_page_asks_for() {
+        let (port, _state, _dir) = start("testmodel1.archimate");
+        let (_, _, body) = get(port, "/api/model");
+        let model: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let elements = model["elements"].as_array().unwrap();
+        let relations = model["relations"].as_array().unwrap();
+        let last = elements.len() - 1;
+
+        let (status, _, body) = get(port, &format!("/api/layout?e=0-{last}"));
+        assert_eq!(status, 200);
+        let out: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let nodes = out["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), elements.len(), "one rectangle per element asked for");
+        for n in nodes {
+            let r = n.as_array().unwrap();
+            assert_eq!(r.len(), 4, "x, y, w, h");
+            assert!(r[2].as_i64().unwrap() > 0 && r[3].as_i64().unwrap() > 0);
+        }
+        // No two boxes overlap: that is the one thing a placement must get
+        // right, and the only one a test can check without redrawing it.
+        for (i, a) in nodes.iter().enumerate() {
+            for b in nodes.iter().skip(i + 1) {
+                let (a, b) = (a.as_array().unwrap(), b.as_array().unwrap());
+                let n = |v: &serde_json::Value| v.as_i64().unwrap();
+                let apart = n(&a[0]) + n(&a[2]) <= n(&b[0])
+                    || n(&b[0]) + n(&b[2]) <= n(&a[0])
+                    || n(&a[1]) + n(&a[3]) <= n(&b[1])
+                    || n(&b[1]) + n(&b[3]) <= n(&a[1]);
+                assert!(apart, "{a:?} and {b:?} overlap");
+            }
+        }
+        // Every edge names a relationship of the model and two of the boxes.
+        for e in out["edges"].as_array().unwrap() {
+            let e = e.as_array().unwrap();
+            let (ri, a, b) =
+                (e[0].as_u64().unwrap(), e[1].as_u64().unwrap(), e[2].as_u64().unwrap());
+            assert!((ri as usize) < relations.len());
+            assert!((a as usize) < nodes.len() && (b as usize) < nodes.len());
+        }
+
+        // One element on its own is a placement too.
+        let (status, _, body) = get(port, &format!("/api/layout?e={last}"));
+        assert_eq!(status, 200);
+        let one: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(one["nodes"].as_array().unwrap().len(), 1);
+
+        // Hiding every kind of relationship leaves the boxes with nothing
+        // between them — the page's filter and the layout's edges are the
+        // same set.
+        let kinds: Vec<&str> =
+            relations.iter().map(|r| r["type"].as_str().unwrap()).collect::<Vec<_>>();
+        let hidden = kinds.join(",");
+        assert!(!out["edges"].as_array().unwrap().is_empty(), "the fixture has edges to hide");
+        let (status, _, body) = get(port, &format!("/api/layout?e=0-{last}&hiderel={hidden}"));
+        assert_eq!(status, 200);
+        let bare: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(bare["edges"].as_array().unwrap().is_empty(), "{body}");
+
+        for (query, code) in [
+            ("?e=", 400),                         // nothing asked for
+            ("", 400),                            // nor even the parameter
+            ("?e=nonsense", 400),                 // not indices
+            (&format!("?e=0-{}", last + 1), 400), // past the end of the array
+            ("?e=0&algo=spiral", 400),            // not an algorithm
+        ] {
+            assert_eq!(get(port, &format!("/api/layout{query}")).0, code, "for `{query}`");
+        }
+    }
+
     #[test]
     fn refuses_what_it_does_not_serve() {
         let (port, _state, _dir) = start("testmodel1.archimate");

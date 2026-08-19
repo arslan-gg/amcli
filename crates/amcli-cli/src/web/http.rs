@@ -30,11 +30,29 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 pub struct Request {
     pub method: String,
-    /// Percent-decoded, query stripped. The query is dropped: the page only
-    /// ever uses one to defeat a cache, and the server has none.
+    /// Percent-decoded, query stripped.
     pub path: String,
+    /// Everything after the `?`, raw. Most paths ignore it — the page uses one
+    /// only to defeat a cache — but `/api/layout` asks a question with it, so
+    /// it is kept and decoded per value rather than whole: a value may contain
+    /// an escaped `&` or `=` and splitting a decoded query would lose it.
+    pub query: String,
     /// The `Host` header, lower-cased.
     pub host: String,
+}
+
+impl Request {
+    /// The value of one query parameter, percent-decoded. Empty when absent,
+    /// which for every parameter here means the same as "not given".
+    pub fn param(&self, name: &str) -> String {
+        for pair in self.query.split('&') {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            if percent_decode(k) == name {
+                return percent_decode(&v.replace('+', " "));
+            }
+        }
+        String::new()
+    }
 }
 
 pub struct Response {
@@ -153,7 +171,10 @@ pub fn parse(head: &[u8]) -> Result<Request, u16> {
     if !target.starts_with('/') {
         return Err(400);
     }
-    let raw_path = target.split_once('?').map(|(p, _)| p).unwrap_or(target);
+    let (raw_path, query) = match target.split_once('?') {
+        Some((p, q)) => (p, q.to_string()),
+        None => (target, String::new()),
+    };
     let path = percent_decode(raw_path);
     if path.contains('\0') {
         return Err(400);
@@ -169,7 +190,7 @@ pub fn parse(head: &[u8]) -> Result<Request, u16> {
             host = v.trim().to_ascii_lowercase();
         }
     }
-    Ok(Request { method, path, host })
+    Ok(Request { method, path, query, host })
 }
 
 pub fn percent_decode(s: &str) -> String {
@@ -237,7 +258,20 @@ mod tests {
         .unwrap();
         assert_eq!(r.method, "GET");
         assert_eq!(r.path, "/api/view/a b.svg");
+        assert_eq!(r.query, "c=1");
         assert_eq!(r.host, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn reads_query_parameters_one_value_at_a_time() {
+        let r =
+            parse(b"GET /api/layout?e=0-9,12&hiderel=Access%2CServing HTTP/1.1\r\n\r\n").unwrap();
+        assert_eq!(r.path, "/api/layout");
+        assert_eq!(r.param("e"), "0-9,12");
+        // An escaped separator survives, which it would not if the whole
+        // query were decoded before being split.
+        assert_eq!(r.param("hiderel"), "Access,Serving");
+        assert_eq!(r.param("missing"), "");
     }
 
     #[test]

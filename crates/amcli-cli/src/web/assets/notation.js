@@ -7,13 +7,28 @@ import { s } from "./dom.js";
 import { store } from "./store.js";
 
 export const ICON = 16;
-// Average advance of the 11px UI font, for sizing boxes to their labels.
-export const PER_CHAR = 6.6;
+// What a character costs, for deciding where a label breaks. The same 0.52 em
+// the renderer charges, at the size the page draws — charging more than the
+// renderer does made the page wrap a name the renderer fits on one line, and
+// in a group's tab, which gets one line, that came out as half a name.
+export const PER_CHAR = 11 * 0.52;
+
+// The height of a group's tab, as `amcli-view`'s geometry has it.
+export const GROUP_HEADER = 18;
 
 // ColorFactory.getDerivedLineColor: the border Archi derives from a fill.
 export function derivedLine(hex) {
+  return scale(hex, 0.7);
+}
+
+// What the renderer paints a group's tab: the fill, a shade down.
+export function darker(hex) {
+  return scale(hex, 0.9);
+}
+
+function scale(hex, by) {
   const n = parseInt(hex.slice(1), 16);
-  const f = (c) => Math.floor(c * 0.7);
+  const f = (c) => Math.floor(c * by);
   const r = f((n >> 16) & 255), g = f((n >> 8) & 255), b = f(n & 255);
   return "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
 }
@@ -37,9 +52,11 @@ export function figure(kind, w, h, attrs = {}) {
       return s("polygon", { points: pts.map((p) => p.join(",")).join(" "), ...attrs });
     }
     case "tabbed": {
+      // A tab across the top-left, then the body — Archi's GroupFigure, and
+      // the renderer's: the tab is half the figure wide and a shade darker.
       const g = s("g", attrs);
-      g.appendChild(s("rect", { width: Math.max(40, w / 2), height: 18, ...attrs }));
-      g.appendChild(s("rect", { y: 18, width: w, height: Math.max(1, h - 18), ...attrs }));
+      g.appendChild(s("rect", { ...attrs, width: Math.max(40, w / 2), height: GROUP_HEADER, fill: darker(attrs.fill || "#ffffff") }));
+      g.appendChild(s("rect", { ...attrs, y: GROUP_HEADER, width: w, height: Math.max(1, h - GROUP_HEADER) }));
       return g;
     }
     default:
@@ -122,10 +139,15 @@ export function nodeGroup(type, name, w, h) {
   const showIcon = t.icon && !["tabbed", "circle"].includes(t.figure) && w >= 40 && h >= 26;
   if (showIcon) g.appendChild(s("use", { href: `#i-${type}`, x: w - 20, y: 4, width: ICON, height: ICON, color: line }));
   if (t.figure !== "circle") {
-    const inset = showIcon ? 22 : 6;
-    const lines = wrap(name || "", w - 2 * inset, 3);
+    // A group's name goes in its tab, where the renderer puts it, and gets
+    // the one line the tab is tall — centred over the whole figure it fell
+    // across the seam between the tab and the body and read as clipped.
+    // Every other figure centres its label in the box.
+    const tabbed = t.figure === "tabbed";
+    const inset = tabbed ? 5 : showIcon ? 22 : 6;
     const lh = 13;
-    const top = h / 2 - ((lines.length - 1) * lh) / 2;
+    const lines = wrap(name || "", w - 2 * inset, tabbed ? 1 : 3);
+    const top = tabbed ? GROUP_HEADER / 2 : h / 2 - ((lines.length - 1) * lh) / 2;
     lines.forEach((l, i) => {
       g.appendChild(s("text", { x: w / 2, y: top + i * lh, "text-anchor": "middle", "dominant-baseline": "middle" }, l));
     });

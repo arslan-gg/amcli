@@ -235,6 +235,46 @@ select.input { padding-right: 24px; }
   border: 1px solid rgba(0,0,0,.25);
 }
 .chips { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+/* One labelled row per thing being filtered, each starting its own line —
+   sharing a line left a label stranded at the far right of the row above its
+   chips, naming nothing.
+
+   Each row is a count and a menu rather than a chip per value: thirty-one
+   element types wrapped over three lines was not a filter anyone could read,
+   and a model with a hundred would have been worse. What is *hidden* is shown
+   beside it, because that is the short list and the one worth a click. */
+.filter-bar {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.filter-bar > .k { color: var(--muted-foreground); font-size: 12px; white-space: nowrap; }
+.filter-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.filter-ctl { position: relative; display: inline-flex; }
+.filter-menu {
+  position: absolute; z-index: 40; top: 26px; left: 0;
+  width: 280px; max-height: 340px; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--card); box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  padding: 6px;
+}
+.filter-menu .head { display: flex; gap: 4px; align-items: center; padding: 2px 4px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.filter-menu label { display: flex; gap: 8px; align-items: center; padding: 3px 6px; border-radius: 4px; cursor: pointer; }
+.filter-menu label:hover { background: var(--accent); }
+.filter-menu label input { margin: 0; flex: none; accent-color: var(--foreground); }
+.filter-menu label .n { margin-left: auto; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.chip.off { text-decoration: line-through; color: var(--muted-foreground); }
+.centre { display: inline-flex; align-items: center; min-width: 0; }
+.centre .badge { max-width: 320px; }
+.centre .badge .type-icon { margin-right: 2px; color: inherit; }
+.centre .badge .x {
+  border: 0; background: transparent; cursor: pointer;
+  color: inherit; opacity: .7; padding: 0 0 0 2px; font-size: 11px; line-height: 1;
+}
+.centre .badge .x:hover { opacity: 1; }
 .chip {
   padding: 2px 9px;
   border: 1px solid var(--border);
@@ -246,6 +286,33 @@ select.input { padding-right: 24px; }
 }
 .chip:hover { background: var(--accent); }
 .chip.active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+
+/* A folder tree beside a table. The tree scrolls on its own, so a deep
+   model's folders never push the rows off the screen. */
+.split { display: grid; grid-template-columns: minmax(180px, 22%) 1fr; flex: 1; min-height: 0; }
+.split > .pane { min-width: 0; min-height: 0; overflow: auto; }
+.split > .pane.tree-pane { border-right: 1px solid var(--border); padding: 6px 4px 12px; }
+.tree-row {
+  display: flex; align-items: center; gap: 2px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  line-height: 1.5;
+  padding-right: 6px;
+}
+.tree-row:hover { background: var(--accent); }
+.tree-row.active { background: var(--primary); color: var(--primary-foreground); }
+.tree-row.empty-branch { color: var(--muted-foreground); }
+.tree-row .twisty {
+  flex: none;
+  width: 16px; height: 18px; padding: 0;
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--muted-foreground);
+  font-size: 9px; line-height: 18px; text-align: center;
+}
+.tree-row.active .twisty { color: var(--primary-foreground); }
+.tree-row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 0; }
+.tree-row .n { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted-foreground); }
+.tree-row.active .n { color: var(--primary-foreground); opacity: .75; }
 
 table.grid { border-collapse: collapse; width: 100%; font-size: 13px; }
 table.grid th, table.grid td { text-align: left; padding: 6px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -323,7 +390,10 @@ table.grid td.type .swatch { margin-right: 6px; vertical-align: -1px; }
 /* graph nodes */
 .node text { font-family: var(--font); font-size: 11px; fill: #09090b; pointer-events: none; }
 .node .figure { stroke-width: 1; }
-.node.pinned .figure { stroke-dasharray: 3 2; }
+/* What the graph is centred on, so it can be found in a crowd of two hundred. */
+.node.focus .figure { stroke: #09090b; stroke-width: 2.5; }
+/* Pinned: here because someone said so, not because a filter let it through. */
+.node.pinned .figure { stroke: #09090b; stroke-width: 2; stroke-dasharray: 4 2; }
 .edge line { stroke: var(--edge); stroke-width: 1; }
 .edge text { font-family: var(--font); font-size: 10px; fill: var(--muted-foreground); pointer-events: none; }
 .edge .hit { stroke: transparent; stroke-width: 10; cursor: pointer; }
