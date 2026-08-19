@@ -16,7 +16,7 @@ use std::fmt::Write;
 
 use amcli_graph::Graph;
 use amcli_model::{ConceptId, ConceptKind, ElementType, Model, RelType};
-use amcli_view::layout::{Algorithm, Item, Lanes, fit_size, place_with};
+use amcli_view::layout::{Algorithm, Item, Lanes, fit_group_size, fit_size, place_with};
 use amcli_view::notation::{self, Deco, Figure};
 
 use super::http::{Request, Response};
@@ -35,6 +35,7 @@ pub const ASSETS: &[(&str, &str, &str)] = &[
     ("/ui.js", "text/javascript; charset=utf-8", include_str!("assets/ui.js")),
     ("/icons.js", "text/javascript; charset=utf-8", include_str!("assets/icons.js")),
     ("/palette.js", "text/javascript; charset=utf-8", include_str!("assets/palette.js")),
+    ("/pins.js", "text/javascript; charset=utf-8", include_str!("assets/pins.js")),
     ("/store.js", "text/javascript; charset=utf-8", include_str!("assets/store.js")),
     ("/router.js", "text/javascript; charset=utf-8", include_str!("assets/router.js")),
     ("/panzoom.js", "text/javascript; charset=utf-8", include_str!("assets/panzoom.js")),
@@ -182,7 +183,16 @@ fn layout(m: &Model, req: &Request) -> Response {
                 ConceptKind::Element(e) => e.info().default_wh,
                 _ => (120, 55),
             };
-            let (w, h) = if (w, h) == (120, 55) { fit_size(&c.name) } else { (w, h) };
+            // A Group's name sits in its body, under the tab, so its box is
+            // sized the way `view auto` sizes one.
+            let tabbed = matches!(&c.kind, ConceptKind::Element(e) if notation::figure_of(*e) == Figure::Tabbed);
+            let (w, h) = if tabbed {
+                fit_group_size(&c.name)
+            } else if (w, h) == (120, 55) {
+                fit_size(&c.name)
+            } else {
+                (w, h)
+            };
             Item { id: c.id.clone(), name: c.name.clone(), w, h }
         })
         .collect();

@@ -78,19 +78,37 @@ export function segmented(options, value, onchange) {
   return box;
 }
 
+// A chip is one control by default: clicking it does the one thing it is for —
+// for a struck filter value, putting it back.
+//
+// Give it both `onclick` and `onRemove` and it becomes two, because then the
+// label and the cross mean different things: a pinned element's chip selects
+// the element, and only its cross unpins. One control that removed what you
+// clicked on when you meant to look at it is a trap.
 export function chip({ label, count, active, onclick, title, swatch, removable, onRemove, struck }) {
-  const kids = [];
-  if (swatch) kids.push(h("span", { class: "swatch", style: { background: swatch } }));
-  kids.push(h("span", { class: "chip-label" }, label));
-  if (count !== undefined && count !== null) kids.push(h("span", { class: "chip-count" }, fmt(count)));
-  if (removable) kids.push(icon("close", { class: "chip-x" }));
-  return h("button", {
-    class: cls("chip", active && "is-active", struck && "is-off"),
-    type: "button",
-    title: title || label,
-    "aria-pressed": active === undefined ? null : String(!!active),
-    onclick: removable ? onRemove : onclick,
-  }, kids);
+  const body = [];
+  if (swatch) body.push(h("span", { class: "swatch", style: { background: swatch } }));
+  body.push(h("span", { class: "chip-label" }, label));
+  if (count !== undefined && count !== null) body.push(h("span", { class: "chip-count" }, fmt(count)));
+
+  const split = removable && onclick;
+  if (!split) {
+    if (removable) body.push(icon("close", { class: "chip-x" }));
+    return h("button", {
+      class: cls("chip", active && "is-active", struck && "is-off"),
+      type: "button",
+      title: title || label,
+      "aria-pressed": active === undefined ? null : String(!!active),
+      onclick: removable ? onRemove : onclick,
+    }, body);
+  }
+  return h("span", { class: cls("chip", "is-split", active && "is-active", struck && "is-off") },
+    h("button", { class: "chip-main", type: "button", title: title || label, onclick }, body),
+    h("button", {
+      class: "chip-x-btn", type: "button",
+      title: `Remove ${label}`, "aria-label": `Remove ${label}`,
+      onclick: onRemove,
+    }, icon("close", { class: "chip-x" })));
 }
 
 export function badge({ label, solid, swatch, iconNode, title }) {

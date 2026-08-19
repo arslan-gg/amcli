@@ -18,6 +18,7 @@ import { toolbar, filterBar, chip, button, iconButton, segmented, selectField, s
 import { replaceParams } from "../router.js";
 import { attachPanZoom } from "../panzoom.js";
 import { select, selectedId, clearSelection, railContext } from "../app.js";
+import { pins, isPinned, setPin, clearPins, replacePins, onPins } from "../pins.js";
 
 const LAYERS = ["Strategy", "Business", "Application", "Technology", "Physical", "Motivation", "Implementation & Migration", "Other"];
 const WARN_AT = 400;   // ask before drawing more than this
@@ -29,10 +30,13 @@ export function mount(main, route) {
     focus: p.get("focus") || "",
     depth: clamp(parseInt(p.get("depth") || "2", 10) || 2, 1, 4),
     dir: ["in", "out", "both"].includes(p.get("dir")) ? p.get("dir") : "both",
-    all: p.get("all") === "1",
-    pinned: new Set((p.get("pin") || "").split(",").filter(Boolean)),
     confirmed: false,
   };
+  // Only a link that actually carries pins may replace them. Arriving at the
+  // graph with none in the URL means "no opinion", not "unpin everything" —
+  // the reader may have pinned from the inspector on another page.
+  if (p.has("pin")) replacePins((p.get("pin") || "").split(",").filter(Boolean));
+
   const hidden = {
     layer: new Set((p.get("no_layer") || "").split(",").filter(Boolean)),
     type: new Set((p.get("no_type") || "").split(",").filter(Boolean)),
@@ -42,8 +46,7 @@ export function mount(main, route) {
     focus: state.focus,
     depth: state.depth === 2 ? "" : String(state.depth),
     dir: state.dir === "both" ? "" : state.dir,
-    all: state.all ? "1" : "",
-    pin: [...state.pinned].join(","),
+    pin: pins().join(","),
     no_layer: [...hidden.layer].join(","),
     no_type: [...hidden.type].join(","),
     no_kind: [...hidden.kind].join(","),
@@ -70,24 +73,15 @@ export function mount(main, route) {
     { value: "both", iconName: "arrow-both", label: "", title: "Follow relationships either way" },
     { value: "in", iconName: "arrow-left", label: "", title: "Follow relationships inwards only" },
   ], state.dir, (v) => { state.dir = v; state.confirmed = false; push(); build(); });
-  const setAll = (on) => {
-    allBtn.classList.toggle("is-active", on);
-    allBtn.setAttribute("aria-pressed", String(on));
-  };
-  const allBtn = button({
-    label: "Whole model", title: "Draw every element the filters allow", active: state.all,
-    onclick: () => {
-      state.all = !state.all; state.confirmed = false;
-      setAll(state.all);
-      push(); scopeControls(); drawCentre(); build();
-    },
-  });
-  const meta = h("span", { class: "toolbar-meta nowrap" });
+  const meta = h("span", { class: "nowrap" });
 
   const bar = toolbar({
-    title: "Graph", titleIcon: "graph",
-    controls: [centre, finderBox, depth, dir, allBtn],
-    trailing: [meta],
+    title: "Graph", titleIcon: "graph", meta,
+    controls: [centre, finderBox, depth, dir],
+    trailing: [
+      button({ iconName: "download", label: "SVG", title: "Download the graph as it is drawn", onclick: () => saveSvg() }),
+      button({ iconName: "download", label: "PNG", title: "Download the graph as it is drawn, at 2× resolution", onclick: () => savePng() }),
+    ],
   });
 
   /* ---- the filters ------------------------------------------------------- */
@@ -121,25 +115,27 @@ export function mount(main, route) {
   // they read as part of the same control — but no menu, because the set is
   // built by shift-clicking a box.
   const pinRow = h("div", { class: "filter-row" });
-  filters.append(h("span", { class: "filter-key" }, "Always show"), pinRow);
+  filters.append(h("span", { class: "filter-key" }, "Pinned"), pinRow);
 
   function drawPins() {
     clear(pinRow);
-    const live = [...state.pinned].filter((id) => store.byId.get(id)?.kind === "element");
+    const live = pins().filter((id) => store.byId.get(id)?.kind === "element");
     if (!live.length) {
-      pinRow.appendChild(hint("Shift-click a box on the graph to keep it here. It stays even when a filter or the hop limit would drop it."));
+      pinRow.appendChild(hint("Nothing pinned. Shift-click a box, or use Pin in the details panel — a pinned element stays on the graph even when a filter or the hop limit would drop it."));
       return;
     }
     for (const id of live) {
       const e = elem(store.byId.get(id).i);
-      pinRow.appendChild(chip({ label: e.name, removable: true, title: `Stop always showing ${e.name}`, onRemove: () => pin(id, false) }));
+      pinRow.appendChild(chip({
+        label: e.name, removable: true,
+        title: `Show ${e.name}`,
+        onclick: () => select(id),
+        onRemove: () => setPin(id, false),
+      }));
     }
-    if (live.length > 1) pinRow.appendChild(chip({ label: "Clear", onclick: () => { state.pinned.clear(); push(); drawPins(); build(); } }));
+    if (live.length > 1) pinRow.appendChild(chip({ label: "Unpin all", onclick: clearPins }));
   }
-  function pin(id, on) {
-    if (on) state.pinned.add(id); else state.pinned.delete(id);
-    push(); drawPins(); build();
-  }
+  const stopWatchingPins = onPins(() => { push(); drawPins(); build(); });
 
   /* ---- the canvas -------------------------------------------------------- */
   const canvas = h("div", { class: "canvas" });
@@ -179,14 +175,17 @@ export function mount(main, route) {
   // direction. So while that is on, the centre says nothing and the two
   // controls that walk out from a centre are disabled — a control you can
   // work that changes nothing is worse than one you cannot.
+  // With nothing centred there is nothing to count hops from, so the two
+  // controls that only mean something relative to a centre say so.
   function scopeControls() {
-    depth.disabled = state.all;
-    dir.querySelectorAll(".btn").forEach((b) => { b.disabled = state.all; });
+    const none = !state.focus;
+    depth.disabled = none;
+    dir.querySelectorAll(".btn").forEach((b) => { b.disabled = none; });
   }
 
   function drawCentre() {
     clear(centre);
-    const f = state.all ? null : state.focus ? store.byId.get(state.focus) : null;
+    const f = state.focus ? store.byId.get(state.focus) : null;
     if (f && f.kind === "element") {
       const e = elem(f.i);
       const box = h("span", { class: "badge is-solid", title: `Centred on ${e.name}` },
@@ -196,18 +195,17 @@ export function mount(main, route) {
           onclick: () => { state.focus = ""; state.confirmed = false; push(); drawCentre(); build(); },
         }, icon("close")));
       centre.appendChild(box);
-    } else if (!state.all) {
-      centre.appendChild(h("span", { class: "subtle small nowrap" }, "Nothing centred"));
+    } else {
+      // Not an absence but a mode: with no centre the graph is the whole model.
+      centre.appendChild(h("span", { class: "badge", title: "Every element the filters allow. Centre on one to see its neighbourhood." }, "Whole model"));
     }
   }
 
   function recentre(id) {
     state.focus = id;
-    state.all = false;
     state.confirmed = false;
     finder.input.value = "";
     shutHits();
-    setAll(false);
     push(); scopeControls(); drawCentre(); build();
   }
 
@@ -292,10 +290,7 @@ export function mount(main, route) {
     const shown = (i) => !hidden.layer.has(elem(i).layer) && !hidden.type.has(elem(i).type);
     const passRel = (r) => !hidden.kind.has(r.type);
     let set;
-    if (state.all) {
-      set = new Set();
-      store.data.elements.forEach((_, i) => { if (shown(i)) set.add(i); });
-    } else if (state.focus) {
+    if (state.focus) {
       const f = store.byId.get(state.focus);
       if (!f || f.kind !== "element") { emptyGraph(`Nothing in this model has id ${state.focus}.`); return null; }
       if (!shown(f.i)) { emptyGraph("The centre is in a layer or of a type this graph is hiding."); return null; }
@@ -316,13 +311,14 @@ export function mount(main, route) {
       }
     } else {
       set = new Set();
+      store.data.elements.forEach((_, i) => { if (shown(i)) set.add(i); });
     }
-    for (const id of state.pinned) {
+    for (const id of pins()) {
       const f = store.byId.get(id);
       if (f && f.kind === "element") set.add(f.i);
     }
 
-    if (set.size === 0) { startHere(); return null; }
+    if (set.size === 0) { emptyGraph("Every element is hidden by a filter. Show a layer or a type."); return null; }
     if (set.size > HARD_CAP) {
       showMessage(emptyState({
         iconName: "alert",
@@ -337,33 +333,12 @@ export function mount(main, route) {
         body: "Every box will be there, but most will be too small to read without zooming.",
         actions: [
           button({ label: "Draw it anyway", variant: "primary", onclick: () => { state.confirmed = true; build(); } }),
-          button({ label: "Never mind", onclick: () => { state.all = false; setAll(false); push(); scopeControls(); drawCentre(); build(); } }),
+          button({ label: "Never mind", onclick: () => { finder.input.focus(); } }),
         ],
       }));
       return null;
     }
     return set;
-  }
-
-  function startHere() {
-    clear(gEdges); clear(gNodes);
-    nodes = []; links = [];
-    legend.hidden = true;
-    meta.textContent = "";
-    const top = store.data.elements
-      .map((_, i) => [i, store.out[i].length + store.inc[i].length])
-      .sort((a, b) => b[1] - a[1]).slice(0, 6);
-    const list = h("div", { class: "link-list" }, top.map(([i, deg]) =>
-      h("a", { href: "#", onclick: (ev) => { ev.preventDefault(); recentre(elem(i).id); } },
-        typeIcon(elem(i).type), h("span", { class: "ellipsis" }, elem(i).name),
-        h("span", { class: "hit-type" }, `${deg} relationships`))));
-    showMessage(h("div", null,
-      emptyState({
-        iconName: "graph",
-        title: "Centre the graph on an element",
-        body: "Or draw the whole model. These are the most connected things in it:",
-      }),
-      list));
   }
 
   function emptyGraph(text) {
@@ -392,8 +367,8 @@ export function mount(main, route) {
       links.push({ ri, r: rel(ri), source: nodes[a], target: nodes[b] });
     }
     const box = extent();
-    meta.textContent = `${fmt(nodes.length)} nodes · ${fmt(links.length)} edges · ${placed.algorithm}`;
-    meta.title = `Laid out by amcli-view — the same code \`view auto\` runs. ${fmt(box.w)}×${fmt(box.h)}.`;
+    meta.textContent = `${fmt(nodes.length)} · ${fmt(links.length)}`;
+    meta.title = `${fmt(nodes.length)} elements, ${fmt(links.length)} relationships, laid out by amcli-view — the same code \`view auto\` runs.`;
 
     for (const l of links) {
       const st = relStyle(l.r);
@@ -420,15 +395,15 @@ export function mount(main, route) {
       g.dataset.id = n.id;
       g.setAttribute("transform", `translate(${n.x},${n.y})`);
       if (n.id === state.focus) g.classList.add("is-focus");
-      if (state.pinned.has(n.id)) g.classList.add("is-pinned");
-      const how = state.pinned.has(n.id)
-        ? "shift-click to stop always showing it"
-        : "double-click to centre here · shift-click to keep it on the graph";
+      if (isPinned(n.id)) g.classList.add("is-pinned");
+      const how = isPinned(n.id)
+        ? "shift-click to unpin"
+        : "double-click to centre here · shift-click to pin";
       g.appendChild(s("title", null, `${n.name}\n${n.type} — ${how}`));
       g.addEventListener("click", (ev) => {
         ev.stopPropagation();
         if (canvas.dataset.justDragged) return;
-        if (ev.shiftKey) { pin(n.id, !state.pinned.has(n.id)); return; }
+        if (ev.shiftKey) { setPin(n.id, !isPinned(n.id)); return; }
         markSelection(n.id);
         select(n.id);
       });
@@ -511,6 +486,84 @@ export function mount(main, route) {
     pz.fit(extent(), 40);
   }
 
+  /* ---- taking it away ----------------------------------------------------
+     A graph is not saved, so there is no id for the server to render from and
+     no URL to open: what leaves is the drawing on the screen. The clone carries
+     its own stylesheet with the tokens resolved, because a file opened outside
+     this page has no :root to read them from, and it drops the parts that only
+     exist to be clicked. */
+  const EXPORT_PAD = 24;
+
+  function standalone() {
+    const box = extent();
+    const clone = svg.cloneNode(true);
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("viewBox", `${box.x - EXPORT_PAD} ${box.y - EXPORT_PAD} ${box.w + EXPORT_PAD * 2} ${box.h + EXPORT_PAD * 2}`);
+    clone.setAttribute("width", box.w + EXPORT_PAD * 2);
+    clone.setAttribute("height", box.h + EXPORT_PAD * 2);
+    clone.removeAttribute("class");
+    clone.querySelectorAll(".hit, title").forEach((n) => n.remove());
+    clone.querySelectorAll(".is-dim, .is-selected").forEach((n) => n.classList.remove("is-dim", "is-selected"));
+
+    const css = getComputedStyle(document.documentElement);
+    const tok = (name) => css.getPropertyValue(name).trim();
+    const style = s("style", null,
+      `svg{background:${tok("--paper")}}` +
+      `.node text{font-family:${tok("--font")};font-size:${tok("--fs-xs")};fill:${tok("--paper-ink")}}` +
+      `.node .figure{stroke-width:1}` +
+      `.node.is-focus .figure{stroke:${tok("--paper-ink")};stroke-width:2.5}` +
+      `.node.is-pinned .figure{stroke:${tok("--paper-ink")};stroke-width:2;stroke-dasharray:4 2}` +
+      `.edge line{stroke:${tok("--edge")};stroke-width:1}` +
+      `.edge text{font-family:${tok("--font")};font-size:${tok("--fs-xs")};fill:${tok("--edge")}}` +
+      `marker path,marker polygon,marker polyline,marker circle{stroke:${tok("--edge")}}` +
+      `marker .filled{fill:${tok("--edge")}}` +
+      `marker .hollow{fill:${tok("--paper")}}`);
+    clone.insertBefore(style, clone.firstChild);
+    return { text: new XMLSerializer().serializeToString(clone), w: box.w + EXPORT_PAD * 2, h: box.h + EXPORT_PAD * 2 };
+  }
+
+  function fileName() {
+    const centred = state.focus && store.byId.get(state.focus)?.kind === "element"
+      ? elem(store.byId.get(state.focus).i).name
+      : "whole model";
+    return `${store.data.model.name || "model"} — ${centred} (graph)`.replace(/[\\/:*?"<>|]+/g, "_").trim();
+  }
+
+  function offer(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = h("a", { href: url, download: name });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function saveSvg() {
+    if (!nodes.length) return;
+    offer(new Blob([standalone().text], { type: "image/svg+xml" }), `${fileName()}.svg`);
+  }
+
+  function savePng() {
+    if (!nodes.length) return;
+    const { text, w, h: hh } = standalone();
+    const src = URL.createObjectURL(new Blob([text], { type: "image/svg+xml" }));
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(w * 2);
+      canvas.height = Math.round(hh * 2);
+      const ctx = canvas.getContext("2d");
+      ctx.scale(2, 2);
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--paper").trim();
+      ctx.fillRect(0, 0, w, hh);
+      ctx.drawImage(img, 0, 0, w, hh);
+      URL.revokeObjectURL(src);
+      canvas.toBlob((blob) => blob && offer(blob, `${fileName()}.png`), "image/png");
+    };
+    img.onerror = () => { URL.revokeObjectURL(src); showMessage(emptyState({ iconName: "alert", title: "Could not make a PNG", body: "The drawing could not be rasterised in this browser. The SVG download still works." })); };
+    img.src = src;
+  }
+
   function drawLegend() {
     clear(legend);
     const seen = new Map();
@@ -529,6 +582,7 @@ export function mount(main, route) {
 
   return () => {
     alive = false;
+    stopWatchingPins();
     document.removeEventListener("amcli:select", onSelect);
     document.removeEventListener("pointerdown", outsideHits);
     window.removeEventListener("resize", moveHits);

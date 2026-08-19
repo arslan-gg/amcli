@@ -245,11 +245,16 @@ fn shows_icon(n: &Node) -> bool {
 fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
     let r = n.abs;
     let pad = 5.0;
+    // A Group's name belongs to its tab, and the tab is half the figure wide
+    // and one line tall — so that, not the figure, is the box the text has to
+    // fit. Measured against the whole width it wrapped to six lines and ran
+    // out through the right edge of the tab and down across the body.
+    let box_w = r.w as f64;
     let inset = match n.figure {
         Figure::Note | Figure::Tabbed => pad,
         _ => amcli_view::layout::ICON_INSET as f64,
     };
-    let usable = (r.w as f64 - 2.0 * inset).max(10.0);
+    let usable = (box_w - 2.0 * inset).max(10.0);
     let per_char = o.font_size * 0.52;
     let max_chars = (usable / per_char).floor().max(1.0) as usize;
     let lines = wrap(text, max_chars);
@@ -258,13 +263,20 @@ fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
     let (anchor, tx) = match n.text_align {
         1 => ("start", r.x as f64 + pad),
         4 => ("end", (r.x + r.w) as f64 - pad),
-        _ => ("middle", r.x as f64 + r.w as f64 / 2.0),
+        _ => ("middle", r.x as f64 + box_w / 2.0),
     };
 
     // A Group's text sits in its tab; a Note's starts at the top; everything
     // else is vertically centred in the figure.
     let top = match n.figure {
-        Figure::Tabbed => r.y as f64 + 3.0,
+        // A Group's name goes in the body, not in the tab: the tab is half the
+        // figure wide and one line tall, and a name of any length either ran
+        // out through its right edge or had to be cut down to one word. The
+        // body is the whole width and  makes it tall enough.
+        Figure::Tabbed => {
+            let block = lines.len() as f64 * line_h;
+            r.y as f64 + GROUP_HEADER as f64 + ((r.h - GROUP_HEADER) as f64 - block) / 2.0
+        }
         Figure::Note => r.y as f64 + pad,
         _ => {
             let block = lines.len() as f64 * line_h;

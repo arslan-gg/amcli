@@ -105,6 +105,11 @@ kbd {
   cursor: pointer;
   transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
 }
+/* A control has a height, and a flex parent may not take it away. The rail is
+   a column, and on a page whose context fills it the search button was being
+   squashed from 26px to 19 — so the same control was two heights on two pages,
+   depending on how much was underneath it. */
+.btn, .chip, .field, .field-select { flex: none; }
 .btn:hover { background: var(--tint); text-decoration: none; }
 .btn:active { background: var(--tint-firm); }
 .btn[disabled] { opacity: 0.45; cursor: default; }
@@ -151,6 +156,21 @@ kbd {
 .chip.is-active { background: var(--invert); color: var(--invert-fg); border-color: var(--invert); }
 .chip.is-active .chip-count { color: var(--invert-subtle); }
 .chip.is-off .chip-label { text-decoration: line-through; color: var(--fg-muted); }
+/* Two controls in one pill: the label does the chip's job, the cross removes.
+   The pill keeps its own padding at the ends and the halves carry the rest. */
+.chip.is-split { padding: 0; gap: 0; cursor: default; }
+.chip-main, .chip-x-btn {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  height: 100%; min-width: 0;
+  border: 0; background: transparent; color: inherit; font: inherit;
+  cursor: pointer;
+  border-radius: var(--r-full);
+}
+.chip-main { padding: 0 var(--sp-1) 0 var(--sp-2); overflow: hidden; }
+.chip-x-btn { padding: 0 var(--sp-2) 0 var(--sp-1); opacity: 0.6; }
+.chip-x-btn:hover { opacity: 1; }
+.chip.is-split:hover { background: var(--surface-0); }
+.chip-main:hover, .chip-x-btn:hover { background: var(--tint); }
 
 .badge {
   display: inline-flex; align-items: center; gap: var(--sp-1);
@@ -277,6 +297,7 @@ kbd {
 
 /* -- rail -- */
 #rail {
+  position: relative;
   display: flex; flex-direction: column;
   min-width: 0; min-height: 0;
   border-right: 1px solid var(--line);
@@ -290,11 +311,13 @@ kbd {
   border-bottom: 1px solid var(--line);
   flex: none;
 }
-/* A 32px box puts a 16px icon on the same axis as the icons in the rows below,
-   and in a folded pane that box is the whole inner width — so "at the right"
-   and "centred" are the same place and nothing moves when the pane folds. It
-   must not shrink, and the spacer beside it must not survive the fold, or the
-   gap pushes it off that axis. */
+/* Each pane's fold control sits against the outer edge of the window: the
+   rail's leads its header, the inspector's ends its own. A 32px box puts the
+   16px icon on the same axis as the icons in the rows below, and a folded pane
+   is exactly one such box plus its padding — so leading and trailing are the
+   same place there, and neither control moves when its pane folds. It must not
+   shrink, and the spacer beside it must not survive the fold, or the gap
+   pushes it off that axis. */
 #rail-toggle, #inspector-toggle { width: var(--sp-8); flex: none; }
 #app.rail-collapsed .rail-head .spacer,
 #app.inspector-narrow .inspector-head .spacer { display: none; }
@@ -372,14 +395,19 @@ kbd {
   background: var(--surface-2);
   position: relative;
 }
-.inspector-grip {
-  position: absolute; left: calc(-1 * var(--sp-h)); top: 0; bottom: 0;
+/* The seam between a side pane and the middle. Both panes have one; only the
+   side it sits on differs. */
+.pane-grip {
+  position: absolute; top: 0; bottom: 0;
   width: var(--sp-1);
   cursor: col-resize;
-  z-index: var(--z-sticky);
+  z-index: var(--z-popover);
 }
-.inspector-grip:hover, .inspector-grip.is-held { background: var(--line-firm); }
-#app.inspector-narrow .inspector-grip { display: none; }
+.pane-grip-left { left: 0; }
+.pane-grip-right { right: 0; }
+.pane-grip:hover, .pane-grip.is-held { background: var(--line-firm); }
+#app.inspector-narrow #inspector-grip,
+#app.rail-collapsed #rail-grip { display: none; }
 .inspector-head {
   display: flex; align-items: center; gap: var(--sp-2);
   height: var(--toolbar-h); min-height: var(--toolbar-h);

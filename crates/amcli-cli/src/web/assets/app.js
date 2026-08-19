@@ -173,51 +173,67 @@ applyInspector(
 
 export function selectedId() { return currentId; }
 
-// Drag the seam. The width is remembered, because a reader who widened the
-// panel to read documentation should not have to do it again on the next
-// concept.
-(function resizable() {
-  const grip = document.getElementById("inspector-grip");
-  const stored = parseInt(prefs.get("amcli-inspector-w", ""), 10);
-  const clamp = (px) => {
-    const min = num("--inspector-min"), max = num("--inspector-max");
-    return Math.max(min, Math.min(max, px));
-  };
+// Drag the seam. Both panes, one implementation: a side pane is a side pane,
+// and the only thing that differs is which way the pointer has to travel to
+// make it wider. The width is remembered, because a reader who widened a pane
+// to read something should not have to do it again on the next thing.
+function makeResizable({ grip, pane, widthVar, minVar, maxVar, storeKey, growsWith }) {
   const num = (name) => parseInt(getComputedStyle(document.documentElement).getPropertyValue(name), 10) || 0;
-  // A separator you can focus is a range widget, and a range widget that never
-  // says where it stands gives the keyboard no feedback at all — including at
-  // the two ends, where the arrows stop moving anything.
+  const clamp = (px) => Math.max(num(minVar), Math.min(num(maxVar), Math.round(px)));
+  const width = () => pane.getBoundingClientRect().width;
+
+  // A separator you can focus is a range widget, and one that never says where
+  // it stands gives the keyboard no feedback at all — including at the two
+  // ends, where the arrows stop moving anything.
   const report = (px) => {
     grip.setAttribute("aria-valuenow", String(px));
     grip.setAttribute("aria-valuetext", `${px} pixels`);
   };
-  grip.setAttribute("aria-valuemin", String(num("--inspector-min")));
-  grip.setAttribute("aria-valuemax", String(num("--inspector-max")));
+  grip.setAttribute("aria-valuemin", String(num(minVar)));
+  grip.setAttribute("aria-valuemax", String(num(maxVar)));
+
   const setWidth = (px) => {
-    app.style.setProperty("--inspector-w", `${clamp(px)}px`);
-    prefs.set("amcli-inspector-w", String(clamp(px)));
-    report(clamp(px));
+    const w = clamp(px);
+    app.style.setProperty(widthVar, `${w}px`);
+    prefs.set(storeKey, String(w));
+    report(w);
   };
-  if (stored) setWidth(stored);
-  else report(clamp(inspector.getBoundingClientRect().width));
+  const stored = parseInt(prefs.get(storeKey, ""), 10);
+  if (stored) setWidth(stored); else report(clamp(width()));
 
   let from = null;
   grip.addEventListener("pointerdown", (e) => {
-    from = { x: e.clientX, w: inspector.getBoundingClientRect().width };
+    from = { x: e.clientX, w: width() };
     grip.setPointerCapture(e.pointerId);
     grip.classList.add("is-held");
     document.body.classList.add("is-resizing");
   });
-  grip.addEventListener("pointermove", (e) => { if (from) setWidth(from.w + (from.x - e.clientX)); });
+  grip.addEventListener("pointermove", (e) => {
+    if (from) setWidth(from.w + (e.clientX - from.x) * growsWith);
+  });
   const stop = () => { from = null; grip.classList.remove("is-held"); document.body.classList.remove("is-resizing"); };
   grip.addEventListener("pointerup", stop);
   grip.addEventListener("pointercancel", stop);
   grip.addEventListener("keydown", (e) => {
-    const step = e.shiftKey ? num("--sp-12") : num("--sp-4");
-    if (e.key === "ArrowLeft") { e.preventDefault(); setWidth(inspector.getBoundingClientRect().width + step); }
-    if (e.key === "ArrowRight") { e.preventDefault(); setWidth(inspector.getBoundingClientRect().width - step); }
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const step = (e.shiftKey ? num("--sp-12") : num("--sp-4")) * (e.key === "ArrowRight" ? 1 : -1);
+    setWidth(width() + step * growsWith);
   });
-})();
+}
+
+// `growsWith` is which way the pointer makes the pane wider: the rail grows
+// rightwards, the inspector leftwards.
+makeResizable({
+  grip: document.getElementById("rail-grip"), pane: document.getElementById("rail"),
+  widthVar: "--rail-w", minVar: "--rail-min", maxVar: "--rail-max",
+  storeKey: "amcli-rail-w", growsWith: 1,
+});
+makeResizable({
+  grip: document.getElementById("inspector-grip"), pane: inspector,
+  widthVar: "--inspector-w", minVar: "--inspector-min", maxVar: "--inspector-max",
+  storeKey: "amcli-inspector-w", growsWith: -1,
+});
 
 /* ---- status ----------------------------------------------------------------- */
 function setStatus(kind, text, title) {

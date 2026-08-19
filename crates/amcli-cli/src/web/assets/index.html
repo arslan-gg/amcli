@@ -15,6 +15,7 @@
      the thing they describe. -->
 <div id="app">
   <aside id="rail">
+    <div id="rail-grip" class="pane-grip pane-grip-right" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the sidebar"></div>
     <!-- The fold control leads, in both panes, so it is the one thing that never
          moves when a pane folds. -->
     <div class="rail-head">
@@ -47,12 +48,12 @@
   <main id="main"></main>
 
   <aside id="inspector" aria-label="Details">
-    <div id="inspector-grip" class="inspector-grip" role="separator" aria-orientation="vertical" tabindex="0" aria-controls="inspector" aria-label="Resize the details panel"></div>
+    <div id="inspector-grip" class="pane-grip pane-grip-left" role="separator" aria-orientation="vertical" tabindex="0" aria-controls="inspector" aria-label="Resize the details panel"></div>
     <div class="inspector-head">
-      <button id="inspector-toggle" class="btn btn-icon btn-quiet" type="button" title="Narrow the details panel (⌘I)" aria-label="Narrow the details panel"></button>
       <span class="caps inspector-label">Details</span>
       <span class="spacer"></span>
       <span id="inspector-actions"></span>
+      <button id="inspector-toggle" class="btn btn-icon btn-quiet" type="button" title="Narrow the details panel (⌘I)" aria-label="Narrow the details panel"></button>
     </div>
     <div id="inspector-body" class="inspector-body"></div>
   </aside>

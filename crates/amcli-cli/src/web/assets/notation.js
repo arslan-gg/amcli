@@ -145,11 +145,17 @@ export function nodeGroup(type, name, w, h) {
     // the one line the tab is tall — centred over the whole figure it fell
     // across the seam between the tab and the body and read as clipped.
     // Every other figure centres its label in the box.
+    // A group's name goes in its body, not in its tab: the tab is half the
+    // figure wide and one line tall, so any real name either ran out through
+    // its right edge or had to be cut to one word. The body is the whole
+    // width, and the layout makes a group a tab taller for exactly this.
     const tabbed = t.figure === "tabbed";
     const inset = tabbed ? 5 : showIcon ? 22 : 6;
     const lh = 13;
-    const lines = wrap(name || "", w - 2 * inset, tabbed ? 1 : 3);
-    const top = tabbed ? GROUP_HEADER / 2 : h / 2 - ((lines.length - 1) * lh) / 2;
+    const lines = wrap(name || "", w - 2 * inset, 3);
+    const band = tabbed ? h - GROUP_HEADER : h;
+    const mid = (tabbed ? GROUP_HEADER : 0) + band / 2;
+    const top = mid - ((lines.length - 1) * lh) / 2;
     lines.forEach((l, i) => {
       g.appendChild(s("text", { x: w / 2, y: top + i * lh, "text-anchor": "middle", "dominant-baseline": "middle" }, l));
     });

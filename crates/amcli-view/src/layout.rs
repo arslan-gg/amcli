@@ -271,6 +271,14 @@ pub fn fit_note_size(label: &str) -> (i32, i32) {
     fit_inside(label, TEXT_INSET)
 }
 
+/// The same for a Group, whose label sits in the body below the tab — so the
+/// box has to be a tab taller than the text needs, or the last line lands
+/// under the seam.
+pub fn fit_group_size(label: &str) -> (i32, i32) {
+    let (w, h) = fit_inside(label, TEXT_INSET);
+    (w, h + crate::geometry::GROUP_HEADER)
+}
+
 fn fit_inside(label: &str, inset: i32) -> (i32, i32) {
     const LINE_H: i32 = 15;
     const PAD_H: i32 = 10;

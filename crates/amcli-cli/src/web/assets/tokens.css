@@ -108,7 +108,13 @@
 
   /* -- layout ------------------------------------------------------------- */
   --rail-w: 232px;
-  --rail-w-min: 48px;
+  /* A folded pane is its padding, one fold control, its padding, and the
+     1px edge it shares with the middle. Said this way rather than as a number,
+     because it is what makes a folded pane's icon land on exactly the axis it
+     had when the pane was open. */
+  --rail-w-min: calc(var(--sp-2) * 2 + var(--sp-8) + 1px);
+  --rail-min: 180px;
+  --rail-max: 420px;
   --inspector-w: 340px;
   --inspector-min: 280px;
   --inspector-max: 640px;

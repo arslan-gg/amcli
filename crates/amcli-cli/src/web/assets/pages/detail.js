@@ -14,8 +14,15 @@ import { icon } from "../icons.js";
 import { badge, button, section, kv, emptyState } from "../ui.js";
 import { href } from "../router.js";
 import { select } from "../app.js";
+import { isPinned, togglePin, onPins } from "../pins.js";
+
+// The inspector is rebuilt whole on every selection, so whatever it subscribed
+// to last time has to be let go first.
+let stopWatchingPins = null;
 
 export function renderConcept(container, id) {
+  stopWatchingPins?.();
+  stopWatchingPins = null;
   clear(container);
   const found = store.byId.get(id);
   if (!found) {
@@ -44,8 +51,28 @@ function renderElement(box, i) {
         badge({ label: t.layer, swatch: t.fill, title: `${t.layer} layer` })),
       h("p", { class: "id-line" }, folderPath(e.folder) || "(no folder)"))));
 
-  box.appendChild(h("div", { class: "actions" },
-    button({ iconName: "graph", label: "Open in graph", href: href("graph", null, { focus: e.id, depth: 1 }) })));
+  // Pinning is also a shift-click on a box, but only if you already know that
+  // and are already looking at the graph. Here it is a button, next to the one
+  // that takes you there.
+  const actions = h("div", { class: "actions" },
+    button({ iconName: "graph", label: "Open in graph", href: href("graph", null, { focus: e.id, depth: 1 }) }));
+  // The button reports the pin set; it does not remember its own clicks. The
+  // same element can be unpinned from the graph's rail or by shift-clicking its
+  // box, and a button still saying "Unpin" after that is a button lying.
+  const pinBtn = button({ iconName: "pin", label: "Pin", active: false, onclick: () => togglePin(e.id) });
+  const syncPin = () => {
+    const on = isPinned(e.id);
+    pinBtn.classList.toggle("is-active", on);
+    pinBtn.setAttribute("aria-pressed", String(on));
+    pinBtn.querySelector("span").textContent = on ? "Unpin" : "Pin";
+    pinBtn.title = on
+      ? "Stop keeping this on the graph"
+      : "Keep this on the graph even when a filter or the hop limit would drop it";
+  };
+  syncPin();
+  stopWatchingPins = onPins(syncPin);
+  actions.appendChild(pinBtn);
+  box.appendChild(actions);
 
   const views = store.viewsOfElem[i];
   box.appendChild(section(`Drawn on ${countWord(views.length, "view")}`,

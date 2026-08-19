@@ -4,7 +4,9 @@ use amcli_graph::{Dir, EdgeFilter, Graph, Resolution, Selector};
 use amcli_model::{ConceptId, ConceptKind, Model, ViewId, viewpoints};
 use amcli_render::Options;
 use amcli_view::geometry::Rect;
-use amcli_view::layout::{Algorithm, Item, fit_note_size, fit_size, free_slot, place};
+use amcli_view::layout::{
+    Algorithm, Item, fit_group_size, fit_note_size, fit_size, free_slot, place,
+};
 use amcli_view::notation::Figure;
 use clap::Subcommand;
 
@@ -727,7 +729,8 @@ fn relayout(
                 // text the whole box less its margin; an element loses the
                 // icon's width off both sides.
                 match n.figure {
-                    Figure::Note | Figure::Tabbed => fit_note_size(&n.label),
+                    Figure::Tabbed => fit_group_size(&n.label),
+                    Figure::Note => fit_note_size(&n.label),
                     _ => fit_size(&n.label),
                 }
             } else {
