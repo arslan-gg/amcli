@@ -1,167 +1,180 @@
-// One concept in full: type, layer, folder, documentation, properties, every
-// relationship in and out, and the views it is drawn on. Used by the drawer
-// (a click on a diagram or a graph node) and by the #/element and #/relation
-// pages, which are the same thing with more room.
+// What the inspector shows: one concept in full — type, layer, folder, where
+// it is drawn, everything it is connected to, its documentation and its
+// properties.
+//
+// There is one of these, not two. The viewer used to render a concept twice —
+// once in a 339px panel and once as an 820px page reached through a "maximize"
+// button — from the same list-shaped markup, so the page bought line length
+// and nothing else, and "minimize" guessed where you had come from.
 
-import { h, clear, relLabel } from "../dom.js";
+import { h, clear, fmt, relLabel } from "../dom.js";
 import { store, elem, rel, view, folderPath, detail, otherEnd } from "../store.js";
 import { typeIcon, typeOf, accessLabel } from "../notation.js";
+import { icon } from "../icons.js";
+import { badge, button, section, kv, emptyState } from "../ui.js";
 import { href } from "../router.js";
-import { minimizeDetails } from "../app.js";
+import { select } from "../app.js";
 
-export function mount(main, route) {
-  const found = store.byId.get(route.id);
-  const wrap = h("div", { class: "page" });
-  const body = h("div", { class: "page-body pad" });
-  wrap.appendChild(h("div", { class: "page-head" },
-    h("button", { class: "btn sm", title: "Minimize — back to where you were, with this in the details panel", onclick: () => minimizeDetails(route.id) }, "⤡ Minimize"),
-    h("h2", null, route.page === "relation" ? "Relationship" : "Element")));
-  wrap.appendChild(body);
-  main.appendChild(wrap);
-  if (!found || (found.kind !== "element" && found.kind !== "relation")) {
-    body.appendChild(h("div", { class: "empty" }, `Nothing in the model has id ${route.id}`));
-    return () => {};
-  }
-  const box = h("div", { class: "detail", style: { maxWidth: "820px" } });
-  body.appendChild(box);
-  if (found.kind === "element") renderElement(box, found.i, { heading: "h1" });
-  else renderRelation(box, found.i, { heading: "h1" });
-  return () => {};
-}
-
-export function renderConcept(container, id, opts = {}) {
+export function renderConcept(container, id) {
   clear(container);
   const found = store.byId.get(id);
-  if (!found) { container.appendChild(h("div", { class: "empty" }, "Not in the model")); return; }
+  if (!found) {
+    container.appendChild(emptyState({ iconName: "alert", title: "Not in the model", body: `Nothing has id ${id}.` }));
+    return;
+  }
   const box = h("div", { class: "detail" });
   container.appendChild(box);
-  if (found.kind === "element") renderElement(box, found.i, opts);
-  else if (found.kind === "relation") renderRelation(box, found.i, opts);
-  else if (found.kind === "view") renderViewSummary(box, found.i);
+  if (found.kind === "element") renderElement(box, found.i);
+  else if (found.kind === "relation") renderRelation(box, found.i);
+  else if (found.kind === "view") renderView(box, found.i);
 }
 
-function layerBadge(type) {
-  const t = typeOf(type);
-  return h("span", { class: "badge" }, h("span", { class: "swatch", style: { background: t.fill } }), t.layer);
-}
+/* ---- element ---------------------------------------------------------------- */
 
-export function renderElement(box, i, opts = {}) {
+function renderElement(box, i) {
   const e = elem(i);
-  const H = opts.heading || "h2";
+  const t = typeOf(e.type);
+
   box.appendChild(h("div", { class: "detail-head" },
     typeIcon(e.type, "type-icon boxed"),
-    h("div", { style: { minWidth: 0 } },
-      h(H, null, e.name || h("span", { class: "muted" }, "(unnamed)")),
+    h("div", { class: "detail-title" },
+      h("h1", null, e.name || "(unnamed)"),
       h("div", { class: "detail-meta" },
-        h("span", { class: "badge solid" }, e.type),
-        layerBadge(e.type),
-        e.folder !== null ? h("span", { class: "muted small mono" }, folderPath(e.folder)) : null,
-      ),
-    ),
-  ));
+        badge({ label: e.type, solid: true }),
+        badge({ label: t.layer, swatch: t.fill, title: `${t.layer} layer` })),
+      h("p", { class: "id-line" }, folderPath(e.folder) || "(no folder)"))));
 
   box.appendChild(h("div", { class: "actions" },
-    h("a", { class: "btn sm", href: href("graph", null, { focus: e.id, depth: 1 }) }, "Open in graph"),
-  ));
+    button({ iconName: "graph", label: "Open in graph", href: href("graph", null, { focus: e.id, depth: 1 }) })));
 
-  // Where it is drawn, and what it is connected to, come first: they are what
-  // a reader clicks on next.
   const views = store.viewsOfElem[i];
-  box.appendChild(h("section", null,
-    h("h3", null, `Views (${views.length})`),
+  box.appendChild(section(`Drawn on ${countWord(views.length, "view")}`,
     views.length
-      ? h("div", { class: "link-list" }, views.map((vi) => h("a", { href: href("view", view(vi).id, { focus: e.id }) }, "▣ ", h("span", { class: "ellipsis" }, view(vi).name))))
-      : h("p", { class: "muted small" }, "Drawn on no view."),
-  ));
+      ? h("div", { class: "link-list" }, views.map((vi) =>
+          h("a", { href: href("view", view(vi).id, { focus: e.id }), title: `Open ${view(vi).name} with this element outlined` },
+            icon("view"), h("span", { class: "ellipsis" }, view(vi).name))))
+      : h("p", { class: "subtle small" }, "No view — this element is in the model but not on a drawing.")));
 
   const out = store.out[i], inc = store.inc[i];
-  if (out.length + inc.length === 0) {
-    box.appendChild(h("section", null, h("h3", null, "Relationships"), h("p", { class: "muted small" }, "None — this element is connected to nothing.")));
+  if (!out.length && !inc.length) {
+    box.appendChild(section("Relationships",
+      h("p", { class: "subtle small" }, "None — this element is connected to nothing.")));
   } else {
-    if (out.length) box.appendChild(relSection("Outgoing", out, i, "→"));
-    if (inc.length) box.appendChild(relSection("Incoming", inc, i, "←"));
+    if (out.length) box.appendChild(relSection("Outgoing", out, i, "arrow-right"));
+    if (inc.length) box.appendChild(relSection("Incoming", inc, i, "arrow-left"));
   }
 
   appendDocAndProps(box, e);
-  box.appendChild(h("p", { class: "muted small mono", style: { wordBreak: "break-all" } }, e.id));
+  box.appendChild(section("Identifier", h("p", { class: "id-line" }, e.id)));
 }
 
-// Documentation and properties are fetched when the panel opens; the blob
-// only says whether there are any.
-function appendDocAndProps(box, c) {
-  const docSec = h("section", null, h("h3", null, "Documentation"), h("p", { class: "muted small" }, "…"));
-  const propSec = h("section", null, h("h3", null, "Properties"), h("p", { class: "muted small" }, "…"));
-  if (c.doc) box.appendChild(docSec);
-  if (c.props > 0) box.appendChild(propSec);
-  if (!c.doc && !(c.props > 0)) return;
-  detail(c.id).then((d) => {
-    if (c.doc) { clear(docSec); docSec.append(h("h3", null, "Documentation"), h("div", { class: "doc" }, d.doc || "")); }
-    if (c.props > 0) {
-      clear(propSec);
-      propSec.append(h("h3", null, "Properties"),
-        h("table", { class: "kv" }, h("tbody", null, d.properties.map(([k, v]) => h("tr", null, h("td", null, k), h("td", null, v))))));
-    }
-  });
-}
-
-function relSection(title, rels, self, arrow) {
+// A row shows the relationship and where it goes; clicking follows it. One
+// destination per row — traversing is what the list is for, and a
+// relationship's own detail is a click on its line, or the Relationships
+// table.
+function relSection(title, rels, self, arrowIcon) {
   const rows = rels.map((ri) => {
     const r = rel(ri);
     const o = otherEnd(r, self);
     const other = o >= 0 ? elem(o) : null;
-    return h("a", { href: href("relation", r.id), title: r.name || "" },
-      other ? typeIcon(other.type) : h("span"),
-      h("span", { class: "rtype" }, relLabel(r.type), r.type === "Access" && r.access !== null ? ` (${accessLabel(r.access)})` : ""),
-      h("span", { class: "ellipsis" }, h("span", { class: "arrow" }, arrow, " "), other ? other.name : h("span", { class: "muted" }, "(another relationship)")),
-    );
+    const label = relLabel(r.type) + (r.type === "Access" && r.access !== null ? ` (${accessLabel(r.access)})` : "");
+    return h("button", {
+      class: "rel-row", type: "button",
+      title: other ? `${label} → ${other.name}` : label,
+      disabled: !other,
+      onclick: () => other && select(other.id),
+    },
+      icon(arrowIcon, { class: "rel-arrow" }),
+      h("span", { class: "rel-type" }, label),
+      other ? typeIcon(other.type) : null,
+      h("span", { class: "ellipsis" }, other ? other.name : "(another relationship)"));
   });
-  return h("section", null, h("h3", null, `${title} (${rels.length})`), h("div", { class: "rel-list" }, rows));
+  return section(`${title} · ${fmt(rels.length)}`, h("div", { class: "link-list" }, rows));
 }
 
-export function renderRelation(box, i, opts = {}) {
+/* ---- relationship ------------------------------------------------------------ */
+
+function renderRelation(box, i) {
   const r = rel(i);
-  const H = opts.heading || "h2";
   const src = r.src >= 0 ? elem(r.src) : null;
   const tgt = r.tgt >= 0 ? elem(r.tgt) : null;
-  const title = r.name ? `${relLabel(r.type)}: ${r.name}` : relLabel(r.type);
+
   box.appendChild(h("div", { class: "detail-head" },
-    h("div", { style: { minWidth: 0 } },
-      h(H, null, title),
+    h("div", { class: "type-icon boxed" }, icon("relations")),
+    h("div", { class: "detail-title" },
+      h("h1", null, r.name || relLabel(r.type)),
       h("div", { class: "detail-meta" },
-        h("span", { class: "badge solid" }, relLabel(r.type)),
-        r.type === "Access" && r.access !== null ? h("span", { class: "badge" }, accessLabel(r.access)) : null,
-        r.type === "Association" && r.directed ? h("span", { class: "badge" }, "directed") : null,
-        r.folder !== null ? h("span", { class: "muted small mono" }, folderPath(r.folder)) : null,
-      ),
-    ),
-  ));
-  const endRow = (label, e, rawId) => h("tr", null,
-    h("td", null, label),
-    h("td", null, e
-      ? h("a", { href: href("element", e.id), style: { display: "inline-flex", alignItems: "center" } }, typeIcon(e.type), e.name, h("span", { class: "muted small", style: { marginLeft: "6px" } }, e.type))
-      : h("span", { class: "muted mono small" }, rawId || "(missing)")),
-  );
-  box.appendChild(h("section", null,
-    h("table", { class: "kv" }, h("tbody", null, endRow("Source", src, r.srcId), endRow("Target", tgt, r.tgtId))),
-  ));
-  box.appendChild(h("div", { class: "actions" },
-    src ? h("a", { class: "btn sm", href: href("graph", null, { focus: src.id, depth: 1 }) }, "Open in graph") : null,
-  ));
+        badge({ label: relLabel(r.type), solid: true }),
+        r.type === "Access" && r.access !== null ? badge({ label: accessLabel(r.access) }) : null,
+        r.type === "Association" && r.directed ? badge({ label: "directed" }) : null),
+      h("p", { class: "id-line" }, folderPath(r.folder) || "(no folder)"))));
+
+  const end = (label, e, raw) => h("button", {
+    class: "rel-row", type: "button", disabled: !e,
+    title: e ? `Show ${e.name}` : "This end is missing from the model",
+    onclick: () => e && select(e.id),
+  },
+    h("span", { class: "rel-type" }, label),
+    e ? typeIcon(e.type) : null,
+    h("span", { class: "ellipsis" }, e ? e.name : raw || "(missing)"));
+
+  box.appendChild(section("Ends", h("div", { class: "link-list" },
+    end("From", src, r.srcId), end("To", tgt, r.tgtId))));
+
+  if (src) {
+    box.appendChild(h("div", { class: "actions" },
+      button({ iconName: "graph", label: "Open in graph", href: href("graph", null, { focus: src.id, depth: 1 }) })));
+  }
+
   const views = store.viewsOfRel[i];
-  box.appendChild(h("section", null,
-    h("h3", null, `Views (${views.length})`),
+  box.appendChild(section(`Drawn on ${countWord(views.length, "view")}`,
     views.length
-      ? h("div", { class: "link-list" }, views.map((vi) => h("a", { href: href("view", view(vi).id, { focus: r.id }) }, "▣ ", h("span", { class: "ellipsis" }, view(vi).name))))
-      : h("p", { class: "muted small" }, "Drawn on no view."),
-  ));
+      ? h("div", { class: "link-list" }, views.map((vi) =>
+          h("a", { href: href("view", view(vi).id, { focus: r.id }) },
+            icon("view"), h("span", { class: "ellipsis" }, view(vi).name))))
+      : h("p", { class: "subtle small" }, "No view.")));
+
   appendDocAndProps(box, r);
-  box.appendChild(h("p", { class: "muted small mono", style: { wordBreak: "break-all" } }, r.id));
+  box.appendChild(section("Identifier", h("p", { class: "id-line" }, r.id)));
 }
 
-function renderViewSummary(box, i) {
+/* ---- view --------------------------------------------------------------------- */
+
+function renderView(box, i) {
   const v = view(i);
-  box.appendChild(h("div", { class: "detail-head" }, h("div", null, h("h2", null, v.name), h("div", { class: "detail-meta" }, h("span", { class: "badge solid" }, "View"), v.viewpoint ? h("span", { class: "badge" }, v.viewpoint) : null))));
-  box.appendChild(h("div", { class: "actions" }, h("a", { class: "btn sm primary", href: href("view", v.id) }, "Open view")));
-  box.appendChild(h("section", null, h("h3", null, `Elements (${v.elements.length})`),
-    h("div", { class: "link-list" }, v.elements.map((ei) => h("a", { href: href("element", elem(ei).id) }, typeIcon(elem(ei).type), elem(ei).name)))));
+  box.appendChild(h("div", { class: "detail-head" },
+    h("div", { class: "type-icon boxed" }, icon("view")),
+    h("div", { class: "detail-title" },
+      h("h1", null, v.name),
+      h("div", { class: "detail-meta" },
+        badge({ label: "View", solid: true }),
+        v.viewpoint ? badge({ label: v.viewpoint }) : null),
+      h("p", { class: "id-line" }, folderPath(v.folder)))));
+  box.appendChild(h("div", { class: "actions" },
+    button({ iconName: "view", label: "Open the drawing", variant: "primary", href: href("view", v.id) })));
+  box.appendChild(section(`Holds ${countWord(v.elements.length, "element")}`,
+    h("div", { class: "link-list" }, v.elements.slice(0, 200).map((ei) =>
+      h("button", { class: "rel-row", type: "button", onclick: () => select(elem(ei).id) },
+        typeIcon(elem(ei).type), h("span", { class: "ellipsis" }, elem(ei).name))))));
+}
+
+/* ---- shared ---------------------------------------------------------------------- */
+
+// Documentation and properties are fetched when the inspector opens; the model
+// blob only says whether there are any, so a megabyte of prose is not shipped
+// to draw a table.
+function appendDocAndProps(box, c) {
+  if (!c.doc && !(c.props > 0)) return;
+  const docSec = c.doc ? section("Documentation", h("p", { class: "subtle small" }, "Loading…")) : null;
+  const propSec = c.props > 0 ? section("Properties", h("p", { class: "subtle small" }, "Loading…")) : null;
+  if (docSec) box.appendChild(docSec);
+  if (propSec) box.appendChild(propSec);
+  detail(c.id).then((d) => {
+    if (docSec) { clear(docSec); docSec.append(h("h2", { class: "sec-title" }, "Documentation"), h("div", { class: "doc" }, d.doc || "")); }
+    if (propSec) { clear(propSec); propSec.append(h("h2", { class: "sec-title" }, "Properties"), kv(d.properties)); }
+  });
+}
+
+function countWord(n, noun) {
+  return `${fmt(n)} ${noun}${n === 1 ? "" : "s"}`;
 }

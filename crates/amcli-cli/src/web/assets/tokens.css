@@ -1,0 +1,154 @@
+/* amcli web — the design tokens, and the only file allowed to name a colour
+   or a raw length.
+ *
+ * `app.css` is checked by `tokens_are_the_only_literals` in
+ * crates/amcli-cli/tests/cli.rs: a hex, an rgb() or a px that is not 0 or 1
+ * anywhere in that file fails the build. Add the value here and give it a
+ * name instead — that is the whole mechanism by which the interface stays
+ * one interface.
+ *
+ * The palette keeps the rule the viewer started with: everything that is ours
+ * is a shade of zinc, and the only colour on the page is the ArchiMate layer
+ * fill inside a diagram. Every foreground/background pair below clears WCAG
+ * AA (4.5:1) in both themes, including the inverted ones — the counts inside
+ * a selected chip used to sit at 2.46:1.
+ */
+
+:root {
+  /* -- surfaces and ink -------------------------------------------------- */
+  --surface-0: #ffffff;   /* the page */
+  --surface-1: #f6f6f7;   /* sunk: table heads, inputs, code, wells */
+  --surface-2: #ffffff;   /* raised: popovers, cards, the inspector */
+  --fg:        #09090b;
+  --fg-muted:  #55555e;   /* secondary text            7.4:1 on surface-0 */
+  --fg-subtle: #6a6a73;   /* counts, hints, paths      5.4:1 on surface-0 */
+  --line:      #e4e4e7;
+  --line-firm: #d4d4d8;   /* a border that has to be seen, not just felt */
+
+  /* Selected / pressed / current: ink inverted, not a hue. */
+  --invert:        #18181b;
+  --invert-fg:     #fafafa;
+  --invert-subtle: #c2c2c8; /* counts on an inverted ground  10.0:1 */
+
+  /* A hover or a soft selection — a tint of the ground, never a colour. */
+  --tint:      #f4f4f5;
+  --tint-firm: #e9e9eb;
+
+  --focus: #18181b;
+  --focus-w: 2px;
+
+  /* Only the alpha of this is used — it is the opaque end of a mask
+     gradient — but a literal is a literal, so it is named here too. */
+  --mask-opaque: #000000;
+
+  /* The one place a state is allowed a hue, because "the file stopped
+     parsing" must not read as decoration. */
+  --alarm: #a02f22;
+
+  /* -- the diagram surface ----------------------------------------------- */
+  /* A drawing is paper in both themes: its ink stays dark, because the layer
+     fills the renderer uses are pale and only work on white. */
+  --paper:      #ffffff;
+  --paper-grid: #f1f1f3;
+  --paper-ink:  #09090b;
+  --paper-line: #d8d8dc;
+  --edge:       #52525b;
+
+  /* -- space (4px rhythm, 2px for optical nudges) ------------------------- */
+  --sp-0: 0;
+  --sp-h: 2px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* -- type --------------------------------------------------------------- */
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;   /* body */
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+  --lh-tight: 1.25;
+  --lh-body: 1.45;
+  --lh-loose: 1.6;
+  --track-caps: 0.05em;   /* uppercase labels */
+  --track-tight: -0.015em;
+
+  /* -- shape -------------------------------------------------------------- */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-full: 999px;
+
+  /* -- elevation ---------------------------------------------------------- */
+  --shadow-1: 0 1px 2px rgba(9, 9, 11, 0.06);
+  --shadow-2: 0 8px 28px rgba(9, 9, 11, 0.14), 0 1px 2px rgba(9, 9, 11, 0.08);
+
+  /* -- controls ----------------------------------------------------------- */
+  /* Two heights, and no third. Everything that sits in a toolbar is one of
+     them, which is what lets the toolbar promise never to wrap. */
+  --ctl-h: 26px;
+  --ctl-h-lg: 30px;
+  --ctl-pad: 9px;
+  --ctl-w-sm: 140px;   /* a search box that shares a toolbar */
+  --ctl-w: 220px;      /* a search box that has one to itself */
+  --icon: 16px;
+  --hit: 26px;   /* the smallest square an icon button may be */
+
+  /* -- layout ------------------------------------------------------------- */
+  --rail-w: 232px;
+  --rail-w-min: 52px;
+  --inspector-w: 340px;
+  --inspector-min: 280px;
+  --inspector-max: 640px;
+  --toolbar-h: 42px;
+  --tree-w: 232px;
+  --palette-w: 560px;
+  --row-h: 30px;
+  --read-w: 68ch;
+
+  /* -- motion ------------------------------------------------------------- */
+  --dur-1: 90ms;
+  --dur-2: 160ms;
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+
+  --z-sticky: 2;
+  --z-hud: 5;
+  --z-popover: 40;
+  --z-overlay: 60;
+
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --surface-0: #0a0a0c;
+  --surface-1: #141417;
+  --surface-2: #1a1a1e;
+  --fg:        #fafafa;
+  --fg-muted:  #a8a8b2;
+  --fg-subtle: #94949e;
+  --line:      #292930;
+  --line-firm: #3f3f46;
+
+  --invert:        #fafafa;
+  --invert-fg:     #18181b;
+  --invert-subtle: #55555e;
+
+  --tint:      #1c1c21;
+  --tint-firm: #26262d;
+
+  --focus: #d4d4d8;
+  --alarm: #f08a76;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.6), 0 1px 2px rgba(0, 0, 0, 0.5);
+
+  color-scheme: dark;
+}

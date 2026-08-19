@@ -4,48 +4,55 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>amcli</title>
+<link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/app.css">
 <script type="module" src="/app.js"></script>
 </head>
 <body>
+<!-- Three panes: the rail navigates, the middle works, the inspector describes
+     what is selected. The details of a concept used to live at the bottom of
+     the navigation column at a third of the window's width; they belong beside
+     the thing they describe. -->
 <div id="app">
-  <aside id="sidebar">
-    <div class="brand">
-      <div class="brand-row">
-        <span class="brand-mark">amcli</span>
-        <span id="status" class="status" title="">
-          <span class="dot"></span><span class="status-text">loading</span>
-        </span>
-        <span class="spacer"></span>
-        <button id="theme" class="icon-btn" title="Toggle theme" aria-label="Toggle theme">◐</button>
-      </div>
-      <span id="model-name" class="brand-model" title=""></span>
+  <aside id="rail">
+    <div class="rail-head">
+      <span class="brand"><span class="brand-mark">amcli</span></span>
+      <span class="spacer"></span>
+      <button id="rail-toggle" class="btn btn-icon btn-quiet" type="button" title="Collapse the sidebar (⌘B)" aria-label="Collapse the sidebar"></button>
     </div>
-    <div class="search-box">
-      <input id="search" type="search" placeholder="Search…" autocomplete="off" spellcheck="false">
-      <kbd>⌘K</kbd>
-      <div id="search-results" class="search-results" hidden></div>
+    <div class="rail-body">
+      <button id="open-palette" class="btn rail-search" type="button" title="Search the model (⌘K)">
+        <span>Search…</span><kbd>⌘K</kbd>
+      </button>
+      <nav id="nav" aria-label="Sections"></nav>
+      <!-- Everything that narrows what the page shows lives here, on every
+           page: the folder tree, the filters, the pins. The rail is where you
+           narrow; the middle is what you got. -->
+      <div id="rail-context" class="rail-context"></div>
     </div>
-    <nav id="nav">
-      <a href="#/views" data-page="views">Views<span class="count" data-count="views"></span></a>
-      <a href="#/elements" data-page="elements">Elements<span class="count" data-count="elements"></span></a>
-      <a href="#/relations" data-page="relations">Relations<span class="count" data-count="relations"></span></a>
-      <a href="#/graph" data-page="graph">Graph</a>
-      <a href="#/stats" data-page="stats">Stats</a>
-    </nav>
-    <!-- The details of whatever was last clicked — a figure on a view, a
-         graph node, a table row — live here, under the menu. -->
-    <aside id="details" class="details-panel" hidden>
-      <div class="details-head">
-        <span class="details-title">Details</span>
-        <span class="spacer"></span>
-        <a id="details-open" class="icon-btn" title="Maximize — open as a page" href="#">↗</a>
-        <button id="details-close" class="icon-btn" title="Close" aria-label="Close">✕</button>
+    <div class="rail-foot">
+      <div class="model-line">
+        <span id="model-name" class="model-name"></span>
+        <span id="model-path" class="model-path"></span>
       </div>
-      <div id="details-body" class="details-body"></div>
-    </aside>
+      <div class="rail-foot-row">
+        <span id="status" class="status"><span class="dot"></span><span class="status-text">loading</span></span>
+      </div>
+    </div>
   </aside>
+
   <main id="main"></main>
+
+  <aside id="inspector" aria-label="Details">
+    <div id="inspector-grip" class="inspector-grip" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the details panel"></div>
+    <div class="inspector-head">
+      <button id="inspector-toggle" class="btn btn-icon btn-quiet" type="button" title="Narrow the details panel (⌘I)" aria-label="Narrow the details panel"></button>
+      <span class="caps inspector-label">Details</span>
+      <span class="spacer"></span>
+      <span id="inspector-actions"></span>
+    </div>
+    <div id="inspector-body" class="inspector-body"></div>
+  </aside>
 </div>
 </body>
 </html>

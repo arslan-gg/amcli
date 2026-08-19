@@ -99,7 +99,65 @@ binary is the whole product, and it works offline.
   one entry per Archi figure class named in a comment. They are not
   `assets/archi` inputs and `xtask` does not touch them. Path data must stay
   within the 16×16 box and never contain `-0` — the render byte-stability
-  test forbids it.
+  test forbids it. The *chrome's* icons are a separate set, in
+  `assets/icons.js`, and no interface element may be a typed character:
+  `the_chrome_has_no_text_icons` fails on `▣ ▶ ▼ ✕ ↗ ⤡ ◐ ‹ ↔ ▾`.
+
+### The design system, and the four tests that hold it up
+
+The page came apart once — nine font sizes, twenty spacings, four radius
+idioms, thirty-seven inline styles, three copies of the sortable table header
+with three different sort defaults, and the same layer named two ways on two
+pages. Care at the call site is what failed, so the rules are tests now. Read
+`docs/web-ux.md` for the diagnosis; these are the standing constraints:
+
+- **`tokens.css` is the only file allowed to name a colour or a length.**
+  `tokens_are_the_only_literals` fails on a hex, an `rgb()` or any `px` other
+  than `0` and `1` anywhere in `app.css`. Add the value to `tokens.css` and
+  give it a name instead.
+- **A page module may compute a length but never decide one.**
+  `page_modules_decide_no_lengths` fails on a quoted `12px` in any asset. A
+  bar's width from its value, a tree row's indent from its depth and an
+  ArchiMate fill from `/api/model` are all fine; `style: { width: "220px" }`
+  is not — that is how one search box came to have three widths.
+- **Every foreground on every ground clears WCAG AA.**
+  `every_token_pair_clears_wcag_aa` reads the hexes out of `tokens.css` and
+  checks the pairs in both themes. The count inside a selected chip used to
+  sit at 2.46:1 because `.muted` beat the chip's inverted colour; that is what
+  `--invert-subtle` is for.
+- **A widget is written once**, in `assets/ui.js` — `toolbar`, `filterBar`,
+  `dataTable`, `tree`, `popover`, `button`, `chip`, `badge`, `card`,
+  `barChart`, `emptyState`. A second copy is a primitive that has not been
+  extracted yet. Nothing in `ui.js` knows what ArchiMate is; a page hands in
+  render functions.
+
+### The shape of the page, and why
+
+- **Three columns, always all three: rail, middle, inspector.** Neither side
+  pane opens or closes — each only narrows, so the layout never jumps and
+  nothing has to be found again. `--rail-w` and `--inspector-w` are tokens and
+  the inspector's width is dragged and remembered.
+- **The rail is where you narrow; the middle is what you got.** Navigation,
+  the folder tree and the filters all live in the rail, on every page, through
+  `railContext()` — which `render()` clears on each route. Nothing filters
+  from a band across the top any more.
+- **One page-header anatomy**: title · meta · controls · trailing. It neither
+  wraps nor scrolls sideways — what does not fit moves into the toolbar's
+  overflow menu, because a control scrolled out of sight is a control you do
+  not have. Nothing in the viewer scrolls horizontally; tables are
+  `table-layout: fixed` with a `colgroup`, and cells ellipsize.
+- **One selection, one place for it.** A single click anywhere — a row, a
+  figure, a graph node — sets the current concept and fills the inspector;
+  nothing navigates on a single click. `#/element/ID` opens the collection it
+  belongs to with it selected, not a second rendering of the same lists.
+  Surfaces stay in step through the `amcli:select` event.
+- **Every popover is `position: fixed` and placed by `anchorTo`.** Each
+  container that holds a trigger clips its own overflow — that is how the old
+  search results were sliced 32px short of their right edge.
+- **The panes fold in the order of what a reader can do without**: the details
+  of one concept first, then navigation. The filters go last, because a table
+  you cannot narrow is a table you cannot use. The breakpoints are the
+  arithmetic of keeping the middle above ~520px.
 
 `assets/archi/` holds MIT-licensed files vendored from `archimatetool/archi`.
 They are **generated inputs, not hand-edited** — `assets/archi/PROVENANCE.toml`

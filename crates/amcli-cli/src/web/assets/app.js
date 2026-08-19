@@ -1,179 +1,273 @@
-// Boot: load the model, wire the shell (nav, search, theme, status, drawer),
-// route the hash to a page, and keep the page in step with the file.
+// The shell: rail, working surface, inspector — plus the routing, the theme,
+// the keyboard and the poll that keeps all three in step with the file.
+//
+// The shell owns *where* things go. What goes in the middle is a page module,
+// and what goes in the inspector is always `renderConcept`, whoever selected
+// it. There is one current concept and one place it is shown.
 
-import { h, clear, fmt, relLabel, debounce } from "./dom.js";
-import { store, load, subscribe, startPolling, search, elem, view, rel } from "./store.js";
+import { h, clear, fmt } from "./dom.js";
+import { store, load, subscribe, startPolling } from "./store.js";
 import { parse, onRoute, href } from "./router.js";
-import { typeIcon } from "./notation.js";
+import { icon } from "./icons.js";
+import { iconButton } from "./ui.js";
+import { openPalette, closePalette, paletteIsOpen } from "./palette.js";
 import { renderConcept } from "./pages/detail.js";
-import * as views from "./pages/views.js";
-import * as elements from "./pages/elements.js";
-import * as relations from "./pages/relations.js";
+import * as collection from "./pages/collection.js";
+import * as viewPage from "./pages/view.js";
 import * as graph from "./pages/graph.js";
 import * as stats from "./pages/stats.js";
-import * as detail from "./pages/detail.js";
 
-const PAGES = {
-  views, view: views,
-  elements, element: detail,
-  relations, relation: detail,
-  graph, stats,
-};
+const NAV = [
+  { page: "views", label: "Views", iconName: "view", count: (d) => d.views.length },
+  { page: "elements", label: "Elements", iconName: "elements", count: (d) => d.elements.length },
+  { page: "relations", label: "Relationships", iconName: "relations", count: (d) => d.relations.length },
+  { page: "graph", label: "Graph", iconName: "graph" },
+  { page: "stats", label: "Statistics", iconName: "stats" },
+];
 
+// Which nav entry a route lights up. A concept's deep link belongs to the
+// collection it came from, because that is what the page behind it shows.
+const OWNER = { view: "views", element: "elements", relation: "relations" };
+
+const app = document.getElementById("app");
 const main = document.getElementById("main");
-const panel = document.getElementById("details");
-const panelBody = document.getElementById("details-body");
+const inspector = document.getElementById("inspector");
+const inspectorBody = document.getElementById("inspector-body");
+const inspectorActions = document.getElementById("inspector-actions");
 const statusEl = document.getElementById("status");
+const railContextEl = document.getElementById("rail-context");
+
+// Where a page puts what narrows it — the folder tree, the filters, the pins.
+// One place, on every page, so "how do I see less of this" has one answer.
+export function railContext() { return railContextEl; }
 
 let unmount = () => {};
-let selectedId = null;
+let currentId = null;
 
-// ---- theme ---------------------------------------------------------------
-// Storage can be denied outright (a locked-down browser); the theme then
-// simply follows the system for this visit.
-const storage = {
-  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+/* ---- preferences ----------------------------------------------------------
+   Storage can be denied outright; the viewer then simply keeps its defaults
+   for the visit rather than failing to start. */
+const prefs = {
+  get(k, fallback) { try { return localStorage.getItem(k) ?? fallback; } catch { return fallback; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* not persisted */ } },
 };
+
+/* ---- theme ---------------------------------------------------------------- */
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
-  storage.set("amcli-theme", t);
+  prefs.set("amcli-theme", t);
+  themeBtn?.replaceChildren(icon(t === "dark" ? "theme" : "theme"));
+  themeBtn?.setAttribute("title", t === "dark" ? "Switch to the light theme" : "Switch to the dark theme");
 }
-applyTheme(storage.get("amcli-theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
-document.getElementById("theme").addEventListener("click", () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
+const themeBtn = iconButton("theme", "Switch theme", () =>
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"), { variant: "quiet" });
+applyTheme(prefs.get("amcli-theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
 
-// ---- details panel ---------------------------------------------------------
-export function select(id) {
-  selectedId = id;
+/* ---- rail ------------------------------------------------------------------ */
+const railToggle = document.getElementById("rail-toggle");
+function applyRail(collapsed) {
+  app.classList.toggle("rail-collapsed", collapsed);
+  prefs.set("amcli-rail", collapsed ? "1" : "0");
+  clear(railToggle).appendChild(icon("rail"));
+  railToggle.title = collapsed ? "Expand the sidebar (⌘B)" : "Collapse the sidebar (⌘B)";
+  railToggle.setAttribute("aria-label", railToggle.title);
+}
+railToggle.addEventListener("click", () => applyRail(!app.classList.contains("rail-collapsed")));
+applyRail(prefs.get("amcli-rail") === "1");
+
+document.getElementById("open-palette").addEventListener("click", openPalette);
+
+const nav = document.getElementById("nav");
+function buildNav() {
+  clear(nav);
+  for (const n of NAV) {
+    nav.appendChild(h("a", { href: href(n.page), dataset: { page: n.page }, title: n.label },
+      icon(n.iconName),
+      h("span", { class: "nav-label" }, n.label),
+      n.count ? h("span", { class: "nav-n" }, fmt(n.count(store.data))) : null));
+  }
+}
+
+/* ---- inspector -------------------------------------------------------------
+   One current concept, one place it is shown. A click anywhere — a figure on a
+   drawing, a node on the graph, a row in a table — selects; nothing navigates
+   on a single click, so a row no longer has two destinations depending on
+   which pixel was hit. */
+export function select(id, opts = {}) {
   const found = store.byId.get(id);
   if (!found) return;
-  panel.hidden = false;
-  document.getElementById("details-open").href = href(found.kind, id);
-  renderConcept(panelBody, id);
+  currentId = id;
+  clear(inspectorActions);
+  const where = { element: ["elements", "Elements"], relation: ["relations", "Relationships"], view: ["views", "Views"] }[found.kind];
+  inspectorActions.append(
+    where ? iconButton(where[0] === "views" ? "view" : where[0], `Find this in ${where[1]}`,
+      () => { location.hash = href(found.kind, id); }, { variant: "quiet" }) : null,
+  );
+  renderConcept(inspectorBody, id);
+  if (opts.focus !== false) inspectorBody.scrollTop = 0;
+  document.dispatchEvent(new CustomEvent("amcli:select", { detail: { id } }));
 }
-export function closeDetails() { panel.hidden = true; selectedId = null; }
 
-// Maximizing the panel opens the concept as a page; minimizing that page goes
-// back to wherever the reader was — the view, the graph, the table — with the
-// panel showing the same concept again.
-let maximizedFrom = null;
-document.getElementById("details-open").addEventListener("click", () => { maximizedFrom = location.hash; });
-export function minimizeDetails(id) {
-  const back = maximizedFrom && !/^#\/(element|relation)\//.test(maximizedFrom) ? maximizedFrom : "#/views";
-  maximizedFrom = null;
-  location.hash = back;
-  select(id);
+export function clearSelection() {
+  currentId = null;
+  clear(inspectorActions);
+  clear(inspectorBody).appendChild(h("div", { class: "empty" },
+    h("p", { class: "empty-title" }, "Nothing selected"),
+    h("p", { class: "empty-body" }, "Pick a row, a figure on a drawing or a box on the graph, and it will be described here.")));
+  document.dispatchEvent(new CustomEvent("amcli:select", { detail: { id: null } }));
 }
-document.getElementById("details-close").addEventListener("click", closeDetails);
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !panel.hidden && document.activeElement?.tagName !== "INPUT") closeDetails();
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); document.getElementById("search").focus(); }
-});
 
-// ---- status --------------------------------------------------------------
+function applyInspector(narrow) {
+  app.classList.toggle("inspector-narrow", narrow);
+  prefs.set("amcli-inspector-narrow", narrow ? "1" : "0");
+  clear(inspectorToggle).appendChild(icon("inspector"));
+  inspectorToggle.title = narrow ? "Widen the details panel (⌘I)" : "Narrow the details panel (⌘I)";
+  inspectorToggle.setAttribute("aria-label", inspectorToggle.title);
+}
+const inspectorToggle = document.getElementById("inspector-toggle");
+inspectorToggle.addEventListener("click", () => applyInspector(!app.classList.contains("inspector-narrow")));
+applyInspector(prefs.get("amcli-inspector-narrow") === "1");
+
+export function selectedId() { return currentId; }
+
+// Drag the seam. The width is remembered, because a reader who widened the
+// panel to read documentation should not have to do it again on the next
+// concept.
+(function resizable() {
+  const grip = document.getElementById("inspector-grip");
+  const stored = parseInt(prefs.get("amcli-inspector-w", ""), 10);
+  const clamp = (px) => {
+    const min = num("--inspector-min"), max = num("--inspector-max");
+    return Math.max(min, Math.min(max, px));
+  };
+  const num = (name) => parseInt(getComputedStyle(document.documentElement).getPropertyValue(name), 10) || 0;
+  const setWidth = (px) => {
+    app.style.setProperty("--inspector-w", `${clamp(px)}px`);
+    prefs.set("amcli-inspector-w", String(clamp(px)));
+  };
+  if (stored) setWidth(stored);
+
+  let from = null;
+  grip.addEventListener("pointerdown", (e) => {
+    from = { x: e.clientX, w: inspector.getBoundingClientRect().width };
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add("is-held");
+    document.body.classList.add("is-resizing");
+  });
+  grip.addEventListener("pointermove", (e) => { if (from) setWidth(from.w + (from.x - e.clientX)); });
+  const stop = () => { from = null; grip.classList.remove("is-held"); document.body.classList.remove("is-resizing"); };
+  grip.addEventListener("pointerup", stop);
+  grip.addEventListener("pointercancel", stop);
+  grip.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? num("--sp-12") : num("--sp-4");
+    if (e.key === "ArrowLeft") { e.preventDefault(); setWidth(inspector.getBoundingClientRect().width + step); }
+    if (e.key === "ArrowRight") { e.preventDefault(); setWidth(inspector.getBoundingClientRect().width - step); }
+  });
+})();
+
+/* ---- status ----------------------------------------------------------------- */
 function setStatus(kind, text, title) {
   statusEl.className = `status ${kind}`;
   statusEl.querySelector(".status-text").textContent = text;
   statusEl.title = title || "";
 }
 
-// ---- search --------------------------------------------------------------
-const searchInput = document.getElementById("search");
-const searchResults = document.getElementById("search-results");
-let activeHit = -1;
-const runSearch = () => {
-  const q = searchInput.value;
-  clear(searchResults);
-  activeHit = -1;
-  if (!store.data || !q.trim()) { searchResults.hidden = true; return; }
-  const hits = search(q, 12);
-  const group = (title, items, render) => {
-    if (!items.length) return;
-    searchResults.appendChild(h("div", { class: "group" }, title));
-    for (const it of items) searchResults.appendChild(render(it));
-  };
-  group("Elements", hits.elements, ({ i }) => h("a", { href: href("element", elem(i).id) }, typeIcon(elem(i).type), h("span", { class: "ellipsis" }, elem(i).name), h("span", { class: "type" }, elem(i).type)));
-  group("Views", hits.views, ({ i }) => h("a", { href: href("view", view(i).id) }, "▣ ", h("span", { class: "ellipsis" }, view(i).name), h("span", { class: "type" }, `${view(i).elements.length} elements`)));
-  group("Relationships", hits.relations, ({ i }) => h("a", { href: href("relation", rel(i).id) }, h("span", { class: "ellipsis" }, rel(i).name), h("span", { class: "type" }, relLabel(rel(i).type))));
-  if (!searchResults.children.length) searchResults.appendChild(h("div", { class: "group" }, "No matches"));
-  searchResults.hidden = false;
-};
-searchInput.addEventListener("input", debounce(runSearch, 60));
-searchInput.addEventListener("focus", runSearch);
-searchInput.addEventListener("blur", () => setTimeout(() => (searchResults.hidden = true), 150));
-searchInput.addEventListener("keydown", (e) => {
-  const links = [...searchResults.querySelectorAll("a")];
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+/* ---- keyboard ----------------------------------------------------------------
+   One place, so a shortcut cannot mean two things on two pages. */
+document.addEventListener("keydown", (e) => {
+  const mod = e.metaKey || e.ctrlKey;
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+  if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); paletteIsOpen() ? closePalette() : openPalette(); return; }
+  if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); applyRail(!app.classList.contains("rail-collapsed")); return; }
+  if (mod && e.key.toLowerCase() === "i") {
     e.preventDefault();
-    if (!links.length) return;
-    activeHit = (activeHit + (e.key === "ArrowDown" ? 1 : -1) + links.length) % links.length;
-    links.forEach((a, i) => a.classList.toggle("active", i === activeHit));
-    links[activeHit].scrollIntoView({ block: "nearest" });
-  } else if (e.key === "Enter") {
-    const a = links[activeHit >= 0 ? activeHit : 0];
-    if (a) { location.hash = a.getAttribute("href"); searchResults.hidden = true; searchInput.blur(); }
-  } else if (e.key === "Escape") {
-    searchResults.hidden = true; searchInput.blur();
+    applyInspector(!app.classList.contains("inspector-narrow"));
+    return;
+  }
+  if (e.key === "Escape" && !paletteIsOpen() && currentId && !typing) { clearSelection(); return; }
+  if (e.key === "/" && !typing && !paletteIsOpen()) {
+    const box = main.querySelector(".field-input");
+    if (box) { e.preventDefault(); box.focus(); box.select?.(); }
   }
 });
-searchResults.addEventListener("click", () => { searchResults.hidden = true; });
 
-// ---- routing -------------------------------------------------------------
+/* ---- routing ------------------------------------------------------------------ */
+function pageFor(route) {
+  switch (route.page) {
+    case "view": return viewPage;
+    case "graph": return graph;
+    case "stats": return stats;
+    default: return collection;
+  }
+}
+
 function render(route) {
   if (!store.data) return;
   unmount();
   clear(main);
-  const page = PAGES[route.page] || views;
-  document.querySelectorAll("#nav a").forEach((a) => {
-    const p = a.dataset.page;
-    a.classList.toggle("active", p === route.page || (p === "views" && route.page === "view") || (p === "elements" && route.page === "element") || (p === "relations" && route.page === "relation"));
-  });
+  clear(railContextEl);
+  const owner = OWNER[route.page] || route.page;
+  nav.querySelectorAll("a").forEach((a) => a.classList.toggle("is-current", a.dataset.page === owner));
+
+  // A concept's deep link is the collection it belongs to, with the concept
+  // selected — not a second, wider copy of the inspector.
+  const deep = (route.page === "element" || route.page === "relation") && route.id;
+  const effective = deep ? { ...route, page: owner, id: null } : route;
+
   try {
-    unmount = page.mount(main, route) || (() => {});
-  } catch (e) {
-    console.error(e);
-    main.appendChild(h("div", { class: "empty" }, `This page failed to render: ${e.message}`));
+    unmount = pageFor(effective).mount(main, effective) || (() => {});
+  } catch (err) {
+    console.error(err);
+    main.appendChild(h("div", { class: "empty" },
+      h("p", { class: "empty-title" }, "This page could not be drawn"),
+      h("p", { class: "empty-body" }, err.message)));
     unmount = () => {};
   }
-  // A page-level element or relation is its own details.
-  if ((route.page === "element" || route.page === "relation") && route.id) closeDetails();
+  if (deep) select(route.id);
 }
 
 function refreshShell() {
   const d = store.data;
-  const nameEl = document.getElementById("model-name");
-  nameEl.textContent = d.model.name || "(unnamed model)";
-  nameEl.title = d.model.path;
+  document.getElementById("model-name").textContent = d.model.name || "(unnamed model)";
+  // The file's name, with the whole path on the hover: a path reversed to
+  // put the ellipsis at the front read as `…chpad/demo/bank.archimate/`.
+  const path = document.getElementById("model-path");
+  path.textContent = d.model.path.split(/[\\/]/).pop();
+  path.title = d.model.path;
   document.title = `${d.model.name || "amcli"} — amcli`;
-  const counts = { views: d.views.length, elements: d.elements.length, relations: d.relations.length };
-  document.querySelectorAll("[data-count]").forEach((el) => (el.textContent = fmt(counts[el.dataset.count])));
+  buildNav();
 }
 
 subscribe((event) => {
-  if (event === "model") { refreshShell(); }
+  if (event === "model") refreshShell();
   if (event === "changed") {
-    setStatus("ok changed", "updated", `Model reloaded at ${new Date().toLocaleTimeString()}`);
+    setStatus("is-live is-changed", "updated", `Reloaded at ${new Date().toLocaleTimeString()}`);
     render(parse());
-    if (selectedId && !panel.hidden) select(selectedId);
-    setTimeout(() => setStatus("ok", "live", `Watching ${store.data.model.path}`), 2500);
+    if (currentId) select(currentId, { focus: false });
+    setTimeout(() => setStatus("is-live", "live", `Watching ${store.data.model.path}`), 2500);
   } else if (event === "status") {
-    if (store.error) setStatus("error", "file invalid", `The model file no longer parses; showing the last good version.\n${store.error}`);
-    else setStatus("ok", "live", `Watching ${store.data.model.path}`);
+    if (store.error) setStatus("is-error", "file invalid", `The model file no longer parses; showing the last good version.\n${store.error}`);
+    else setStatus("is-live", "live", `Watching ${store.data.model.path}`);
   } else if (event === "offline") {
-    setStatus("error", "server gone", "amcli web is no longer answering — was it stopped?");
+    setStatus("is-error", "server gone", "amcli web is no longer answering — was it stopped?");
   }
 });
+
+document.querySelector(".rail-foot-row").append(h("span", { class: "spacer" }), themeBtn);
 
 onRoute(render);
 
 load()
   .then(() => {
-    setStatus("ok", "live", `Watching ${store.data.model.path}`);
-    if (!location.hash) location.hash = "#/views";
+    setStatus("is-live", "live", `Watching ${store.data.model.path}`);
+    if (!location.hash) location.hash = href("views");
+    clearSelection();
     render(parse());
     startPolling(2000);
   })
   .catch((e) => {
-    setStatus("error", "failed", e.message);
-    main.appendChild(h("div", { class: "empty" }, `Could not load the model: ${e.message}`));
+    setStatus("is-error", "failed", e.message);
+    main.appendChild(h("div", { class: "empty" },
+      h("p", { class: "empty-title" }, "Could not load the model"),
+      h("p", { class: "empty-body" }, e.message)));
   });

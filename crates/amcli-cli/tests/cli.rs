@@ -1833,3 +1833,225 @@ fn every_web_asset_is_served() {
     child.kill().unwrap();
     let _ = child.wait();
 }
+
+/* ---- the design system's guardrails -------------------------------------------
+The viewer's interface drifted once already: nine font sizes, twenty
+spacings, four radius idioms and thirty-seven inline styles, each decided at
+its own call site, plus three copies of the sortable table header with three
+different ideas about which columns sort descending first. Care at the call
+site is not what fixes that — it is what failed. These tests are. */
+
+fn web_asset(rel: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/assets").join(rel);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{rel}: {e}"))
+}
+
+fn web_asset_paths(ext: &str) -> Vec<(String, String)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/assets");
+    let mut out = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+                let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+                out.push((rel, std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Strip `/* … */`, which is where the prose lives and where a hex may be
+/// quoted while explaining why it is no longer used.
+fn without_block_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(at) = rest.find("/*") {
+        out.push_str(&rest[..at]);
+        match rest[at..].find("*/") {
+            Some(end) => rest = &rest[at + end + 2..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `tokens.css` names every colour and every length; `app.css` may only refer
+/// to them. A literal that slips into `app.css` is a decision taken at a call
+/// site, which is how the interface came apart last time.
+#[test]
+fn tokens_are_the_only_literals() {
+    let css = without_block_comments(&web_asset("app.css"));
+    let mut sins = Vec::new();
+    for (n, line) in css.lines().enumerate() {
+        let no = n + 1;
+        if let Some(at) = line.find('#') {
+            let tail: String =
+                line[at + 1..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+            if tail.len() >= 3 {
+                sins.push(format!("app.css:{no}: colour literal #{tail} — name it in tokens.css"));
+            }
+        }
+        if line.contains("rgb(") || line.contains("rgba(") {
+            sins.push(format!("app.css:{no}: rgb() literal — name it in tokens.css"));
+        }
+        // A 1px hairline and a 0 are structural; every other length is a
+        // decision, and decisions live in the token file.
+        let bytes: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i + 1 < bytes.len() {
+            if bytes[i] == 'p' && bytes[i + 1] == 'x' {
+                let mut j = i;
+                while j > 0 && (bytes[j - 1].is_ascii_digit() || bytes[j - 1] == '.') {
+                    j -= 1;
+                }
+                let num: String = bytes[j..i].iter().collect();
+                if !num.is_empty() && num != "0" && num != "1" {
+                    sins.push(format!(
+                        "app.css:{no}: length literal {num}px — name it in tokens.css"
+                    ));
+                }
+            }
+            i += 1;
+        }
+    }
+    assert!(sins.is_empty(), "app.css must build from tokens only:\n  {}", sins.join("\n  "));
+}
+
+/// The same rule on the other side of the wire. A page module may compute a
+/// length from data — a bar's width, a tree row's indent — but it may not
+/// decide one: `style: { width: "220px" }` in three modules is how the viewer
+/// ended up with three different widths for the same search box.
+#[test]
+fn page_modules_decide_no_lengths() {
+    let mut sins = Vec::new();
+    for (rel, src) in web_asset_paths("js") {
+        for (n, line) in src.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
+            for unit in ["px", "rem", "em"] {
+                for quote in ['"', '\''] {
+                    let needle = format!("{quote}");
+                    let mut from = 0;
+                    while let Some(at) = line[from..].find(&needle) {
+                        let start = from + at + 1;
+                        let lit: String = line[start..]
+                            .chars()
+                            .take_while(|c| c.is_ascii_digit() || *c == '.')
+                            .collect();
+                        if !lit.is_empty() && line[start + lit.len()..].starts_with(unit) {
+                            sins.push(format!("{rel}:{}: hardcoded {lit}{unit}", n + 1));
+                        }
+                        from = start;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        sins.is_empty(),
+        "a page module may compute a length but not decide one:\n  {}",
+        sins.join("\n  ")
+    );
+}
+
+/// Chrome icons are drawn, not typed. Fifteen unicode characters used to stand
+/// in for an icon set, each at the surrounding font's size, on its own
+/// baseline, in whatever face the platform had — sitting on the same line as a
+/// drawn ArchiMate figure.
+#[test]
+fn the_chrome_has_no_text_icons() {
+    const RETIRED: &[char] = &['▣', '▶', '▼', '✕', '↗', '⤡', '◐', '‹', '›', '↔', '▾', '▴', '↕'];
+    let mut sins = Vec::new();
+    for (rel, src) in web_asset_paths("js") {
+        if rel == "icons.js" {
+            continue; // it names them, in a comment, to say what it replaced
+        }
+        for (n, line) in src.lines().enumerate() {
+            for c in RETIRED {
+                if line.contains(*c) {
+                    sins.push(format!("{rel}:{}: `{c}` — use icon(\"…\") from icons.js", n + 1));
+                }
+            }
+        }
+    }
+    let html = web_asset("index.html");
+    for c in RETIRED {
+        assert!(!html.contains(*c), "index.html still types `{c}` as an icon");
+    }
+    assert!(sins.is_empty(), "the icon set is icons.js:\n  {}", sins.join("\n  "));
+}
+
+/// Every foreground the palette offers, on every ground it is put on, clears
+/// WCAG AA. The count inside a selected chip used to sit at 2.46:1 in dark,
+/// because `.muted` beat the chip's inverted colour and nothing was watching.
+#[test]
+fn every_token_pair_clears_wcag_aa() {
+    const PAIRS: &[(&str, &str)] = &[
+        ("fg", "surface-0"),
+        ("fg", "surface-1"),
+        ("fg", "surface-2"),
+        ("fg-muted", "surface-0"),
+        ("fg-muted", "surface-1"),
+        ("fg-muted", "surface-2"),
+        ("fg-muted", "tint"),
+        ("fg-subtle", "surface-0"),
+        ("fg-subtle", "surface-1"),
+        ("fg-subtle", "surface-2"),
+        ("fg-subtle", "tint"),
+        ("invert-fg", "invert"),
+        ("invert-subtle", "invert"),
+        ("alarm", "surface-1"),
+        ("paper-ink", "paper"),
+    ];
+    let css = web_asset("tokens.css");
+    let light = css.split("[data-theme=\"dark\"]").next().unwrap();
+    let dark_block = css.split("[data-theme=\"dark\"]").nth(1).unwrap_or("");
+
+    for (theme, block, fallback) in [("light", light, light), ("dark", dark_block, light)] {
+        for (fg, bg) in PAIRS {
+            let a = hex_token(block, fg).or_else(|| hex_token(fallback, fg));
+            let b = hex_token(block, bg).or_else(|| hex_token(fallback, bg));
+            let (a, b) = match (a, b) {
+                (Some(a), Some(b)) => (a, b),
+                _ => panic!("{theme}: tokens.css defines no --{fg} or --{bg}"),
+            };
+            let ratio = contrast(a, b);
+            assert!(
+                ratio >= 4.5,
+                "{theme}: --{fg} on --{bg} is {ratio:.2}:1, below WCAG AA (4.5:1)"
+            );
+        }
+    }
+
+    fn hex_token(block: &str, name: &str) -> Option<[u8; 3]> {
+        let needle = format!("--{name}:");
+        let line = block.lines().find(|l| l.trim_start().starts_with(&needle))?;
+        let at = line.find('#')?;
+        let hex = &line[at + 1..at + 7];
+        Some([
+            u8::from_str_radix(&hex[0..2], 16).ok()?,
+            u8::from_str_radix(&hex[2..4], 16).ok()?,
+            u8::from_str_radix(&hex[4..6], 16).ok()?,
+        ])
+    }
+
+    fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
+        let l = |c: [u8; 3]| {
+            let f = |v: u8| {
+                let v = v as f64 / 255.0;
+                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2])
+        };
+        let (x, y) = (l(a), l(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+}

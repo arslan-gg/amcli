@@ -4,3 +4,4 @@
 *.amcli.bak
 *.amcli.tmp.*
 .DS_Store
+.claude/
