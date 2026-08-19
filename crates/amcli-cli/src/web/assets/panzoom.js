@@ -60,7 +60,7 @@ export function attachPanZoom(svg, container, opts = {}) {
     if (opts.isNodeTarget && opts.isNodeTarget(e.target)) return;
     e.preventDefault();
     dragging = { sx: e.clientX, sy: e.clientY, x: state.x, y: state.y, moved: false, id: e.pointerId };
-    container.classList.add("dragging");
+    container.classList.add("is-dragging");
   };
   const onMove = (e) => {
     if (!dragging) return;
@@ -72,7 +72,7 @@ export function attachPanZoom(svg, container, opts = {}) {
       // Capture only once this is a drag: capturing on the way down would
       // swallow the click a figure is waiting for.
       container.setPointerCapture?.(dragging.id);
-      document.body.classList.add("dragging");
+      document.body.classList.add("is-dragging");
     }
     if (!dragging.moved) return;
     state.x = dragging.x - dx;
@@ -83,8 +83,8 @@ export function attachPanZoom(svg, container, opts = {}) {
     if (dragging?.moved) container.dataset.justDragged = "1";
     else delete container.dataset.justDragged;
     dragging = null;
-    container.classList.remove("dragging");
-    document.body.classList.remove("dragging");
+    container.classList.remove("is-dragging");
+    document.body.classList.remove("is-dragging");
   };
   // When the pane changes size, keep the scale and the centre: a panel
   // opening beside the drawing must not throw away the zoom the reader chose.

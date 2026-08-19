@@ -11,7 +11,7 @@
 // `notation.js`, chrome icons in `icons.js`, and anything a page needs to say
 // about a concept it says by handing a render function in.
 
-import { h, clear, fmt } from "./dom.js";
+import { h, clear, fmt, esc } from "./dom.js";
 import { icon } from "./icons.js";
 
 export function cls(...parts) {
@@ -25,13 +25,13 @@ export function countLabel(shown, total) {
 
 /* ---- buttons ------------------------------------------------------------ */
 
-export function button({ label, iconName, title, onclick, variant, size, active, disabled, href, trailingIcon }) {
+export function button({ label, iconName, title, onclick, variant, active, disabled, href, trailingIcon }) {
   const kids = [];
   if (iconName) kids.push(icon(iconName));
   if (label) kids.push(h("span", null, label));
   if (trailingIcon) kids.push(icon(trailingIcon, { class: "trail" }));
   const attrs = {
-    class: cls("btn", variant && `btn-${variant}`, size === "lg" && "btn-lg", active && "is-active", !label && "btn-icon"),
+    class: cls("btn", variant && `btn-${variant}`, active && "is-active", !label && "btn-icon"),
     title: title || (label ? null : undefined),
     onclick,
     "aria-pressed": active === undefined ? null : String(!!active),
@@ -56,7 +56,9 @@ export function segmented(options, value, onchange) {
   const box = h("div", { class: "segmented", role: "group" });
   for (const o of options) {
     box.appendChild(h("button", {
-      class: cls("btn", o.value === value && "is-active"),
+      // The same class an icon-only button() gets, or a segment with no label
+      // is --ctl-pad wider on each side than the square zoom buttons beside it.
+      class: cls("btn", !o.label && "btn-icon", o.value === value && "is-active"),
       type: "button",
       title: o.title || o.label,
       "aria-pressed": String(o.value === value),
@@ -105,7 +107,11 @@ export function searchField({ value, placeholder, oninput, width, hint }) {
     class: "field-input", type: "search", value: value || "", placeholder,
     autocomplete: "off", spellcheck: "false", oninput: (e) => oninput(e.target.value),
   });
-  const box = h("div", { class: "field", style: width ? { width } : null },
+  // The width goes in a custom property rather than on `width` itself, so the
+  // stylesheet can override it: an inline width outranks every rule, and a
+  // field that spilled into the overflow menu kept its narrow toolbar width in
+  // the middle of a stack of full-width controls.
+  const box = h("div", { class: "field", style: width ? { "--field-w": width } : null },
     icon("search", { class: "field-icon" }), input,
     hint ? h("kbd", null, hint) : null);
   box.input = input;
@@ -209,27 +215,40 @@ export function toolbar({ title, titleIcon, meta, controls, trailing, leading })
   // What does not fit goes into a menu, not off the side. A bar you have to
   // scroll sideways hides controls while looking full, and a control you
   // cannot see is a control you do not have.
-  const spill = h("div", { class: "toolbar-spill", hidden: true });
+  const spill = h("div", { class: "toolbar-spill", hidden: true, role: "group", "aria-label": "More controls" });
   const more = h("button", {
     class: "btn btn-icon toolbar-more", type: "button", hidden: true,
     title: "More controls", "aria-label": "More controls", "aria-expanded": "false",
     onclick: (e) => {
       e.stopPropagation();
       const open = spill.hidden;
-      spill.hidden = !open;
-      if (open) anchorTo(spill, more);
+      if (open) { spill.hidden = false; anchorTo(spill, more); } else close();
       more.setAttribute("aria-expanded", String(open));
       more.classList.toggle("is-active", open);
     },
   }, icon("more"));
   const anchor = h("div", { class: "popover-anchor toolbar-more-wrap", hidden: true }, more, spill);
-  const shut = (e) => { if (!anchor.contains(e.target)) { spill.hidden = true; more.classList.remove("is-active"); more.setAttribute("aria-expanded", "false"); } };
+  function close() {
+    spill.hidden = true;
+    more.classList.remove("is-active");
+    more.setAttribute("aria-expanded", "false");
+  }
+  const shut = (e) => { if (!anchor.contains(e.target)) close(); };
   document.addEventListener("pointerdown", shut);
+  // Escape belongs to the topmost thing that is open, the way popover() has it:
+  // without this it reached the shell's handler and cleared the selection while
+  // the menu the reader was dismissing stayed put.
+  const shutKey = (e) => { if (e.key === "Escape" && !spill.hidden) { e.stopPropagation(); close(); more.focus(); } };
+  document.addEventListener("keydown", shutKey, true);
 
   rail.append(...items, anchor);
   bar.append(rail, h("div", { class: "toolbar-trail" }, (trailing || []).filter(Boolean)));
 
   function reflow() {
+    // The panel is parked at fixed coordinates that a resize invalidates, and
+    // its contents are about to move back into the bar. Shut it first, or
+    // widening the window leaves an orphaned panel that reappears by itself.
+    close();
     for (const c of items) rail.insertBefore(c, anchor);
     anchor.hidden = true;
     more.hidden = true;
@@ -246,7 +265,14 @@ export function toolbar({ title, titleIcon, meta, controls, trailing, leading })
   requestAnimationFrame(reflow);
 
   bar.controls = rail;
-  bar.destroy = () => { ro.disconnect(); document.removeEventListener("pointerdown", shut); };
+  // Every page calls this from its unmount. A toolbar holds two document
+  // listeners and an observer the page cannot see, and a bar left behind by a
+  // navigation keeps its whole detached page alive through them.
+  bar.destroy = () => {
+    ro.disconnect();
+    document.removeEventListener("pointerdown", shut);
+    document.removeEventListener("keydown", shutKey, true);
+  };
   return bar;
 }
 
@@ -259,6 +285,9 @@ export function toolbar({ title, titleIcon, meta, controls, trailing, leading })
 //
 // dimension = { key, label, noun, values: () => [{value,label,count,swatch}],
 //               hidden: Set, onChange: () => void }
+// How many hidden values are worth naming before the list stops informing.
+const CHIP_CAP = 3;
+
 export function filterBar(dimensions) {
   const bar = h("div", { class: "filterbar", role: "group", "aria-label": "Filters" });
   const redraws = [];
@@ -267,17 +296,21 @@ export function filterBar(dimensions) {
     const trigger = h("button", { class: "btn btn-filter", type: "button" });
     const row = h("div", { class: "filter-row" });
 
+    // No footer: every checkbox applies on the change, so there is nothing to
+    // confirm, and the count it printed is the count the trigger prints
+    // directly above the open panel. All/None stay — they act on the whole
+    // list and there is no other route to them.
     const menu = popover(trigger, (panel, close) => {
       const values = d.values();
       const head = h("div", { class: "popover-head" },
         h("span", { class: "popover-title" }, d.label),
         h("span", { class: "spacer" }),
-        button({ label: "All", size: "sm", onclick: () => { for (const v of values) d.hidden.delete(v.value); apply(); } }),
-        button({ label: "None", size: "sm", onclick: () => { for (const v of values) d.hidden.add(v.value); apply(); } }));
+        button({ label: "All", variant: "quiet", onclick: () => { for (const v of values) d.hidden.delete(v.value); apply(); } }),
+        button({ label: "None", variant: "quiet", onclick: () => { for (const v of values) d.hidden.add(v.value); apply(); } }));
       panel.append(head);
       const list = h("div", { class: "popover-list" });
       for (const v of values) {
-        list.appendChild(h("label", { class: "opt", title: v.label },
+        list.appendChild(h("label", { class: "opt", title: v.label, dataset: { value: v.value } },
           h("input", {
             type: "checkbox", checked: !d.hidden.has(v.value),
             onchange: (e) => { if (e.target.checked) d.hidden.delete(v.value); else d.hidden.add(v.value); apply(); },
@@ -287,14 +320,24 @@ export function filterBar(dimensions) {
           h("span", { class: "opt-n" }, fmt(v.count))));
       }
       panel.append(list);
-      panel.appendChild(h("div", { class: "popover-foot" },
-        h("span", { class: "muted" }, `${fmt(values.length - values.filter((v) => d.hidden.has(v.value)).length)} of ${fmt(values.length)} showing`),
-        h("span", { class: "spacer" }),
-        button({ label: "Done", variant: "primary", onclick: () => close(true) })));
-      panel.close = close;
     });
 
-    function apply() { d.onChange(); redraw(); menu.redraw(); }
+    // Ticking one box redraws the panel, because the counts of every other
+    // dimension move with it. What must survive that is where the reader was:
+    // thirty-one element types in a fixed-height scroller means a rebuild that
+    // scrolls to the top and drops focus to <body> costs you your place on
+    // every single click.
+    function apply() {
+      const list = menu.querySelector(".popover-list");
+      const at = list ? list.scrollTop : 0;
+      const held = document.activeElement?.closest?.(".opt")?.dataset.value;
+      d.onChange();
+      redraw();
+      menu.redraw();
+      const after = menu.querySelector(".popover-list");
+      if (after) after.scrollTop = at;
+      if (held !== undefined) menu.querySelector(`.opt[data-value="${esc(held)}"] input`)?.focus();
+    }
 
     function redraw() {
       const values = d.values();
@@ -307,12 +350,20 @@ export function filterBar(dimensions) {
       trigger.classList.toggle("is-active", off.length > 0);
       clear(row);
       row.appendChild(menu);
-      for (const v of off) {
-        row.appendChild(chip({
-          label: v.label, struck: true, removable: true,
-          title: `Show ${v.label} again`,
-          onRemove: () => { d.hidden.delete(v.value); apply(); },
-        }));
+      // A chip is for undoing one exclusion at a glance, which is worth the
+      // room while you have hidden two or three things and worthless once you
+      // have hidden twenty-nine — a link from the statistics page hides every
+      // type but one, and the rail filled with struck names that said nothing
+      // the trigger's own "1 of 31" had not already said. Past a few, only the
+      // way back is offered.
+      if (off.length && off.length <= CHIP_CAP) {
+        for (const v of off) {
+          row.appendChild(chip({
+            label: v.label, struck: true, removable: true,
+            title: `Show ${v.label} again`,
+            onRemove: () => { d.hidden.delete(v.value); apply(); },
+          }));
+        }
       }
       if (off.length > 1) {
         row.appendChild(chip({ label: `Show all ${d.noun}`, onclick: () => { d.hidden.clear(); apply(); } }));
@@ -347,9 +398,15 @@ export function dataTable(opts) {
   let sort = opts.sort || { key: columns.find((c) => c.sortable)?.key, dir: "asc" };
   let selected = opts.selected || null;
   let tbody = null;
+  // Sorting repaints the head, which destroys the very button that was
+  // activated. Remember which column it was so paint() can hand focus back —
+  // set on the click because a click does not focus a button on every
+  // platform, and read again from wherever focus stands because one sort
+  // repaints twice, once for the order and once for the rows.
+  let refocusKey = null;
 
   function headCell(c) {
-    const th = h("th", { class: cls(c.align === "right" && "right", c.width && "fit"), scope: "col" });
+    const th = h("th", { class: cls(c.align === "right" && "right", c.width && "fit"), scope: "col", dataset: { key: c.key } });
     if (!c.sortable) { th.appendChild(h("span", null, c.label)); return th; }
     const on = sort.key === c.key;
     th.setAttribute("aria-sort", on ? (sort.dir === "asc" ? "ascending" : "descending") : "none");
@@ -357,6 +414,7 @@ export function dataTable(opts) {
       class: cls("th-btn", on && "is-sorted"), type: "button",
       title: `Sort by ${c.label}`,
       onclick: () => {
+        refocusKey = c.key;
         if (sort.key === c.key) sort = { key: c.key, dir: sort.dir === "asc" ? "desc" : "asc" };
         else sort = { key: c.key, dir: c.numeric ? "desc" : "asc" };
         opts.onSort?.(sort);
@@ -366,36 +424,49 @@ export function dataTable(opts) {
   }
 
   function paint() {
+    const heldKey = refocusKey
+      || (table.contains(document.activeElement) ? document.activeElement.closest("th")?.dataset.key : null);
+    refocusKey = null;
     clear(table);
-    if (!rows.length) {
-      note.textContent = "";
-      table.appendChild(h("tbody", null, h("tr", null, h("td", { colspan: columns.length, class: "cell-empty" },
-        emptyState({ title: emptyTitle, body: emptyBody })))));
-      return;
-    }
     // Fixed columns and a colgroup: with `auto` a nowrap cell sets its own
     // minimum and the table pushes past the pane, which is a sideways scroll
     // nobody asked for. A share of the width, and long text ellipsizes.
+    //
+    // The head is drawn before the empty branch and not inside it: a filter
+    // that matches nothing used to take the whole sticky header band with it,
+    // so the sort control you were using vanished and the page jumped when you
+    // backspaced it into existence again.
     table.appendChild(h("colgroup", null, columns.map((c) =>
       h("col", { style: { width: c.width || "auto" } }))));
     table.appendChild(h("thead", null, h("tr", null, columns.map(headCell))));
-    tbody = h("tbody");
-    const shown = rows.slice(0, cap);
-    shown.forEach((row, i) => {
-      const rid = id(row);
-      const tr = h("tr", {
-        class: cls(selected === rid && "is-selected"),
-        tabindex: i === 0 ? 0 : -1,
-        dataset: { id: rid },
-        onclick: () => pick(tr, row),
-        ondblclick: () => onOpen?.(row),
-      }, columns.map((c) => h("td", { class: cls(c.align === "right" && "right", c.cls) }, c.render(row))));
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    note.textContent = rows.length > cap
-      ? `Showing the first ${fmt(cap)} of ${fmt(rows.length)}. Narrow the filter to see the rest.`
-      : "";
+    if (!rows.length) {
+      note.textContent = "";
+      tbody = null;
+      table.appendChild(h("tbody", null, h("tr", null, h("td", { colspan: columns.length, class: "cell-empty" },
+        emptyState({ title: emptyTitle, body: emptyBody })))));
+    } else {
+      tbody = h("tbody");
+      const shown = rows.slice(0, cap);
+      // Tab enters the table at the selected row, not always at the first one:
+      // parking it on row 0 after every sort walks the reader back to the top.
+      const focusAt = Math.max(0, shown.findIndex((r) => id(r) === selected));
+      shown.forEach((row, i) => {
+        const rid = id(row);
+        const tr = h("tr", {
+          class: cls(selected === rid && "is-selected"),
+          tabindex: i === focusAt ? 0 : -1,
+          dataset: { id: rid },
+          onclick: () => pick(tr, row),
+          ondblclick: () => onOpen?.(row),
+        }, columns.map((c) => h("td", { class: cls(c.align === "right" && "right", c.cls) }, c.render(row))));
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      note.textContent = rows.length > cap
+        ? `Showing the first ${fmt(cap)} of ${fmt(rows.length)}. Narrow the filter to see the rest.`
+        : "";
+    }
+    if (heldKey) table.querySelector(`th[data-key="${esc(heldKey)}"] .th-btn`)?.focus();
   }
 
   function pick(tr, row) {
@@ -477,7 +548,10 @@ export function tree({ nodes, active, onPick, onToggle, isOpen, label }) {
       "aria-level": String(n.depth + 1),
       tabindex: on || (!active && i === 0) ? 0 : -1,
       title: n.title || n.label,
-      style: { paddingLeft: `calc(${n.depth} * var(--sp-3))` },
+      // One twisty's width per level, so a child's twisty stands exactly under
+      // its parent's rather than a third of the way past it, and the whole
+      // tree starts on the same inset as every other label in the rail.
+      style: { paddingLeft: `calc(var(--sp-2) + ${n.depth} * var(--tree-indent))` },
       dataset: { key: n.key },
       onclick: () => onPick(n.key),
     },
@@ -542,9 +616,16 @@ export function barChart({ rows, max }) {
   const top = max || Math.max(1, ...rows.map((r) => r.value));
   const box = h("div", { class: "bars" });
   for (const r of rows) {
+    // The .ellipsis goes on the text, not on the flex box around it: a bare
+    // text node in a flex container is an anonymous item, and text-overflow
+    // never applies to it, so a long type name was cut through a letter.
+    const kids = [
+      r.swatch ? h("span", { class: "swatch", style: { background: r.swatch } }) : null,
+      h("span", { class: "ellipsis" }, r.label),
+    ];
     const label = r.href
-      ? h("a", { class: "bar-label ellipsis", href: r.href, title: r.label }, r.swatch ? h("span", { class: "swatch", style: { background: r.swatch } }) : null, r.label)
-      : h("span", { class: "bar-label ellipsis", title: r.label }, r.swatch ? h("span", { class: "swatch", style: { background: r.swatch } }) : null, r.label);
+      ? h("a", { class: "bar-label", href: r.href, title: r.label }, kids)
+      : h("span", { class: "bar-label", title: r.label }, kids);
     box.append(label,
       h("div", { class: "bar", role: "img", "aria-label": `${r.label}: ${fmt(r.value)}` },
         h("i", { style: { width: `${(100 * r.value) / top}%` } })),
@@ -554,7 +635,7 @@ export function barChart({ rows, max }) {
 }
 
 export function section(title, ...children) {
-  return h("section", { class: "sec" }, h("h2", { class: "sec-title" }, title), ...children);
+  return h("section", { class: "sec" }, h("h2", { class: "caps" }, title), ...children);
 }
 
 export function kv(pairs) {

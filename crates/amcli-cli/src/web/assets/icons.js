@@ -63,8 +63,6 @@ const PATHS = {
   info: "M13.5 8a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0ZM8 7.5v3.5M8 5.25v.5",
 };
 
-export const ICON_NAMES = Object.keys(PATHS);
-
 // One icon. `size` is only ever the token's 16 unless a caller is drawing a
 // larger boxed figure, which the type icons — not these — do.
 export function icon(name, opts = {}) {

@@ -37,9 +37,9 @@
   --focus: #18181b;
   --focus-w: 2px;
 
-  /* Only the alpha of this is used — it is the opaque end of a mask
-     gradient — but a literal is a literal, so it is named here too. */
-  --mask-opaque: #000000;
+  /* The veil under a modal. It is its own colour, not the page's own surface at
+     an opacity: painting the page in its own shade dimmed nothing in light. */
+  --scrim: rgba(9, 9, 11, 0.4);
 
   /* The one place a state is allowed a hue, because "the file stopped
      parsing" must not read as decoration. */
@@ -47,12 +47,16 @@
 
   /* -- the diagram surface ----------------------------------------------- */
   /* A drawing is paper in both themes: its ink stays dark, because the layer
-     fills the renderer uses are pale and only work on white. */
+     fills the renderer uses are pale and only work on white. None of these is
+     declared again in the dark palette, and none may be: what sits on the
+     paper — the zoom cluster, the message box, the legend — is paper too, and
+     a chrome ground there would punch a near-black hole in a white sheet. */
   --paper:      #ffffff;
   --paper-grid: #f1f1f3;
-  --paper-ink:  #09090b;
-  --paper-line: #d8d8dc;
-  --edge:       #52525b;
+  --paper-ink:  #09090b;   /* every figure's outline, label and selection */
+  --paper-line: #d4d4d8;   /* the border of something floating on the paper */
+  --paper-tint: #f1f1f3;   /* and its hover */
+  --edge:       #52525b;   /* a line between two figures, and its label */
 
   /* -- space (4px rhythm, 2px for optical nudges) ------------------------- */
   --sp-0: 0;
@@ -109,10 +113,18 @@
   --inspector-min: 280px;
   --inspector-max: 640px;
   --toolbar-h: 42px;
-  --tree-w: 232px;
   --palette-w: 560px;
   --row-h: 30px;
+  --tree-indent: 20px;  /* one twisty wide, so a level lines up under its parent */
   --read-w: 68ch;
+
+  /* The window widths at which the page *opens* folded — read by app.js, not
+     by a media rule, so that ⌘I and ⌘B can still unfold what a small window
+     folded. Both panes open cost 232 + 340 = 572px: below 69rem the middle
+     drops under 520px and a table starts losing columns, and below 50rem
+     there is not enough left for the rail's labels either. */
+  --fold-inspector: 69rem;
+  --fold-rail: 50rem;
 
   /* -- motion ------------------------------------------------------------- */
   --dur-1: 90ms;
@@ -146,9 +158,47 @@
 
   --focus: #d4d4d8;
   --alarm: #f08a76;
+  --scrim: rgba(0, 0, 0, 0.6);
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
   --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.6), 0 1px 2px rgba(0, 0, 0, 0.5);
 
   color-scheme: dark;
+}
+
+/* The same palette again, for the frame before any script has run. `app.js`
+   stamps data-theme on <html>, but it is a deferred module, so a dark-theme
+   reader used to get a whole white page first. This is what the browser can
+   do on its own; once the script runs the two agree, and an explicit light
+   choice still wins because of the :not(). CSS cannot share one block between
+   a selector and a media query, so `the_two_dark_palettes_are_one_palette` in
+   crates/amcli-cli/tests/cli.rs shares it: the block below and the one above
+   must stay declaration-for-declaration identical. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface-0: #0a0a0c;
+    --surface-1: #141417;
+    --surface-2: #1a1a1e;
+    --fg:        #fafafa;
+    --fg-muted:  #a8a8b2;
+    --fg-subtle: #94949e;
+    --line:      #292930;
+    --line-firm: #3f3f46;
+
+    --invert:        #fafafa;
+    --invert-fg:     #18181b;
+    --invert-subtle: #55555e;
+
+    --tint:      #1c1c21;
+    --tint-firm: #26262d;
+
+    --focus: #d4d4d8;
+    --alarm: #f08a76;
+    --scrim: rgba(0, 0, 0, 0.6);
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.6), 0 1px 2px rgba(0, 0, 0, 0.5);
+
+    color-scheme: dark;
+  }
 }

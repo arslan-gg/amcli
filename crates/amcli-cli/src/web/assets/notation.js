@@ -7,11 +7,13 @@ import { s } from "./dom.js";
 import { store } from "./store.js";
 
 export const ICON = 16;
+
 // What a character costs, for deciding where a label breaks. The same 0.52 em
 // the renderer charges, at the size the page draws — charging more than the
 // renderer does made the page wrap a name the renderer fits on one line, and
-// in a group's tab, which gets one line, that came out as half a name.
-export const PER_CHAR = 11 * 0.52;
+// in a group's tab, which gets one line, that came out as half a name. Local:
+// only `wrap` below has ever needed it.
+const PER_CHAR = 11 * 0.52;
 
 // The height of a group's tab, as `amcli-view`'s geometry has it.
 export const GROUP_HEADER = 18;

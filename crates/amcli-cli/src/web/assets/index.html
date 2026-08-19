@@ -21,7 +21,8 @@
       <button id="rail-toggle" class="btn btn-icon btn-quiet" type="button" title="Collapse the sidebar (⌘B)" aria-label="Collapse the sidebar"></button>
     </div>
     <div class="rail-body">
-      <button id="open-palette" class="btn rail-search" type="button" title="Search the model (⌘K)">
+      <button id="open-palette" class="btn rail-search" type="button" title="Search the model (⌘K)" disabled>
+        <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.9 10.9 13.5 13.5M10.75 7a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"/></svg>
         <span>Search…</span><kbd>⌘K</kbd>
       </button>
       <nav id="nav" aria-label="Sections"></nav>
@@ -44,7 +45,7 @@
   <main id="main"></main>
 
   <aside id="inspector" aria-label="Details">
-    <div id="inspector-grip" class="inspector-grip" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the details panel"></div>
+    <div id="inspector-grip" class="inspector-grip" role="separator" aria-orientation="vertical" tabindex="0" aria-controls="inspector" aria-label="Resize the details panel"></div>
     <div class="inspector-head">
       <button id="inspector-toggle" class="btn btn-icon btn-quiet" type="button" title="Narrow the details panel (⌘I)" aria-label="Narrow the details panel"></button>
       <span class="caps inspector-label">Details</span>

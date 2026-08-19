@@ -8,7 +8,7 @@
 // columns to show and which dimensions to offer, so that — and only that — is
 // what a spec says below.
 
-import { h, clear, fmt, relLabel } from "../dom.js";
+import { h, clear, fmt, relLabel, esc } from "../dom.js";
 import { store, elem, rel, view, folder, folderPath } from "../store.js";
 import { typeIcon, typeOf, accessLabel } from "../notation.js";
 import { icon } from "../icons.js";
@@ -68,15 +68,19 @@ function specFor(kind) {
       if (r.src >= 0) location.hash = href("graph", null, { focus: elem(r.src).id, depth: 1 });
     },
     columns: [
-      { key: "type", label: "Kind", width: "14%", sortable: true, sort: (i) => rel(i).type, render: (i) => relLabel(rel(i).type) },
-      { key: "source", label: "Source", width: "25%", sortable: true, sort: (i) => endName(rel(i).src), render: (i) => endCell(rel(i).src, rel(i).srcId) },
+      { key: "type", label: "Kind", width: "15%", sortable: true, sort: (i) => rel(i).type, render: (i) => cell(icon("relations"), h("span", { class: "ellipsis" }, relLabel(rel(i).type))) },
+      { key: "source", label: "Source", width: "21%", sortable: true, sort: (i) => endName(rel(i).src), render: (i) => endCell(rel(i).src, rel(i).srcId) },
       { key: "arrow", label: "", width: "3%", cls: "cell-arrow", render: () => icon("arrow-right", { class: "rel-arrow" }) },
-      { key: "target", label: "Target", width: "25%", sortable: true, sort: (i) => endName(rel(i).tgt), render: (i) => endCell(rel(i).tgt, rel(i).tgtId) },
-      { key: "name", label: "Label", width: "20%", sortable: true, sort: (i) => (rel(i).name || "").toLowerCase(), render: (i) => rel(i).name || detailOf(rel(i)) || h("span", { class: "subtle" }, "—") },
-      { key: "views", label: "Views", width: "13%", sortable: true, numeric: true, align: "right", sort: (i) => store.viewsOfRel[i].length, render: (i) => fmt(store.viewsOfRel[i].length) },
+      { key: "target", label: "Target", width: "21%", sortable: true, sort: (i) => endName(rel(i).tgt), render: (i) => endCell(rel(i).tgt, rel(i).tgtId) },
+      { key: "name", label: "Label", width: "14%", sortable: true, sort: (i) => (rel(i).name || "").toLowerCase(), render: (i) => rel(i).name || detailOf(rel(i)) || h("span", { class: "subtle" }, "—") },
+      { key: "folder", label: "Folder", width: "16%", sortable: true, cls: "path", sort: (i) => folderPath(rel(i).folder), render: (i) => titled(trimPath(folderPath(rel(i).folder), ""), folderPath(rel(i).folder)) },
+      { key: "views", label: "Views", width: "10%", sortable: true, numeric: true, align: "right", sort: (i) => store.viewsOfRel[i].length, render: (i) => fmt(store.viewsOfRel[i].length) },
     ],
+    // Keyed "kind", not "type": the graph reserves `no_type` for element types
+    // and writes `no_kind` for these, and one param name cannot mean two
+    // things. The sortable column keyed "type" above is a separate namespace.
     dimensions: [{
-      key: "type", label: "Kinds", noun: "kinds",
+      key: "kind", label: "Kinds", noun: "kinds",
       valuesOf: () => tally(store.data.relations.map((r) => r.type), relLabel),
       of: (i) => rel(i).type,
     }],
@@ -159,6 +163,19 @@ function trimPath(path, base) {
   return rest.replace(/^\//, "") || "/";
 }
 
+// Share a dropped column's width out again, so the shares still add up to the
+// whole table. It goes to the columns holding text, in proportion to what they
+// already have: a count column is as wide as it will ever need to be, and the
+// name is the one that was being cut.
+function widen(columns, by) {
+  const extra = parseFloat(by);
+  const text = columns.filter((c) => !c.numeric);
+  const room = text.reduce((n, c) => n + parseFloat(c.width), 0);
+  if (!extra || !room) return columns;
+  const grow = 1 + extra / room;
+  return columns.map((c) => (c.numeric ? c : { ...c, width: `${(parseFloat(c.width) * grow).toFixed(1)}%` }));
+}
+
 /* ---- the page --------------------------------------------------------------- */
 
 export function mount(main, route) {
@@ -193,15 +210,16 @@ export function mount(main, route) {
 
   // ---- structure
   const page = h("div", { class: "page" });
-  const count = h("span", { class: "toolbar-meta num" });
+  // How many rows are showing goes in the toolbar's meta slot, beside the
+  // title it qualifies — not at the far right, where it reads as a control.
+  const count = h("span", { class: "num" });
   const field = searchField({
     value: state.q, placeholder: `Filter ${spec.noun}…`, width: "var(--ctl-w)",
     oninput: (v) => { state.q = v; push(); redraw(); },
   });
   const bar = toolbar({
-    title: spec.title, titleIcon: spec.iconName,
+    title: spec.title, titleIcon: spec.iconName, meta: count,
     controls: [field],
-    trailing: [count],
   });
 
   const dims = spec.dimensions.map((d) => ({
@@ -252,6 +270,13 @@ export function mount(main, route) {
   }
 
   function drawTree(passing) {
+    // Expanding a folder or picking one rebuilds the whole tree, and the row
+    // that was rebuilt is the row the keyboard was standing on. Without this
+    // focus lands back on <body> and the tree has to be tabbed into again from
+    // the top of the rail for every single folder.
+    const held = treePane.contains(document.activeElement)
+      ? document.activeElement.closest(".tree-row")?.dataset.key
+      : null;
     clear(treePane);
     if (!hasHierarchy) return;
     treePane.appendChild(tree({
@@ -271,11 +296,26 @@ export function mount(main, route) {
         redraw();
       },
     }));
+    if (held != null) {
+      const row = treePane.querySelector(`.tree-row[data-key="${esc(held)}"]`);
+      if (row) { treePane.querySelectorAll(".tree-row").forEach((r) => r.setAttribute("tabindex", "-1")); row.setAttribute("tabindex", "0"); row.focus(); }
+    }
   }
 
   // ---- the table
+  // With no folder structure, `trimPath` has nothing left to return but "/",
+  // so the Folder column is one repeated character on every row. The rail
+  // drops its tree for the same reason and the column goes with it, giving
+  // its width back to the columns holding names. The full path is still on
+  // the name's hover and in the inspector.
+  const columns = hasHierarchy ? spec.columns
+    : widen(spec.columns.filter((c) => c.key !== "folder"), spec.columns.find((c) => c.key === "folder")?.width);
+  // A link kept from a foldered model can ask for a sort by a column this one
+  // does not have.
+  if (!columns.some((c) => c.key === state.sort)) { state.sort = spec.defaultSort || columns[0].key; push(); }
+
   const table = dataTable({
-    columns: spec.columns.map((c) => ({ ...c, render: (row) => c.render(row.i) })),
+    columns: columns.map((c) => ({ ...c, render: (row) => c.render(row.i) })),
     rows: [],
     id: (row) => spec.id(row.i),
     sort: { key: state.sort, dir: state.dir },
@@ -303,18 +343,28 @@ export function mount(main, route) {
     return spec.all().filter((i) => passesDims(i) && (!needle || spec.matches(i, needle)));
   }
 
+  // Both `table.sort` and `table.rows` repaint the whole table, so setting the
+  // two back to back rebuilt every cell twice for a change that only ever
+  // touches one of them. The order only changes when a header is clicked; the
+  // rows change on every letter typed into the filter, and at the thousand-row
+  // cap that is the difference between keeping up with a typist and not.
+  let painted = { key: state.sort, dir: state.dir };
+
   function redraw() {
     const needle = state.q.trim().toLowerCase();
     const all = spec.all();
     const rows = all.filter((i) => passesDims(i) && inFolder(i) && (!needle || spec.matches(i, needle)));
-    const col = spec.columns.find((c) => c.key === state.sort) || spec.columns[0];
+    const col = columns.find((c) => c.key === state.sort) || columns[0];
     const key = col.sort || ((i) => spec.name(i).toLowerCase());
     rows.sort((a, b) => {
       const ka = key(a), kb = key(b);
       const c = typeof ka === "number" ? ka - kb : String(ka).localeCompare(String(kb), undefined, { numeric: true });
       return state.dir === "asc" ? c : -c;
     });
-    table.sort = { key: state.sort, dir: state.dir };
+    if (painted.key !== state.sort || painted.dir !== state.dir) {
+      painted = { key: state.sort, dir: state.dir };
+      table.sort = painted;
+    }
     table.rows = rows.map((i) => ({ i }));
     if (selectedId()) table.setSelected(selectedId(), { reveal: false });
     count.textContent = countLabel(rows.length, all.length);
@@ -325,7 +375,10 @@ export function mount(main, route) {
   document.addEventListener("amcli:select", onSelect);
 
   redraw();
-  return () => document.removeEventListener("amcli:select", onSelect);
+  return () => {
+    bar.destroy();
+    document.removeEventListener("amcli:select", onSelect);
+  };
 }
 
 // Folder index → every item in it and everything under it.

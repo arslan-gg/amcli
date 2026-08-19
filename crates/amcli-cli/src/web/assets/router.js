@@ -23,9 +23,6 @@ export function href(page, id, params) {
   return h;
 }
 
-export function navigate(page, id, params) {
-  location.hash = href(page, id, params);
-}
 
 // Change the query of the current route without adding history entries, for
 // filters and toggles.

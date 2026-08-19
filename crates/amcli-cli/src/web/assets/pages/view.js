@@ -2,21 +2,21 @@
 // screen is what Archi would draw. A click on a figure selects the concept it
 // stands for; a double-click takes the graph there.
 
-import { h, clear, fmt } from "../dom.js";
-import { store, view, folderPath } from "../store.js";
+import { h, clear, fmt, esc } from "../dom.js";
+import { store, view } from "../store.js";
 import { href } from "../router.js";
 import { attachPanZoom } from "../panzoom.js";
 import { toolbar, button, iconButton, emptyState, badge } from "../ui.js";
-import { select, selectedId } from "../app.js";
+import { select, selectedId, clearSelection } from "../app.js";
 import { lastListParams } from "./collection.js";
 
 export function mount(main, route) {
   const found = store.byId.get(route.id);
   if (!found || found.kind !== "view") {
-    main.appendChild(h("div", { class: "page" },
-      toolbar({ title: "View", titleIcon: "view", leading: backButton() }),
+    const bar = toolbar({ title: "View", titleIcon: "view", leading: backButton() });
+    main.appendChild(h("div", { class: "page" }, bar,
       emptyState({ iconName: "view", title: "No such view", body: `Nothing in this model has id ${route.id}.` })));
-    return () => {};
+    return () => bar.destroy();
   }
   return render(main, found.i, route.params.get("focus"));
 }
@@ -29,29 +29,17 @@ function render(main, vi, focus) {
   const v = view(vi);
   const page = h("div", { class: "page" });
 
-  // Every view, grouped by folder — switching drawings is one control away
-  // and does not cost a trip back to the list.
-  const picker = h("select", { class: "field-select", title: "Switch to another view", onchange: (e) => { location.hash = href("view", e.target.value); } });
-  const byFolder = new Map();
-  store.data.views.forEach((w, i) => {
-    const f = folderPath(w.folder);
-    if (!byFolder.has(f)) byFolder.set(f, []);
-    byFolder.get(f).push(i);
-  });
-  for (const f of [...byFolder.keys()].sort()) {
-    const grp = h("optgroup", { label: f.replace(/^\/Views\/?/, "") || "/Views" });
-    for (const i of byFolder.get(f).sort((a, b) => view(a).name.localeCompare(view(b).name, undefined, { numeric: true }))) {
-      grp.appendChild(h("option", { value: view(i).id, selected: i === vi }, view(i).name));
-    }
-    picker.appendChild(grp);
-  }
-
+  // There is no picker of every other view here. It was a flat `<select>` of
+  // the whole model — the shape the collection page exists to be rid of — and
+  // it could be neither searched nor filtered while the two routes that can
+  // are a click away: the back button returns to the list you came from, and
+  // ⌘K matches a view by name.
   const bar = toolbar({
     leading: backButton(),
     title: v.name,
     titleIcon: "view",
     meta: `${fmt(v.elements.length)} · ${fmt(v.relations.length)}`,
-    controls: [picker, v.viewpoint ? badge({ label: v.viewpoint, title: "Viewpoint" }) : null].filter(Boolean),
+    controls: [v.viewpoint ? badge({ label: v.viewpoint, title: "Viewpoint" }) : null].filter(Boolean),
     trailing: [
       button({ iconName: "external", label: "SVG", title: "Open the SVG in a new tab", href: `/api/view/${encodeURIComponent(v.id)}.svg` }),
       button({ iconName: "download", label: "PNG", title: "Download as PNG at 2× resolution", href: `/api/view/${encodeURIComponent(v.id)}.png` }),
@@ -113,7 +101,7 @@ function render(main, vi, focus) {
     svg.addEventListener("click", (e) => {
       if (canvas.dataset.justDragged) return;
       const g = e.target.closest("[data-concept], [data-relationship]");
-      if (!g) { mark(null); return; }
+      if (!g) { mark(null); clearSelection(); return; }
       mark(g);
       select(g.dataset.concept || g.dataset.relationship);
     });
@@ -143,14 +131,11 @@ function render(main, vi, focus) {
   return () => {
     alive = false;
     pz?.destroy();
+    bar.destroy();
     document.removeEventListener("amcli:select", onSelect);
   };
 }
 
 function safeName(name) {
   return (name || "view").replace(/[\\/:*?"<>|]+/g, "_").trim() || "view";
-}
-
-function esc(v) {
-  return window.CSS?.escape ? CSS.escape(v) : String(v).replace(/["\\]/g, "\\$&");
 }

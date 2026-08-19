@@ -15,9 +15,9 @@ import { store, elem, rel, search } from "../store.js";
 import { ensureSymbols, nodeGroup, relStyle, typeOf, typeIcon } from "../notation.js";
 import { icon } from "../icons.js";
 import { toolbar, filterBar, chip, button, iconButton, segmented, selectField, searchField, emptyState, anchorTo } from "../ui.js";
-import { replaceParams, href } from "../router.js";
+import { replaceParams } from "../router.js";
 import { attachPanZoom } from "../panzoom.js";
-import { select, selectedId, railContext } from "../app.js";
+import { select, selectedId, clearSelection, railContext } from "../app.js";
 
 const LAYERS = ["Strategy", "Business", "Application", "Technology", "Physical", "Motivation", "Implementation & Migration", "Other"];
 const WARN_AT = 400;   // ask before drawing more than this
@@ -57,7 +57,7 @@ export function mount(main, route) {
     value: "", placeholder: "Centre on…", width: "var(--ctl-w-sm)",
     oninput: (v) => showHits(v),
   });
-  const hits = h("div", { class: "popover is-floating", hidden: true });
+  const hits = h("div", { class: "popover", hidden: true });
   const finderBox = h("div", { class: "popover-anchor" }, finder, hits);
 
   const depth = selectField({
@@ -70,13 +70,16 @@ export function mount(main, route) {
     { value: "both", iconName: "arrow-both", label: "", title: "Follow relationships either way" },
     { value: "in", iconName: "arrow-left", label: "", title: "Follow relationships inwards only" },
   ], state.dir, (v) => { state.dir = v; state.confirmed = false; push(); build(); });
+  const setAll = (on) => {
+    allBtn.classList.toggle("is-active", on);
+    allBtn.setAttribute("aria-pressed", String(on));
+  };
   const allBtn = button({
     label: "Whole model", title: "Draw every element the filters allow", active: state.all,
     onclick: () => {
       state.all = !state.all; state.confirmed = false;
-      allBtn.classList.toggle("is-active", state.all);
-      allBtn.setAttribute("aria-pressed", String(state.all));
-      push(); drawCentre(); build();
+      setAll(state.all);
+      push(); scopeControls(); drawCentre(); build();
     },
   });
   const meta = h("span", { class: "toolbar-meta nowrap" });
@@ -171,9 +174,19 @@ export function mount(main, route) {
   let alive = true;
 
   /* ---- centring ---------------------------------------------------------- */
+  // The whole model is not centred on anything: the node set is every element
+  // the filters allow, and it is read without the focus, the depth or the
+  // direction. So while that is on, the centre says nothing and the two
+  // controls that walk out from a centre are disabled — a control you can
+  // work that changes nothing is worse than one you cannot.
+  function scopeControls() {
+    depth.disabled = state.all;
+    dir.querySelectorAll(".btn").forEach((b) => { b.disabled = state.all; });
+  }
+
   function drawCentre() {
     clear(centre);
-    const f = state.focus ? store.byId.get(state.focus) : null;
+    const f = state.all ? null : state.focus ? store.byId.get(state.focus) : null;
     if (f && f.kind === "element") {
       const e = elem(f.i);
       const box = h("span", { class: "badge is-solid", title: `Centred on ${e.name}` },
@@ -193,15 +206,35 @@ export function mount(main, route) {
     state.all = false;
     state.confirmed = false;
     finder.input.value = "";
-    hits.hidden = true;
-    allBtn.classList.remove("is-active");
-    push(); drawCentre(); build();
+    shutHits();
+    setAll(false);
+    push(); scopeControls(); drawCentre(); build();
   }
+
+  // The hits list is the one floating panel the page builds itself, because
+  // popover() opens on a click and this one opens on a keystroke. It still owes
+  // the reader everything popover() gives: it shuts when you point somewhere
+  // else, it follows its field when the window moves or scrolls, and every row
+  // is reachable from the keyboard — not just the first.
+  //
+  // Closing on the field's own blur is what it must not do: panzoom calls
+  // preventDefault on every pointerdown in the canvas, so clicking the drawing
+  // never moves focus, the blur never fires, and the panel is left parked over
+  // the picture.
+  let hitAt = -1;
+  const hitRows = () => [...hits.querySelectorAll("a")];
+  const shutHits = () => { hits.hidden = true; hitAt = -1; };
+  const outsideHits = (ev) => { if (!finderBox.contains(ev.target)) shutHits(); };
+  const moveHits = () => { if (!hits.hidden) anchorTo(hits, finder); };
+  document.addEventListener("pointerdown", outsideHits);
+  window.addEventListener("resize", moveHits);
+  window.addEventListener("scroll", moveHits, true);
 
   function showHits(q) {
     clear(hits);
+    hitAt = -1;
     const found = q.trim() ? search(q, 10).elements : [];
-    if (!found.length) { hits.hidden = true; return; }
+    if (!found.length) { shutHits(); return; }
     const list = h("div", { class: "popover-list" });
     for (const { i } of found) {
       const e = elem(i);
@@ -214,11 +247,22 @@ export function mount(main, route) {
     hits.hidden = false;
     anchorTo(hits, finder);
   }
+
+  function markHit(at) {
+    const rows = hitRows();
+    if (!rows.length) return;
+    hitAt = (at + rows.length) % rows.length;
+    rows.forEach((r, k) => r.classList.toggle("is-active", k === hitAt));
+    rows[hitAt].scrollIntoView({ block: "nearest" });
+  }
+
   finder.input.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { hits.hidden = true; }
-    if (e.key === "Enter") { e.preventDefault(); hits.querySelector("a")?.click(); }
+    if (e.key === "Escape") { shutHits(); return; }
+    if (hits.hidden) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); markHit(hitAt + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); markHit(hitAt - 1); }
+    else if (e.key === "Enter") { e.preventDefault(); (hitRows()[hitAt] || hitRows()[0])?.click(); }
   });
-  finder.input.addEventListener("blur", () => setTimeout(() => (hits.hidden = true), 150));
 
   /* ---- building ---------------------------------------------------------- */
   function build() {
@@ -293,7 +337,7 @@ export function mount(main, route) {
         body: "Every box will be there, but most will be too small to read without zooming.",
         actions: [
           button({ label: "Draw it anyway", variant: "primary", onclick: () => { state.confirmed = true; build(); } }),
-          button({ label: "Never mind", onclick: () => { state.all = false; allBtn.classList.remove("is-active"); push(); drawCentre(); build(); } }),
+          button({ label: "Never mind", onclick: () => { state.all = false; setAll(false); push(); scopeControls(); drawCentre(); build(); } }),
         ],
       }));
       return null;
@@ -446,9 +490,12 @@ export function mount(main, route) {
     for (const link of links) if (link.source !== n && link.target !== n) link.el.classList.add("is-dim");
   }
 
+  // Blank canvas clears the selection through the shell, not just the drawing:
+  // dimming the picture while the inspector goes on describing the old concept
+  // leaves it selected, and the next filter change draws it highlighted again.
   svg.addEventListener("click", () => {
     if (canvas.dataset.justDragged) return;
-    markSelection(null);
+    clearSelection();
   });
   const onSelect = (e) => markSelection(e.detail.id);
   document.addEventListener("amcli:select", onSelect);
@@ -475,6 +522,7 @@ export function mount(main, route) {
     legend.hidden = seen.size === 0;
   }
 
+  scopeControls();
   drawCentre();
   drawPins();
   build();
@@ -482,7 +530,11 @@ export function mount(main, route) {
   return () => {
     alive = false;
     document.removeEventListener("amcli:select", onSelect);
+    document.removeEventListener("pointerdown", outsideHits);
+    window.removeEventListener("resize", moveHits);
+    window.removeEventListener("scroll", moveHits, true);
     pz.destroy();
+    bar.destroy();
   };
 }
 

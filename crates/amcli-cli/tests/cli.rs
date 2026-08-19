@@ -2055,3 +2055,42 @@ fn every_token_pair_clears_wcag_aa() {
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
 }
+
+/// The dark palette is written twice: once for `[data-theme="dark"]`, which is
+/// what the toggle stamps, and once under `prefers-color-scheme` for the frame
+/// before a deferred module has run. CSS has no way to share one block between
+/// a selector and a media query, so this shares it — otherwise a reader whose
+/// system is dark gets one palette until app.js starts and a slightly
+/// different one after.
+#[test]
+fn the_two_dark_palettes_are_one_palette() {
+    let css = web_asset("tokens.css");
+    let stamped = declarations(&css, "[data-theme=\"dark\"]");
+    let system = declarations(&css, ":root:not([data-theme=\"light\"])");
+    assert!(!stamped.is_empty(), "tokens.css defines no [data-theme=\"dark\"] block");
+    assert!(
+        !system.is_empty(),
+        "tokens.css has no prefers-color-scheme block: a dark reader gets a white page \
+         until app.js runs"
+    );
+    assert_eq!(
+        stamped, system,
+        "the two dark blocks in tokens.css have drifted apart; every declaration must match"
+    );
+
+    /// Every `name: value` between the first `{` after `needle` and its `}`.
+    fn declarations(css: &str, needle: &str) -> Vec<String> {
+        let at = match css.find(needle) {
+            Some(at) => at,
+            None => return Vec::new(),
+        };
+        let open = at + css[at..].find('{').expect("a selector with no block");
+        let close = open + css[open..].find('}').expect("a block that never closes");
+        css[open + 1..close]
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect()
+    }
+}

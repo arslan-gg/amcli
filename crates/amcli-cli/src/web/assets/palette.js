@@ -10,9 +10,11 @@ import { h, clear, fmt, relLabel } from "./dom.js";
 import { store, search, elem, view, rel } from "./store.js";
 import { typeIcon } from "./notation.js";
 import { icon } from "./icons.js";
+import { emptyState } from "./ui.js";
 import { href } from "./router.js";
 
 let root = null;
+let box = null;   // the search field, which owns the aria state for the list
 let hits = [];
 let at = 0;
 let lastFocus = null;
@@ -31,13 +33,16 @@ function commands() {
 
 export function openPalette() {
   if (root) return;
+  // The button and ⌘K are live from the first paint, but the model arrives
+  // over the network; there is nothing to search and nothing to count yet.
+  if (!store.data) return;
   lastFocus = document.activeElement;
 
   const input = h("input", {
     type: "text", placeholder: "Search elements, relationships and views…",
     autocomplete: "off", spellcheck: "false", "aria-label": "Search the model",
     "aria-controls": "palette-list", "aria-autocomplete": "list", role: "combobox",
-    "aria-expanded": "true",
+    "aria-expanded": "false",
   });
   const list = h("div", { class: "palette-list", id: "palette-list", role: "listbox" });
   const panel = h("div", { class: "palette", role: "dialog", "aria-modal": "true", "aria-label": "Search" },
@@ -53,16 +58,23 @@ export function openPalette() {
   root = h("div", null, scrim, panel);
   document.body.appendChild(root);
 
+  box = input;
   input.addEventListener("input", () => draw(input.value));
-  input.addEventListener("keydown", onKey);
+  // On the document and in the capture phase, as popover() does: bound to the
+  // input alone, Escape stopped working the moment focus left it, and it
+  // reached the shell's own Escape afterwards, which cleared the selection the
+  // reader was looking at.
+  document.addEventListener("keydown", onKey, true);
   draw("");
   input.focus();
 }
 
 export function closePalette() {
   if (!root) return;
+  document.removeEventListener("keydown", onKey, true);
   root.remove();
   root = null;
+  box = null;
   hits = [];
   lastFocus?.focus?.();
 }
@@ -72,7 +84,7 @@ export function paletteIsOpen() {
 }
 
 function onKey(e) {
-  if (e.key === "Escape") { e.preventDefault(); closePalette(); return; }
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closePalette(); return; }
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
     if (!hits.length) return;
@@ -90,6 +102,9 @@ function mark() {
     r.classList.toggle("is-active", i === at);
     r.setAttribute("aria-selected", String(i === at));
   });
+  // Focus stays in the field, so the highlight is only announced if the field
+  // points at the row it is on.
+  box?.setAttribute("aria-activedescendant", rows[at]?.id || "");
   rows[at]?.scrollIntoView({ block: "nearest" });
 }
 
@@ -106,10 +121,16 @@ function draw(q) {
 
   const group = (title, items) => {
     if (!items.length) return;
-    list.appendChild(h("div", { class: "palette-group caps" }, title));
+    // The headings sit inside the listbox, so they have to be told they are
+    // not among the things it lists.
+    list.appendChild(h("div", { class: "palette-group caps", role: "presentation" }, title));
     for (const it of items) {
       const row = h("a", {
         class: "palette-hit", role: "option", href: it.href || "#",
+        // `hits.push` happens below, so the length is this row's index. The
+        // rows are not in the tab order: the arrows move the highlight, and
+        // Tab would otherwise walk out of a modal that has no way back in.
+        id: `palette-hit-${hits.length}`, tabindex: "-1",
         "aria-selected": "false",
         onclick: (e) => { e.preventDefault(); it.run(); },
         onmousemove: () => { at = hits.indexOf(it); mark(); },
@@ -141,10 +162,12 @@ function draw(q) {
   })));
 
   if (!hits.length) {
-    list.appendChild(h("div", { class: "empty" },
-      h("p", { class: "empty-title" }, "No match"),
-      h("p", { class: "empty-body" }, `Nothing in this model is called “${q.trim()}”.`)));
+    list.appendChild(emptyState({
+      iconName: "search", title: "No match",
+      body: `Nothing in this model is called “${q.trim()}”.`,
+    }));
   }
+  box?.setAttribute("aria-expanded", String(hits.length > 0));
   mark();
 }
 

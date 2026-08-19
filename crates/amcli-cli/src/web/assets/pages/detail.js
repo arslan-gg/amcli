@@ -109,6 +109,19 @@ function renderRelation(box, i) {
         r.type === "Association" && r.directed ? badge({ label: "directed" }) : null),
       h("p", { class: "id-line" }, folderPath(r.folder) || "(no folder)"))));
 
+  // The actions row sits under the head here as it does on an element, so the
+  // same button is in the same place whatever the inspector is describing. The
+  // label says the source, because that is what the graph centres on: a
+  // relationship is a line, and a line is not somewhere to stand.
+  if (src) {
+    box.appendChild(h("div", { class: "actions" },
+      button({
+        iconName: "graph", label: "Graph around the source",
+        title: `Draw the graph centred on ${src.name}`,
+        href: href("graph", null, { focus: src.id, depth: 1 }),
+      })));
+  }
+
   const end = (label, e, raw) => h("button", {
     class: "rel-row", type: "button", disabled: !e,
     title: e ? `Show ${e.name}` : "This end is missing from the model",
@@ -120,11 +133,6 @@ function renderRelation(box, i) {
 
   box.appendChild(section("Ends", h("div", { class: "link-list" },
     end("From", src, r.srcId), end("To", tgt, r.tgtId))));
-
-  if (src) {
-    box.appendChild(h("div", { class: "actions" },
-      button({ iconName: "graph", label: "Open in graph", href: href("graph", null, { focus: src.id, depth: 1 }) })));
-  }
 
   const views = store.viewsOfRel[i];
   box.appendChild(section(`Drawn on ${countWord(views.length, "view")}`,
@@ -152,10 +160,16 @@ function renderView(box, i) {
       h("p", { class: "id-line" }, folderPath(v.folder)))));
   box.appendChild(h("div", { class: "actions" },
     button({ iconName: "view", label: "Open the drawing", variant: "primary", href: href("view", v.id) })));
+  // The heading counts the whole view and the list stops at 200, so the list
+  // says where it stopped — the same way dataTable states its own cap. A reader
+  // scrolling for one element otherwise just does not find it.
   box.appendChild(section(`Holds ${countWord(v.elements.length, "element")}`,
     h("div", { class: "link-list" }, v.elements.slice(0, 200).map((ei) =>
       h("button", { class: "rel-row", type: "button", onclick: () => select(elem(ei).id) },
-        typeIcon(elem(ei).type), h("span", { class: "ellipsis" }, elem(ei).name))))));
+        typeIcon(elem(ei).type), h("span", { class: "ellipsis" }, elem(ei).name)))),
+    v.elements.length > 200
+      ? h("p", { class: "subtle small" }, `Showing the first 200 of ${fmt(v.elements.length)}. Open the drawing to see the rest.`)
+      : null));
 }
 
 /* ---- shared ---------------------------------------------------------------------- */
@@ -170,8 +184,8 @@ function appendDocAndProps(box, c) {
   if (docSec) box.appendChild(docSec);
   if (propSec) box.appendChild(propSec);
   detail(c.id).then((d) => {
-    if (docSec) { clear(docSec); docSec.append(h("h2", { class: "sec-title" }, "Documentation"), h("div", { class: "doc" }, d.doc || "")); }
-    if (propSec) { clear(propSec); propSec.append(h("h2", { class: "sec-title" }, "Properties"), kv(d.properties)); }
+    if (docSec) { clear(docSec); docSec.append(h("h2", { class: "caps" }, "Documentation"), h("div", { class: "doc" }, d.doc || "")); }
+    if (propSec) { clear(propSec); propSec.append(h("h2", { class: "caps" }, "Properties"), kv(d.properties)); }
   });
 }
 

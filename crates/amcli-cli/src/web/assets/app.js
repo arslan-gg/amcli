@@ -9,7 +9,7 @@ import { h, clear, fmt } from "./dom.js";
 import { store, load, subscribe, startPolling } from "./store.js";
 import { parse, onRoute, href } from "./router.js";
 import { icon } from "./icons.js";
-import { iconButton } from "./ui.js";
+import { iconButton, emptyState } from "./ui.js";
 import { openPalette, closePalette, paletteIsOpen } from "./palette.js";
 import { renderConcept } from "./pages/detail.js";
 import * as collection from "./pages/collection.js";
@@ -52,30 +52,59 @@ const prefs = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* not persisted */ } },
 };
 
-/* ---- theme ---------------------------------------------------------------- */
-function applyTheme(t) {
+/* ---- how the page opens ----------------------------------------------------
+   A window too small for three columns opens with a pane folded — as a state,
+   the same one ⌘B and ⌘I toggle, never as a media rule. A media rule folded
+   the rail at every width, which left the filters filtering with nothing on
+   screen that could have caused it and no way to get it back. The widths are
+   `--fold-inspector` and `--fold-rail` in tokens.css; the order is what a
+   reader can do without: the details of one concept first, then navigation.
+   A remembered choice always wins, and an automatic fold is not remembered. */
+const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const narrowerThan = (name) => {
+  const w = token(name);
+  return !!w && matchMedia(`(max-width: ${w})`).matches;
+};
+
+/* ---- theme ----------------------------------------------------------------
+   Until the button is pressed there is no preference to remember, and the page
+   simply is what the system is — which is also what tokens.css paints before
+   this module runs, so the two never disagree and there is no white flash on
+   the way to a dark page. Pressing the button is a choice, and a choice is
+   kept. */
+const systemDark = matchMedia("(prefers-color-scheme: dark)");
+function applyTheme(t, remember = true) {
   document.documentElement.dataset.theme = t;
-  prefs.set("amcli-theme", t);
-  themeBtn?.replaceChildren(icon(t === "dark" ? "theme" : "theme"));
+  if (remember) prefs.set("amcli-theme", t);
+  themeBtn?.replaceChildren(icon("theme"));
   themeBtn?.setAttribute("title", t === "dark" ? "Switch to the light theme" : "Switch to the dark theme");
+  themeBtn?.setAttribute("aria-label", themeBtn.title);
 }
 const themeBtn = iconButton("theme", "Switch theme", () =>
   applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"), { variant: "quiet" });
-applyTheme(prefs.get("amcli-theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+const themePref = prefs.get("amcli-theme");
+applyTheme(themePref || (systemDark.matches ? "dark" : "light"), themePref != null);
+systemDark.addEventListener("change", (e) => {
+  if (prefs.get("amcli-theme") == null) applyTheme(e.matches ? "dark" : "light", false);
+});
 
 /* ---- rail ------------------------------------------------------------------ */
 const railToggle = document.getElementById("rail-toggle");
-function applyRail(collapsed) {
+function applyRail(collapsed, remember = true) {
   app.classList.toggle("rail-collapsed", collapsed);
-  prefs.set("amcli-rail", collapsed ? "1" : "0");
+  if (remember) prefs.set("amcli-rail", collapsed ? "1" : "0");
   clear(railToggle).appendChild(icon("rail"));
   railToggle.title = collapsed ? "Expand the sidebar (⌘B)" : "Collapse the sidebar (⌘B)";
   railToggle.setAttribute("aria-label", railToggle.title);
 }
 railToggle.addEventListener("click", () => applyRail(!app.classList.contains("rail-collapsed")));
-applyRail(prefs.get("amcli-rail") === "1");
+const railPref = prefs.get("amcli-rail");
+applyRail(railPref == null ? narrowerThan("--fold-rail") : railPref === "1", railPref != null);
 
-document.getElementById("open-palette").addEventListener("click", openPalette);
+// Disabled in the markup and enabled when the model arrives: until then there
+// is nothing to search, and the panel counts the model as it is built.
+const paletteBtn = document.getElementById("open-palette");
+paletteBtn.addEventListener("click", openPalette);
 
 const nav = document.getElementById("nav");
 function buildNav() {
@@ -95,13 +124,24 @@ function buildNav() {
    which pixel was hit. */
 export function select(id, opts = {}) {
   const found = store.byId.get(id);
-  if (!found) return;
-  currentId = id;
   clear(inspectorActions);
+  // A reload can delete what is selected. `renderConcept` says so; going on
+  // describing a concept the file no longer has would not.
+  if (!found) {
+    currentId = null;
+    renderConcept(inspectorBody, id);
+    document.dispatchEvent(new CustomEvent("amcli:select", { detail: { id: null } }));
+    return;
+  }
+  currentId = id;
+  // Back to the list this came from, as the reader left it — their folder,
+  // their search, their sort, the layers they hid. The bare route would land
+  // on the same page having thrown all of that away. A view goes to the Views
+  // list, not to its drawing: the drawing has its own button in the details.
   const where = { element: ["elements", "Elements"], relation: ["relations", "Relationships"], view: ["views", "Views"] }[found.kind];
   inspectorActions.append(
     where ? iconButton(where[0] === "views" ? "view" : where[0], `Find this in ${where[1]}`,
-      () => { location.hash = href(found.kind, id); }, { variant: "quiet" }) : null,
+      () => { location.hash = href(where[0], null, collection.lastListParams(where[0])); }, { variant: "quiet" }) : null,
   );
   renderConcept(inspectorBody, id);
   if (opts.focus !== false) inspectorBody.scrollTop = 0;
@@ -111,22 +151,27 @@ export function select(id, opts = {}) {
 export function clearSelection() {
   currentId = null;
   clear(inspectorActions);
-  clear(inspectorBody).appendChild(h("div", { class: "empty" },
-    h("p", { class: "empty-title" }, "Nothing selected"),
-    h("p", { class: "empty-body" }, "Pick a row, a figure on a drawing or a box on the graph, and it will be described here.")));
+  clear(inspectorBody).appendChild(emptyState({
+    iconName: "info", title: "Nothing selected",
+    body: "Pick a row, a figure on a drawing or a box on the graph, and it will be described here.",
+  }));
   document.dispatchEvent(new CustomEvent("amcli:select", { detail: { id: null } }));
 }
 
-function applyInspector(narrow) {
+function applyInspector(narrow, remember = true) {
   app.classList.toggle("inspector-narrow", narrow);
-  prefs.set("amcli-inspector-narrow", narrow ? "1" : "0");
+  if (remember) prefs.set("amcli-inspector-narrow", narrow ? "1" : "0");
   clear(inspectorToggle).appendChild(icon("inspector"));
   inspectorToggle.title = narrow ? "Widen the details panel (⌘I)" : "Narrow the details panel (⌘I)";
   inspectorToggle.setAttribute("aria-label", inspectorToggle.title);
 }
 const inspectorToggle = document.getElementById("inspector-toggle");
 inspectorToggle.addEventListener("click", () => applyInspector(!app.classList.contains("inspector-narrow")));
-applyInspector(prefs.get("amcli-inspector-narrow") === "1");
+const inspectorPref = prefs.get("amcli-inspector-narrow");
+applyInspector(
+  inspectorPref == null ? narrowerThan("--fold-inspector") : inspectorPref === "1",
+  inspectorPref != null,
+);
 
 export function selectedId() { return currentId; }
 
@@ -141,11 +186,22 @@ export function selectedId() { return currentId; }
     return Math.max(min, Math.min(max, px));
   };
   const num = (name) => parseInt(getComputedStyle(document.documentElement).getPropertyValue(name), 10) || 0;
+  // A separator you can focus is a range widget, and a range widget that never
+  // says where it stands gives the keyboard no feedback at all — including at
+  // the two ends, where the arrows stop moving anything.
+  const report = (px) => {
+    grip.setAttribute("aria-valuenow", String(px));
+    grip.setAttribute("aria-valuetext", `${px} pixels`);
+  };
+  grip.setAttribute("aria-valuemin", String(num("--inspector-min")));
+  grip.setAttribute("aria-valuemax", String(num("--inspector-max")));
   const setWidth = (px) => {
     app.style.setProperty("--inspector-w", `${clamp(px)}px`);
     prefs.set("amcli-inspector-w", String(clamp(px)));
+    report(clamp(px));
   };
   if (stored) setWidth(stored);
+  else report(clamp(inspector.getBoundingClientRect().width));
 
   let from = null;
   grip.addEventListener("pointerdown", (e) => {
@@ -218,9 +274,7 @@ function render(route) {
     unmount = pageFor(effective).mount(main, effective) || (() => {});
   } catch (err) {
     console.error(err);
-    main.appendChild(h("div", { class: "empty" },
-      h("p", { class: "empty-title" }, "This page could not be drawn"),
-      h("p", { class: "empty-body" }, err.message)));
+    main.appendChild(emptyState({ iconName: "alert", title: "This page could not be drawn", body: err.message }));
     unmount = () => {};
   }
   if (deep) select(route.id);
@@ -260,6 +314,7 @@ onRoute(render);
 load()
   .then(() => {
     setStatus("is-live", "live", `Watching ${store.data.model.path}`);
+    paletteBtn.disabled = false;
     if (!location.hash) location.hash = href("views");
     clearSelection();
     render(parse());
@@ -267,7 +322,5 @@ load()
   })
   .catch((e) => {
     setStatus("is-error", "failed", e.message);
-    main.appendChild(h("div", { class: "empty" },
-      h("p", { class: "empty-title" }, "Could not load the model"),
-      h("p", { class: "empty-body" }, e.message)));
+    main.appendChild(emptyState({ iconName: "alert", title: "Could not load the model", body: e.message }));
   });

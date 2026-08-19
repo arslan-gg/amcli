@@ -41,9 +41,12 @@ p { margin: 0; }
 :focus-visible {
   outline: var(--focus-w) solid var(--focus);
   outline-offset: 1px;
-  border-radius: var(--r-sm);
 }
+/* A full-bleed focusable inside a clipped scroller shows a ring on some edges
+   only, so it draws the ring inside itself instead. */
 .grid tbody tr:focus-visible { outline-offset: calc(-1 * var(--sp-h)); }
+.rail-scope .tree-row:focus-visible,
+.th-btn:focus-visible { outline-offset: calc(-1 * var(--focus-w)); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
@@ -51,7 +54,6 @@ p { margin: 0; }
 
 /* ---- shared atoms -------------------------------------------------------- */
 .spacer { flex: 1 1 auto; min-width: 0; }
-.muted { color: var(--fg-muted); }
 .subtle { color: var(--fg-subtle); }
 .small { font-size: var(--fs-sm); }
 .nowrap { white-space: nowrap; }
@@ -107,7 +109,6 @@ kbd {
 .btn:active { background: var(--tint-firm); }
 .btn[disabled] { opacity: 0.45; cursor: default; }
 .btn[disabled]:hover { background: var(--surface-0); }
-.btn-lg { height: var(--ctl-h-lg); }
 .btn-icon { width: var(--hit); padding: 0; }
 .btn-quiet { border-color: transparent; background: transparent; color: var(--fg-muted); }
 .btn-quiet:hover { background: var(--tint); color: var(--fg); }
@@ -121,6 +122,9 @@ kbd {
 .segmented .btn:first-child { border-radius: var(--r-md) 0 0 var(--r-md); margin-left: 0; }
 .segmented .btn:last-child { border-radius: 0 var(--r-md) var(--r-md) 0; }
 .segmented .btn.is-active { position: relative; z-index: 1; }
+/* Segments overlap by a hairline, so the active one covers the shared edge
+   of a focused neighbour's ring unless the focused one is lifted higher. */
+.segmented .btn:focus-visible { position: relative; z-index: 2; }
 
 /* ---- chips and badges ----------------------------------------------------- */
 .chip {
@@ -140,8 +144,7 @@ kbd {
 .chip:hover { background: var(--tint); }
 .chip-label { overflow: hidden; text-overflow: ellipsis; }
 /* The count keeps its own token so that inverting the chip inverts it too —
-   a plain `.muted` span used to stay grey on the inverted ground and land at
-   2.46:1 in dark. */
+   a grey that stayed grey on the inverted ground landed at 2.46:1 in dark. */
 .chip-count { color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
 .chip-x { opacity: 0.6; }
 .chip:hover .chip-x { opacity: 1; }
@@ -161,6 +164,20 @@ kbd {
   white-space: nowrap;
 }
 .badge.is-solid { background: var(--invert); color: var(--invert-fg); border-color: var(--invert); }
+/* The dismiss inside a badge is the badge's own ink, not a control of its own:
+   a bevelled UA button in there made the pill taller than the --ctl-h things
+   standing beside it. */
+.badge-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--icon); height: var(--icon);
+  padding: 0; border: 0;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+.badge-x:hover { opacity: 1; }
 
 /* ---- fields ---------------------------------------------------------------- */
 .field {
@@ -171,6 +188,9 @@ kbd {
   border-radius: var(--r-md);
   background: var(--surface-0);
   min-width: 0;
+  /* Set by searchField() as a custom property, not as an inline width, so the
+     rule below can widen one that has spilled into the overflow menu. */
+  width: var(--field-w, auto);
 }
 .field:focus-within { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
 .field-icon { color: var(--fg-subtle); }
@@ -190,6 +210,9 @@ kbd {
   cursor: pointer;
   max-width: 100%;
 }
+/* Same fade a disabled .btn gets, so a select and a segment switched off
+   together read as switched off together. */
+.field-select[disabled] { opacity: 0.45; cursor: default; }
 
 /* ---- popover ---------------------------------------------------------------- */
 .popover-anchor { position: relative; display: inline-flex; align-items: center; gap: var(--sp-1); flex-wrap: nowrap; }
@@ -205,13 +228,15 @@ kbd {
   overflow: hidden;
 }
 .popover.is-wide { width: var(--palette-w); }
-.popover-head, .popover-foot {
+/* 12px, because that is where a checkbox below starts: the list pads 4 and each
+   option pads 8 again, and a heading 4px to the left of its own rows reads as a
+   mistake rather than as nesting. */
+.popover-head {
   display: flex; align-items: center; gap: var(--sp-1);
-  padding: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
   flex: none;
+  border-bottom: 1px solid var(--line);
 }
-.popover-head { border-bottom: 1px solid var(--line); }
-.popover-foot { border-top: 1px solid var(--line); font-size: var(--fs-sm); }
 .popover-title { font-weight: 600; font-size: var(--fs-sm); }
 .popover-list { overflow: auto; padding: var(--sp-1); min-height: 0; }
 .opt {
@@ -230,7 +255,16 @@ kbd {
    The rail is where you narrow: navigation, the folder tree, the filters. The
    middle is what you got. The inspector describes whatever is current.
    Neither side pane closes; each only gets narrower, so the layout never
-   jumps and nothing has to be found again. */
+   jumps and nothing has to be found again.
+
+   Narrow is a state, not a width. `.rail-collapsed` and `.inspector-narrow`
+   are the only things that fold a pane, at any window size, so ⌘B and ⌘I can
+   always unfold one; a media rule that folded them regardless left the filters
+   still filtering with nothing on screen that could have caused it. A small
+   window only picks the state the page opens in: app.js reads --fold-inspector
+   and --fold-rail once, at load, and folds in the order of what a reader can
+   do without — the details of one concept first, then navigation, the filters
+   last, because a table you cannot narrow is a table you cannot use. */
 #app {
   display: grid;
   grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--inspector-w);
@@ -281,7 +315,9 @@ kbd {
 #nav .nav-n { margin-left: auto; font-size: var(--fs-xs); color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
 #nav a.is-current .nav-n { color: var(--invert-subtle); }
 
-.rail-search { width: 100%; justify-content: flex-start; color: var(--fg-muted); }
+/* A full-width button in the rail keeps the rail's own inset, not a control's:
+   --ctl-pad would start its label 1px right of every label above and below it. */
+.rail-search { width: 100%; justify-content: flex-start; padding-inline: var(--sp-2); color: var(--fg-muted); }
 .rail-search kbd { margin-left: auto; }
 
 /* What narrows the page, on every page, in one column. */
@@ -370,6 +406,15 @@ kbd {
   overflow: hidden;
 }
 .toolbar-controls > * { flex: none; }
+/* Nothing in the control row sets its own width from its content: a select is
+   as wide as its longest option, and the graph's centre badge
+   as wide as the element it is centred on, and either one alone would push the
+   rest of the bar into the "more" menu. A ceiling and a min-width of 0 are what
+   let the ellipsis inside them do the work instead. */
+.toolbar .field-select { max-width: var(--ctl-w); }
+.graph-centre { display: inline-flex; align-items: center; min-width: 0; max-width: var(--ctl-w); }
+/* A badge is not a control, but in a control row it stands with them. */
+.toolbar-controls .badge { height: var(--ctl-h); }
 .toolbar-trail { display: flex; align-items: center; gap: var(--sp-2); flex: none; }
 .toolbar-more-wrap { margin-left: auto; }
 .toolbar-spill {
@@ -383,6 +428,11 @@ kbd {
   box-shadow: var(--shadow-2);
 }
 .toolbar-spill > * { width: 100%; }
+/* `> *` reaches the .popover-anchor a finder is wrapped in, not the field
+   inside it, which would otherwise stand narrow and left-aligned in the stack.
+   This wins because the width searchField() asks for is a custom property the
+   rule above reads, not an inline width no rule can beat. */
+.toolbar-spill .field { width: 100%; }
 .toolbar-spill .segmented > .btn { flex: 1 1 auto; }
 
 /* ---- filters ------------------------------------------------------------------ */
@@ -394,7 +444,7 @@ kbd {
 .filter-key { font-size: var(--fs-xs); color: var(--fg-subtle); padding: var(--sp-1) var(--sp-2) 0; }
 .filter-row { display: flex; align-items: stretch; gap: var(--sp-1); flex-wrap: wrap; min-width: 0; }
 .filter-row > .popover-anchor { width: 100%; }
-.btn-filter { width: 100%; justify-content: space-between; font-variant-numeric: tabular-nums; }
+.btn-filter { width: 100%; justify-content: space-between; padding-inline: var(--sp-2); font-variant-numeric: tabular-nums; }
 .filter-row > .chip { max-width: 100%; }
 
 /* ---- page ---------------------------------------------------------------------- */
@@ -418,7 +468,7 @@ kbd {
 .twisty {
   flex: none;
   display: inline-flex; align-items: center; justify-content: center;
-  width: var(--sp-5); height: var(--sp-5);
+  width: var(--tree-indent); height: var(--sp-5);
   padding: 0; border: 0; background: transparent;
   color: var(--fg-subtle); cursor: pointer;
 }
@@ -464,7 +514,8 @@ table.grid th > span { display: block; padding: 0 var(--sp-3); overflow: hidden;
   overflow: hidden;
 }
 .th-btn > span { overflow: hidden; text-overflow: ellipsis; }
-.th-btn:hover { background: var(--tint-firm); }
+.th-btn:hover { background: var(--tint); }
+.th-btn:active { background: var(--tint-firm); }
 .th-btn.is-sorted { color: var(--fg); font-weight: 600; }
 .th-sort { opacity: 0.8; }
 /* Rows are one height whatever the content, so the eye can scan a column
@@ -482,7 +533,7 @@ table.grid td.right { font-variant-numeric: tabular-nums; color: var(--fg-muted)
 table.grid td.path { font-family: var(--mono); font-size: var(--fs-xs); color: var(--fg-subtle); }
 table.grid td.cell-arrow { color: var(--fg-subtle); padding: 0; }
 table.grid td.cell-arrow .icon { margin: 0 auto; }
-table.grid td.cell-empty { height: auto; white-space: normal; }
+table.grid td.cell-empty { height: auto; white-space: normal; border-bottom: 0; }
 .grid-note { padding: var(--sp-2) var(--sp-3); color: var(--fg-subtle); font-size: var(--fs-sm); }
 
 /* ---- empty state ------------------------------------------------------------------- */
@@ -500,11 +551,12 @@ table.grid td.cell-empty { height: auto; white-space: normal; }
 /* ---- command palette ---------------------------------------------------------------- */
 /* The search used to be a 360px dropdown inside a 340px sidebar with
    `overflow: hidden`, so every result's type label was cut off mid-word. It is
-   an overlay now — it has the whole window, and it is where ⌘K goes. */
+   an overlay now — it has the whole window, and it is where ⌘K goes. The veil
+   is `--scrim` rather than the page's own surface at an opacity, because over
+   a drawing the page under it is white paper. */
 .overlay {
   position: fixed; inset: 0; z-index: var(--z-overlay);
-  background: var(--surface-0);
-  opacity: 0.7;
+  background: var(--scrim);
 }
 .palette {
   position: fixed; z-index: var(--z-overlay);
@@ -536,7 +588,10 @@ table.grid td.cell-empty { height: auto; white-space: normal; }
   min-width: 0;
 }
 .palette-hit:hover, .palette-hit.is-active { background: var(--tint); text-decoration: none; }
-.palette-hit .hit-type { margin-left: auto; padding-left: var(--sp-3); color: var(--fg-subtle); font-size: var(--fs-xs); white-space: nowrap; }
+/* What a hit is, kept to the right and out of the way. Not scoped to the
+   palette: the graph's start-here list is a .link-list and uses the same label,
+   and the class has to mean one thing in both idioms. */
+.hit-type { margin-left: auto; padding-left: var(--sp-3); color: var(--fg-subtle); font-size: var(--fs-xs); white-space: nowrap; }
 .palette-foot {
   display: flex; align-items: center; gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
@@ -571,38 +626,55 @@ table.grid td.cell-empty { height: auto; white-space: normal; }
    to recede, not enough to vanish. */
 .canvas .is-dim { opacity: 0.35; }
 
+/* What floats over the drawing is paper, not chrome. The rule is that anything
+   over the drawing must carry BOTH its ground and its ink — `.canvas` sets
+   `color: var(--paper-ink)` for the figures, so a panel that inherits that and
+   takes a chrome ground is dark ink on a dark ground in the dark theme. That is
+   what the legend was: its layer names were invisible. And a chrome ground on
+   a sheet that never flips is a near-black hole punched in white paper, which
+   is what the zoom cluster and the message box were. So all three take the
+   paper's own ground, ink, border and hover, and none of them flips. */
 .canvas-hud {
   position: absolute; right: var(--sp-3); top: var(--sp-3); z-index: var(--z-hud);
   display: flex; gap: 1px;
-  border: 1px solid var(--line-firm);
+  border: 1px solid var(--paper-line);
   border-radius: var(--r-md);
-  background: var(--surface-0);
-  box-shadow: var(--shadow-1);
+  background: var(--paper);
+  color: var(--paper-ink);
+  box-shadow: var(--shadow-2);
   overflow: hidden;
 }
-.canvas-hud .btn { border: 0; border-radius: 0; background: var(--surface-0); }
-.canvas-hud .btn + .btn { border-left: 1px solid var(--line); }
+.canvas-hud .btn { border: 0; border-radius: 0; background: var(--paper); color: var(--paper-ink); }
+.canvas-hud .btn:hover { background: var(--paper-tint); }
+.canvas-hud .btn + .btn { border-left: 1px solid var(--paper-line); }
 .canvas-msg {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   z-index: var(--z-hud);
   max-width: calc(var(--palette-w) - var(--sp-8));
   padding: var(--sp-5);
-  border: 1px solid var(--line-firm);
+  border: 1px solid var(--paper-line);
   border-radius: var(--r-md);
-  background: var(--surface-2);
-  box-shadow: var(--shadow-1);
-  color: var(--fg-muted);
+  background: var(--paper);
+  box-shadow: var(--shadow-2);
+  color: var(--edge);
   text-align: center;
 }
-.canvas-msg .empty { padding: 0; }
+.canvas-msg .empty { padding: 0; color: var(--edge); }
+.canvas-msg .empty-icon, .canvas-msg .hit-type { color: var(--edge); }
+.canvas-msg .empty-title { color: var(--paper-ink); }
+.canvas-msg .btn { background: var(--paper); color: var(--paper-ink); border-color: var(--paper-line); }
+.canvas-msg .btn:hover, .canvas-msg .link-list a:hover { background: var(--paper-tint); }
+.canvas-msg .btn-primary,
+.canvas-msg .btn-primary:hover { background: var(--paper-ink); color: var(--paper); border-color: var(--paper-ink); }
 .legend {
   position: absolute; right: var(--sp-3); bottom: var(--sp-3); z-index: var(--z-hud);
   display: grid; grid-template-columns: auto auto; gap: var(--sp-h) var(--sp-3);
   padding: var(--sp-2);
-  border: 1px solid var(--line-firm);
+  border: 1px solid var(--paper-line);
   border-radius: var(--r-md);
-  background: var(--surface-0);
-  box-shadow: var(--shadow-1);
+  background: var(--paper);
+  color: var(--paper-ink);
+  box-shadow: var(--shadow-2);
   font-size: var(--fs-xs);
 }
 .legend span { display: inline-flex; align-items: center; gap: var(--sp-1); }
@@ -627,11 +699,6 @@ marker .hollow { fill: var(--paper); }
 .detail-meta { display: flex; gap: var(--sp-1); flex-wrap: wrap; align-items: center; }
 .detail .actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
 .sec { display: flex; flex-direction: column; gap: var(--sp-2); }
-.sec-title {
-  font-size: var(--fs-xs); font-weight: 600;
-  letter-spacing: var(--track-caps); text-transform: uppercase;
-  color: var(--fg-subtle);
-}
 .doc { white-space: pre-wrap; overflow-wrap: anywhere; max-width: var(--read-w); color: var(--fg-muted); }
 table.kv { border-collapse: collapse; width: 100%; }
 table.kv th, table.kv td { padding: var(--sp-1) var(--sp-2) var(--sp-1) 0; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; overflow-wrap: anywhere; }
@@ -645,18 +712,37 @@ table.kv th { color: var(--fg-subtle); font-weight: 400; white-space: nowrap; wi
   border-radius: var(--r-sm);
   min-width: 0;
 }
-.link-list a:hover, .rel-row:hover { background: var(--tint); text-decoration: none; }
+/* A row is a <button> when it selects something rather than links to it, and
+   the only global button rule resets the font and the colour. Without this the
+   UA's own ground and bevel survive, and half the rows in the inspector stand
+   1px away from flat ones that look nothing like them. Disabled means the far
+   end of the relationship is not in the model. */
+.rel-row { width: 100%; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.rel-row[disabled] { opacity: 0.45; cursor: default; }
+.link-list a:hover, .rel-row:not([disabled]):hover { background: var(--tint); text-decoration: none; }
 .rel-type { color: var(--fg-subtle); font-size: var(--fs-xs); white-space: nowrap; flex: none; }
 .rel-arrow { color: var(--fg-subtle); flex: none; }
 .id-line { font-family: var(--mono); font-size: var(--fs-xs); color: var(--fg-subtle); overflow-wrap: anywhere; }
 
-.type-icon { width: var(--icon); height: var(--icon); color: var(--fg); flex: none; }
+/* No colour of its own: the glyph is stroked with currentColor, so it takes the
+   ink of whatever it sits in — the invert of a solid badge, the paper inside a
+   message on the drawing, the row's ink in a table. Pinning --fg here made it
+   white on white inside the graph's centre badge. */
+.type-icon { width: var(--icon); height: var(--icon); flex: none; }
 .type-icon.boxed {
   width: var(--sp-6); height: var(--sp-6);
   padding: var(--sp-1);
   border-radius: var(--r-sm);
   border: 1px solid var(--line-firm);
 }
+/* Two things wear .boxed. notation.js builds an <svg> and fills it with the
+   type's layer fill, which is pale in both themes, so that one carries the
+   paper's ink; the <div> form has no fill of its own, keeps the ground it sits
+   on, and has to centre the 16px icon inside a box that is 14px once its border
+   and padding are taken off. */
+svg.type-icon.boxed { color: var(--paper-ink); }
+div.type-icon.boxed { display: inline-flex; align-items: center; justify-content: center; }
+div.type-icon.boxed > .icon { width: 100%; height: 100%; }
 
 /* ---- stats ------------------------------------------------------------------------------ */
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(var(--rail-w), 1fr)); gap: var(--sp-3); }
@@ -676,49 +762,11 @@ table.kv th { color: var(--fg-subtle); font-weight: 400; white-space: nowrap; wi
 .card-hint { color: var(--fg-subtle); font-size: var(--fs-xs); }
 
 .bars { display: grid; grid-template-columns: minmax(0, max-content) minmax(var(--sp-12), 1fr) max-content; gap: var(--sp-1) var(--sp-3); align-items: center; }
-.bar-label { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-sm); max-width: var(--rail-w); }
+.bar-label { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-sm); max-width: var(--rail-w); min-width: 0; }
 .bar { height: var(--sp-2); background: var(--tint-firm); border-radius: var(--sp-h); overflow: hidden; }
 .bar > i { display: block; height: 100%; background: var(--fg-muted); }
 .bar-n { font-variant-numeric: tabular-nums; color: var(--fg-subtle); font-size: var(--fs-sm); text-align: right; }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(calc(var(--palette-w) / 2), 1fr)); gap: var(--sp-6) var(--sp-8); margin-top: var(--sp-6); }
-
-.banner {
-  display: flex; align-items: center; gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--surface-1);
-  font-size: var(--fs-sm);
-}
-.banner.is-alarm { border-color: var(--alarm); color: var(--alarm); }
-
-/* ---- narrow windows ------------------------------------------------------------- */
-/* The middle is what the window is for, so it is what keeps its width. The
-   panes fold in order of what a reader can do without: the details of one
-   concept first, then navigation — the filters go last, because a table you
-   cannot narrow is a table you cannot use.
-
-   The numbers are the arithmetic of that rule. Both panes open costs
-   232 + 340 = 572px, so below about 1100px the middle would drop under 520px
-   and the columns start losing their headings. */
-@media (max-width: 69rem) {
-  #app, #app.rail-collapsed, #app.inspector-narrow, #app.rail-collapsed.inspector-narrow {
-    grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--rail-w-min);
-  }
-  #app.rail-collapsed, #app.rail-collapsed.inspector-narrow {
-    grid-template-columns: var(--rail-w-min) minmax(0, 1fr) var(--rail-w-min);
-  }
-  #app .inspector-label, #app #inspector-actions, #app .inspector-body { display: none; }
-  #app .inspector-head { justify-content: center; padding: 0; }
-  #app .inspector-grip { display: none; }
-}
-@media (max-width: 50rem) {
-  #app, #app.rail-collapsed, #app.inspector-narrow, #app.rail-collapsed.inspector-narrow {
-    grid-template-columns: var(--rail-w-min) minmax(0, 1fr) var(--rail-w-min);
-  }
-  #app .brand, #app .rail-foot, #app .rail-context,
-  #app #nav .nav-label, #app #nav .nav-n,
-  #app .rail-search span, #app .rail-search kbd { display: none; }
-  #app #nav a, #app .rail-search { justify-content: center; padding: 0; }
-  #app .rail-head { padding: 0; justify-content: center; }
-}
+/* Prose after the charts. The grid has no bottom margin, so without this the
+   purpose sat on the last bar. */
+.stats-prose { margin-top: var(--sp-6); max-width: var(--read-w); }

@@ -22,7 +22,15 @@ function apply(el, attrs) {
   for (const [k, v] of Object.entries(attrs)) {
     if (v === null || v === undefined || v === false) continue;
     if (k === "class") el.setAttribute("class", v);
-    else if (k === "style" && typeof v === "object") Object.assign(el.style, v);
+    // Property by property rather than Object.assign, because a custom
+    // property is not a member of CSSStyleDeclaration: `--field-w` assigned
+    // that way is silently dropped, and setProperty is the only route in.
+    else if (k === "style" && typeof v === "object") {
+      for (const [p, val] of Object.entries(v)) {
+        if (p.startsWith("--")) el.style.setProperty(p, val);
+        else el.style[p] = val;
+      }
+    }
     else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
     else if (k === "dataset") Object.assign(el.dataset, v);
     else if (v === true) el.setAttribute(k, "");
@@ -35,6 +43,12 @@ function append(el, children) {
     if (c === null || c === undefined || c === false) continue;
     el.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
   }
+}
+
+// A model string inside a selector. Names come from the file, and one quote in
+// one of them makes querySelector throw rather than miss.
+export function esc(v) {
+  return window.CSS?.escape ? CSS.escape(v) : String(v).replace(/["\\]/g, "\\$&");
 }
 
 export function clear(el) {
@@ -51,10 +65,3 @@ export function relLabel(type) {
   return type.replace(/Relationship$/, "");
 }
 
-export function debounce(fn, ms) {
-  let t = 0;
-  return (...args) => {
-    clearTimeout(t);
-    t = setTimeout(() => fn(...args), ms);
-  };
-}
