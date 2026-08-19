@@ -79,6 +79,12 @@ pub enum ViewCmd {
     Delete { view: String },
     /// Change a view's name.
     Rename { view: String, name: String },
+    /// Set or clear a view's viewpoint.
+    Viewpoint {
+        view: String,
+        /// One of the 25 ArchiMate viewpoint ids, e.g. layered. Empty clears it.
+        viewpoint: String,
+    },
     /// Re-file a view under another folder in the views tree.
     Move {
         view: String,
@@ -131,6 +137,7 @@ pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError
         }
         ViewCmd::Delete { view } => delete(opts, m, view),
         ViewCmd::Rename { view, name } => rename(opts, m, view, name),
+        ViewCmd::Viewpoint { view, viewpoint } => set_viewpoint(opts, m, view, viewpoint),
         ViewCmd::Move { view, folder } => move_view(opts, m, view, folder),
         ViewCmd::Render { view, draw_as, out, margin, scale } => {
             // `-o v.png` says what it wants without a second flag.
@@ -360,6 +367,33 @@ fn rename(opts: &Opts, m: &mut Model, view: &str, name: &str) -> Result<Output, 
         .s("id", m.view(v).id.clone())
         .s("from", old)
         .s("to", name.to_string())
+        .b("dry_run", opts.dry_run);
+    finish(opts, m, row)
+}
+
+/// Set or clear the viewpoint of a view that already exists.
+///
+/// Until this, a viewpoint could only be chosen when the view was created, so
+/// a drawing that grew past the one it was filed under could not be corrected
+/// without deleting and rebuilding it.
+fn set_viewpoint(
+    opts: &Opts,
+    m: &mut Model,
+    view: &str,
+    viewpoint: &str,
+) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    let vp = viewpoint.trim();
+    if !vp.is_empty() {
+        check_viewpoint(Some(vp))?;
+    }
+    let from = m.view(v).viewpoint.clone();
+    m.set_view_viewpoint(v, vp);
+    let row = Row::new()
+        .s("id", m.view(v).id.clone())
+        .s("name", m.view(v).name.clone())
+        .s("from", from)
+        .s("to", vp.to_string())
         .b("dry_run", opts.dry_run);
     finish(opts, m, row)
 }

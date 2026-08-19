@@ -790,6 +790,21 @@ impl Model {
         self.reindex();
     }
 
+    /// Set, or clear, the viewpoint of a view that already exists.
+    ///
+    /// An empty viewpoint is "no viewpoint", and EMF writes that as the absent
+    /// attribute rather than as `viewpoint=""` — so clearing removes it, and a
+    /// view that never had one stays byte-identical when cleared again.
+    pub fn set_view_viewpoint(&mut self, view: ViewId, viewpoint: &str) {
+        let node = self.view(view).node;
+        if viewpoint.is_empty() {
+            self.doc.remove_attr(node, "viewpoint");
+        } else {
+            self.doc.set_attr(node, "viewpoint", viewpoint);
+        }
+        self.reindex();
+    }
+
     /// Re-file a view under another folder in the views tree.
     ///
     /// Archi files every diagram somewhere under the single top-level folder of

@@ -1442,6 +1442,63 @@ fn segments_cross(a: (i32, i32), b: (i32, i32), c: (i32, i32), d: (i32, i32)) ->
 /// re-files the ones already there. The destination is checked first: a view
 /// filed outside the views tree parses but never appears in Archi, which is the
 /// kind of breakage that is only noticed by the person who opens the model.
+/// A viewpoint could only be chosen when a view was created, so a drawing that
+/// grew past the one it was filed under could not be corrected without deleting
+/// and rebuilding it. Setting one afterwards has to hold the same two promises
+/// every other write does: an unknown id is refused before anything is touched,
+/// and clearing what was set leaves the file byte-identical.
+#[test]
+fn a_views_viewpoint_can_be_set_after_it_exists() {
+    let m = Model::new("modelimporter_test.archimate");
+    let before = std::fs::read(m.path()).unwrap();
+    let viewpoint_of = |m: &Model, name: &str| -> String {
+        let (_, out, _) = m.run(&["view", "list", "-q", "--fields", "name,viewpoint"]);
+        rows(&out)
+            .iter()
+            .find(|r| r.first() == Some(&name))
+            .and_then(|r| r.get(1))
+            .unwrap_or(&"")
+            .to_string()
+    };
+
+    assert_eq!(m.run(&["view", "create", "Scope"]).0, 0);
+    assert_eq!(viewpoint_of(&m, "Scope"), "", "a view starts with no viewpoint");
+
+    // An id that is not a viewpoint is a usage error, and the hint lists the
+    // ones that are.
+    let (code, _, err) = m.run(&["view", "viewpoint", "Scope", "not_a_viewpoint"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("is not a viewpoint id"), "{err}");
+    assert!(err.contains("layered"), "the hint names the real ones: {err}");
+    assert_eq!(viewpoint_of(&m, "Scope"), "", "the refusal changed nothing");
+
+    let (code, out, err) = m.run(&["view", "viewpoint", "Scope", "layered"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("layered"), "{out}");
+    assert_eq!(viewpoint_of(&m, "Scope"), "layered");
+
+    // Changing it again reports where it came from.
+    let (_, out, _) = m.run(&["view", "viewpoint", "-q", "Scope", "strategy"]);
+    let r = rows(&out);
+    assert_eq!(r[0][2], "layered", "reports the old value: {out}");
+    assert_eq!(r[0][3], "strategy", "reports the new one: {out}");
+
+    // The same op in a batch, and then cleared.
+    let ops = "{\"op\":\"view.viewpoint\",\"view\":\"Scope\",\"viewpoint\":\"motivation\"}\n";
+    let batch = m.path().with_file_name("vp.jsonl");
+    std::fs::write(&batch, ops).unwrap();
+    assert_eq!(m.run(&["apply", batch.to_str().unwrap()]).0, 0);
+    assert_eq!(viewpoint_of(&m, "Scope"), "motivation");
+
+    assert_eq!(m.run(&["view", "viewpoint", "Scope", ""]).0, 0);
+    assert_eq!(viewpoint_of(&m, "Scope"), "", "an empty viewpoint clears it");
+
+    // EMF omits the attribute when there is no viewpoint, so a view that has
+    // been given one and had it taken away is the file it started as.
+    assert_eq!(m.run(&["view", "delete", "Scope"]).0, 0);
+    assert_eq!(std::fs::read(m.path()).unwrap(), before, "set then cleared is not byte-identical");
+}
+
 #[test]
 fn views_are_filed_in_folders() {
     let m = Model::new("modelimporter_test.archimate");

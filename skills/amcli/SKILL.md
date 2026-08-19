@@ -254,6 +254,7 @@ mirrors — and never deletes anyone's modelling.
     amcli view layout "Refund Flow" --relayout-all
     amcli view rename "Refund Flow" "Refunds"
     amcli view move "Refunds" -f /Views/Payments   # re-file, id unchanged
+    amcli view viewpoint "Refunds" application_cooperation   # or "" to clear
     amcli view delete "Refunds"                # removes the drawing, no concept
     amcli view render "Refunds" -o refund.svg
     amcli view render "Refunds" -o refund.png --scale 2   # a raster, from the extension
@@ -265,6 +266,14 @@ A view name is unique: creating a second view with a name already in use is exit
 regenerate-everything script re-runnable:
 
     amcli view auto "Refund Flow" --from "Refund Service" --replace
+
+A **viewpoint** narrows what a view is meant to say, and Archi shows it in the
+properties. `create` and `auto` take `--viewpoint` (`"viewpoint"` in a batch);
+`view viewpoint` sets or clears it on a drawing that already exists, which is
+what you want when a view grew past the one it was filed under. The id must be
+one of the 25 ArchiMate ones — a wrong one is exit 2 and the hint lists them
+all — and `""` clears it. Nothing is enforced by it: putting a concept the
+viewpoint does not cover on the view is a note on stderr, not a refusal.
 
 **Past about a dozen views, file them in folders.** `create` and `auto` take
 `-f /Views/<name>` (`"folder"` in a batch), `view move` re-files one already

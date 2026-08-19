@@ -53,6 +53,7 @@ same fields, and takes a `ref:` wherever it takes a concept:
     {"op":"view.layout","view":"Payments","algorithm":"auto","relayout_all":true}
     {"op":"view.rename","view":"Payments","name":"Payments and Checkout"}
     {"op":"view.move","view":"Payments","folder":"/Views/Programme"}
+    {"op":"view.viewpoint","view":"Payments","viewpoint":"application_cooperation"}
     {"op":"view.delete","view":"Old Sketch"}
 
 A view built member by member — create it, add each element, lay it out —
