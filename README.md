@@ -28,7 +28,7 @@ http://127.0.0.1:52341/
 ```
 
 <p align="center">
-  <img src="docs/web.gif" alt="amcli web: a view drawn as Archi draws it, the details of an element, the element table filtered to one layer, and an interactive graph explored from that element, in light and dark">
+  <img src="docs/web.gif" alt="amcli web: the views in their folder tree, one of them drawn as Archi draws it, the details of a figure on it, ⌘K finding a name that was typed wrong, the element table narrowed by the same misspelling, and the graph two hops out from what was picked, in light and dark">
   <br>
   <sub>The agent works on the model; <code>amcli web</code> shows you what it did — every view, every element, the graph between them — while it keeps working.</sub>
 </p>
