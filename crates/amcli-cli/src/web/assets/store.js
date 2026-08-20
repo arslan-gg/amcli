@@ -1,6 +1,8 @@
 // The model, once fetched, indexed for the pages; and the poll that notices
 // when the file behind it changes.
 
+import { rank } from "./fuzzy.js";
+
 const listeners = new Set();
 const detailCache = new Map();
 
@@ -139,22 +141,15 @@ export function find(id) { return store.byId.get(id) || null; }
 // The other end of a relationship, seen from element `e`.
 export function otherEnd(r, e) { return r.src === e ? r.tgt : r.src; }
 
-// Substring search over element, relation and view names, cheap enough to run
-// on every keystroke for a model of a few thousand concepts.
+// Search over element, relation and view names, cheap enough to run on every
+// keystroke for a model of a few thousand concepts. What counts as a match and
+// what ranks above what is `fuzzy.js`'s business, here and everywhere else.
 export function search(q, limit = 30) {
-  const needle = q.trim().toLowerCase();
-  if (!needle) return { elements: [], views: [], relations: [] };
+  if (!q.trim()) return { elements: [], views: [], relations: [] };
   const hits = { elements: [], views: [], relations: [] };
-  const rank = (name) => {
-    const n = name.toLowerCase();
-    if (n === needle) return 0;
-    if (n.startsWith(needle)) return 1;
-    const at = n.indexOf(needle);
-    return at < 0 ? -1 : 2 + at / 100;
-  };
   const collect = (arr, key, out) => {
     for (let i = 0; i < arr.length; i++) {
-      const r = rank(arr[i].name || "");
+      const r = rank(q, arr[i].name || "");
       if (r >= 0) out.push({ i, r });
     }
     out.sort((a, b) => a.r - b.r || (arr[a.i].name || "").localeCompare(arr[b.i].name || ""));

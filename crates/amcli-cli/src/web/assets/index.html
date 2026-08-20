@@ -20,7 +20,10 @@
          moves when a pane folds. -->
     <div class="rail-head">
       <button id="rail-toggle" class="btn btn-icon btn-quiet" type="button" title="Collapse the sidebar (⌘B)" aria-label="Collapse the sidebar"></button>
-      <span class="brand"><span class="brand-mark">amcli</span></span>
+      <!-- A link, not a label: the name of the thing is where a reader
+           expects the way back to it. Its href is set by app.js, so router.js
+           stays the only place that spells a route. -->
+      <a class="brand" id="brand"><span class="brand-mark">amcli</span></a>
       <span class="spacer"></span>
     </div>
     <div class="rail-body">

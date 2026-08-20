@@ -10,6 +10,7 @@
 
 import { h, clear, fmt, relLabel, esc } from "../dom.js";
 import { store, elem, rel, view, folder, folderPath } from "../store.js";
+import { matches as looksLike, mark } from "../fuzzy.js";
 import { typeIcon, typeOf, accessLabel } from "../notation.js";
 import { icon } from "../icons.js";
 import { toolbar, filterBar, dataTable, tree, searchField, countLabel } from "../ui.js";
@@ -26,6 +27,14 @@ const lastLeft = new Map(); // kind → params
 
 const cell = (...kids) => h("span", { class: "cell" }, kids);
 
+// What the search box held when the table was last painted. A column's render
+// takes a row, not a query — and a fuzzy match that does not say which letters
+// it matched is a table full of rows the reader cannot account for, so the one
+// piece of state the cells need is kept here rather than threaded through
+// every render signature.
+let typed = "";
+const hit = (text) => mark(text, typed);
+
 /* ---- the three configurations ---------------------------------------------- */
 
 function specFor(kind) {
@@ -39,7 +48,7 @@ function specFor(kind) {
     inFolders: store.folderViews,
     open: (i) => (location.hash = href("view", view(i).id)),
     columns: [
-      { key: "name", label: "Name", width: "30%", sortable: true, sort: (i) => name(view(i)), render: (i) => cell(icon("view"), h("span", { class: "ellipsis" }, view(i).name || "(unnamed)")) },
+      { key: "name", label: "Name", width: "30%", sortable: true, sort: (i) => name(view(i)), render: (i) => cell(icon("view"), h("span", { class: "ellipsis" }, hit(view(i).name || "(unnamed)"))) },
       { key: "folder", label: "Folder", width: "22%", sortable: true, cls: "path", sort: (i) => folderPath(view(i).folder), render: (i) => titled(trimPath(folderPath(view(i).folder), "/Views"), folderPath(view(i).folder)) },
       { key: "viewpoint", label: "Viewpoint", width: "15%", sortable: true, sort: (i) => view(i).viewpoint || "", render: (i) => view(i).viewpoint || h("span", { class: "subtle" }, "—") },
       { key: "elements", label: "Elements", width: "14%", sortable: true, numeric: true, align: "right", sort: (i) => view(i).elements.length, render: (i) => fmt(view(i).elements.length) },
@@ -50,7 +59,12 @@ function specFor(kind) {
       valuesOf: () => tally(store.data.views.map((v) => v.viewpoint || "(none)")),
       of: (i) => view(i).viewpoint || "(none)",
     }],
-    matches: (i, n) => (view(i).name || "").toLowerCase().includes(n),
+    matches: (i, q) => looksLike(q, view(i).name || ""),
+    // The drawings themselves hang in the tree their folders are in. A folder
+    // list beside a list of what is in the folders is the same list twice, and
+    // a model's views are where a reader looks for a drawing by name — it is
+    // the shape Archi files them in.
+    leaves: { icon: () => icon("view"), of: (id) => (store.byId.get(id)?.kind === "view" ? store.byId.get(id).i : null) },
     emptyTitle: "No view matches",
     emptyBody: "Clear the filter, or draw one with `amcli view auto \"Name\" --from <element>`.",
   };
@@ -69,10 +83,10 @@ function specFor(kind) {
     },
     columns: [
       { key: "type", label: "Kind", width: "15%", sortable: true, sort: (i) => rel(i).type, render: (i) => cell(icon("relations"), h("span", { class: "ellipsis" }, relLabel(rel(i).type))) },
-      { key: "source", label: "Source", width: "21%", sortable: true, sort: (i) => endName(rel(i).src), render: (i) => endCell(rel(i).src, rel(i).srcId) },
+      { key: "source", label: "Source", width: "21%", sortable: true, sort: (i) => endName(rel(i).src).toLowerCase(), render: (i) => endCell(rel(i).src, rel(i).srcId) },
       { key: "arrow", label: "", width: "3%", cls: "cell-arrow", render: () => icon("arrow-right", { class: "rel-arrow" }) },
-      { key: "target", label: "Target", width: "21%", sortable: true, sort: (i) => endName(rel(i).tgt), render: (i) => endCell(rel(i).tgt, rel(i).tgtId) },
-      { key: "name", label: "Label", width: "14%", sortable: true, sort: (i) => (rel(i).name || "").toLowerCase(), render: (i) => rel(i).name || detailOf(rel(i)) || h("span", { class: "subtle" }, "—") },
+      { key: "target", label: "Target", width: "21%", sortable: true, sort: (i) => endName(rel(i).tgt).toLowerCase(), render: (i) => endCell(rel(i).tgt, rel(i).tgtId) },
+      { key: "name", label: "Label", width: "14%", sortable: true, sort: (i) => (rel(i).name || "").toLowerCase(), render: (i) => (rel(i).name ? hit(rel(i).name) : detailOf(rel(i)) || h("span", { class: "subtle" }, "—")) },
       { key: "folder", label: "Folder", width: "16%", sortable: true, cls: "path", sort: (i) => folderPath(rel(i).folder), render: (i) => titled(trimPath(folderPath(rel(i).folder), ""), folderPath(rel(i).folder)) },
       { key: "views", label: "Views", width: "10%", sortable: true, numeric: true, align: "right", sort: (i) => store.viewsOfRel[i].length, render: (i) => fmt(store.viewsOfRel[i].length) },
     ],
@@ -85,10 +99,9 @@ function specFor(kind) {
       of: (i) => rel(i).type,
     }],
     defaultSort: "source",
-    matches: (i, n) => {
+    matches: (i, q) => {
       const r = rel(i);
-      return (r.name || "").toLowerCase().includes(n)
-        || endName(r.src).includes(n) || endName(r.tgt).includes(n);
+      return looksLike(q, r.name || "") || looksLike(q, endName(r.src)) || looksLike(q, endName(r.tgt));
     },
     emptyTitle: "No relationship matches",
     emptyBody: "Clear the filter or show more kinds.",
@@ -104,7 +117,7 @@ function specFor(kind) {
     inFolders: store.folderElems,
     open: (i) => (location.hash = href("graph", null, { focus: elem(i).id, depth: 1 })),
     columns: [
-      { key: "name", label: "Name", width: "29%", sortable: true, sort: (i) => name(elem(i)), render: (i) => cell(typeIcon(elem(i).type), h("span", { class: "ellipsis" }, elem(i).name || "(unnamed)")) },
+      { key: "name", label: "Name", width: "29%", sortable: true, sort: (i) => name(elem(i)), render: (i) => cell(typeIcon(elem(i).type), h("span", { class: "ellipsis" }, hit(elem(i).name || "(unnamed)"))) },
       { key: "type", label: "Type", width: "23%", sortable: true, sort: (i) => elem(i).type, render: (i) => cell(h("span", { class: "swatch", title: `${elem(i).layer} layer`, style: { background: typeOf(elem(i).type).fill } }), elem(i).type) },
       { key: "folder", label: "Folder", width: "21%", sortable: true, cls: "path", sort: (i) => folderPath(elem(i).folder), render: (i) => titled(trimPath(folderPath(elem(i).folder), ""), folderPath(elem(i).folder)) },
       { key: "in", label: "In", width: "8%", sortable: true, numeric: true, align: "right", sort: (i) => store.inc[i].length, render: (i) => fmt(store.inc[i].length) },
@@ -125,16 +138,16 @@ function specFor(kind) {
         of: (i) => elem(i).type,
       },
     ],
-    matches: (i, n) => (elem(i).name || "").toLowerCase().includes(n),
+    matches: (i, q) => looksLike(q, elem(i).name || ""),
     emptyTitle: "No element matches",
     emptyBody: "Clear the filter, or show more layers and types.",
   };
 }
 
 const name = (c) => (c.name || "").toLowerCase();
-const endName = (i) => (i >= 0 ? (elem(i).name || "").toLowerCase() : "");
+const endName = (i) => (i >= 0 ? elem(i).name || "" : "");
 const endCell = (i, raw) => i >= 0
-  ? cell(typeIcon(elem(i).type), h("span", { class: "ellipsis" }, elem(i).name || "(unnamed)"))
+  ? cell(typeIcon(elem(i).type), h("span", { class: "ellipsis" }, hit(elem(i).name || "(unnamed)")))
   : h("span", { class: "subtle mono" }, raw || "—");
 const detailOf = (r) =>
   r.type === "Access" && r.access !== null ? accessLabel(r.access)
@@ -251,41 +264,51 @@ export function mount(main, route) {
   const hasHierarchy = roots.length > 0 && (roots.length > 1 || store.folderKids[roots[0]].some((k) => under.get(k).length));
   if (!hasHierarchy) treePane.closest(".rail-group")?.remove();
 
-  if (hasHierarchy && !collapsed.size && under.size > 24) {
+  const soleRoot = soleRootOf(roots, under, spec.all().length);
+  // A link written while that row still existed can still ask for it.
+  if (soleRoot !== null && state.folder === folderPath(soleRoot)) { state.folder = ""; push(); }
+
+  // How many rows the tree would open with, leaves included: a folder list is
+  // worth reading whole, eighty-six drawings under it are not.
+  if (hasHierarchy && !collapsed.size && under.size + (spec.leaves ? spec.all().length : 0) > 24) {
     for (const [i, list] of under) if (list.length && folder(i).parent !== null) collapsed.add(folderPath(i));
   }
 
-  function treeNodes(passing) {
-    const hits = new Set(passing);
-    const count = (i) => under.get(i).reduce((n, x) => n + (hits.has(x) ? 1 : 0), 0);
-    const nodes = [{ key: "", label: `All ${spec.noun}`, count: hits.size, depth: 0, hasKids: false, title: `Every one of the ${spec.noun} in the model` }];
-    const walk = (i, depth) => {
-      const path = folderPath(i);
-      const kids = store.folderKids[i].filter((k) => under.get(k).length);
-      nodes.push({ key: path, label: folder(i).name, count: count(i), depth, hasKids: kids.length > 0, title: `${folder(i).name}\n${path}` });
-      if (!collapsed.has(path)) for (const k of kids) walk(k, depth + 1);
-    };
-    for (const r of roots) walk(r, 1);
-    return nodes;
-  }
+  const treeNodes = (passing) => folderNodes({ spec, under, roots, soleRoot, collapsed, hits: new Set(passing) });
+
+  // A leaf's key is its index behind a `#`, which no folder path can be.
+  const atKey = (k) => (k.startsWith("#") ? +k.slice(1) : null);
+  const keyOf = (id) => {
+    const found = spec.leaves && id ? store.byId.get(id) : null;
+    return found && spec.leaves.of(id) !== null ? `#${found.i}` : null;
+  };
 
   function drawTree(passing) {
     // Expanding a folder or picking one rebuilds the whole tree, and the row
     // that was rebuilt is the row the keyboard was standing on. Without this
     // focus lands back on <body> and the tree has to be tabbed into again from
-    // the top of the rail for every single folder.
+    // the top of the rail for every single folder. The scroll goes the same
+    // way and for the same reason: a tree that holds every drawing is a tree
+    // you are somewhere in the middle of.
     const held = treePane.contains(document.activeElement)
       ? document.activeElement.closest(".tree-row")?.dataset.key
       : null;
+    const at = treePane.scrollTop;
     clear(treePane);
     if (!hasHierarchy) return;
     treePane.appendChild(tree({
       nodes: treeNodes(passing),
       active: state.folder,
+      selected: keyOf(selectedId()),
       label: "Folders",
       isOpen: (k) => !collapsed.has(k),
       onToggle: (k) => { collapsed.has(k) ? collapsed.delete(k) : collapsed.add(k); drawTree(passing); },
+      onOpen: (k) => { const i = atKey(k); if (i !== null) spec.open(i); },
       onPick: (k) => {
+        // A leaf is a concept, and a concept is selected — the same single
+        // click a row, a figure and a graph node get. Nothing navigates on it.
+        const i = atKey(k);
+        if (i !== null) { select(spec.id(i)); return; }
         if (state.folder === k && k) {
           state.folder = "";           // clicking the chosen folder again clears it
         } else {
@@ -296,6 +319,7 @@ export function mount(main, route) {
         redraw();
       },
     }));
+    treePane.scrollTop = at;
     if (held != null) {
       const row = treePane.querySelector(`.tree-row[data-key="${esc(held)}"]`);
       if (row) { treePane.querySelectorAll(".tree-row").forEach((r) => r.setAttribute("tabindex", "-1")); row.setAttribute("tabindex", "0"); row.focus(); }
@@ -339,8 +363,8 @@ export function mount(main, route) {
   // folder's number should say what is in it under the current filter, not
   // what would be in it if you also picked that folder.
   function passingForTree() {
-    const needle = state.q.trim().toLowerCase();
-    return spec.all().filter((i) => passesDims(i) && (!needle || spec.matches(i, needle)));
+    const q = state.q.trim();
+    return spec.all().filter((i) => passesDims(i) && (!q || spec.matches(i, q)));
   }
 
   // Both `table.sort` and `table.rows` repaint the whole table, so setting the
@@ -351,9 +375,10 @@ export function mount(main, route) {
   let painted = { key: state.sort, dir: state.dir };
 
   function redraw() {
-    const needle = state.q.trim().toLowerCase();
+    const q = state.q.trim();
+    typed = q;
     const all = spec.all();
-    const rows = all.filter((i) => passesDims(i) && inFolder(i) && (!needle || spec.matches(i, needle)));
+    const rows = all.filter((i) => passesDims(i) && inFolder(i) && (!q || spec.matches(i, q)));
     const col = columns.find((c) => c.key === state.sort) || columns[0];
     const key = col.sort || ((i) => spec.name(i).toLowerCase());
     rows.sort((a, b) => {
@@ -371,7 +396,19 @@ export function mount(main, route) {
     drawTree(passingForTree());
   }
 
-  const onSelect = (e) => table.setSelected(e.detail.id);
+  const onSelect = (e) => {
+    table.setSelected(e.detail.id);
+    // The mark moves; the tree does not get rebuilt for it. Rebuilding would
+    // throw away where the reader is scrolled to for a class name.
+    const key = keyOf(e.detail.id);
+    for (const row of treePane.querySelectorAll(".tree-row.is-selected")) {
+      row.classList.remove("is-selected");
+      row.setAttribute("aria-selected", String(row.classList.contains("is-active")));
+    }
+    if (!key) return;
+    const row = treePane.querySelector(`.tree-row[data-key="${esc(key)}"]`);
+    if (row) { row.classList.add("is-selected"); row.setAttribute("aria-selected", "true"); row.scrollIntoView({ block: "nearest" }); }
+  };
   document.addEventListener("amcli:select", onSelect);
 
   redraw();
@@ -380,6 +417,46 @@ export function mount(main, route) {
     document.removeEventListener("amcli:select", onSelect);
   };
 }
+
+/* ---- the tree both rails draw --------------------------------------------
+   One shape, one place. The Views list narrows a table with this tree and a
+   drawing navigates with it; when they were two pieces of code they became two
+   shapes — a tree of folders here, and beside it a flat list of the drawings
+   in the chosen one, which is the same list twice. Where a spec declares
+   `leaves`, what is filed in a folder hangs off it. */
+function folderNodes({ spec, under, roots, soleRoot, collapsed, hits }) {
+  const count = (i) => under.get(i).reduce((n, x) => n + (hits.has(x) ? 1 : 0), 0);
+  const nodes = [{ key: "", label: `All ${spec.noun}`, count: hits.size, depth: 0, hasKids: false, title: `Every one of the ${spec.noun} in the model` }];
+  // What is filed directly in this folder and survives the filters, by name.
+  const own = (i) => (spec.leaves ? spec.inFolders[i].filter((x) => hits.has(x)) : [])
+    .sort((a, b) => spec.name(a).localeCompare(spec.name(b), undefined, { numeric: true }));
+  const leaf = (x, depth) => nodes.push({
+    key: `#${x}`, label: spec.name(x) || "(unnamed)", depth,
+    hasKids: false, icon: spec.leaves.icon(x), title: spec.name(x),
+  });
+  const walk = (i, depth) => {
+    const path = folderPath(i);
+    const kids = store.folderKids[i].filter((k) => under.get(k).length);
+    const mine = own(i);
+    nodes.push({ key: path, label: folder(i).name, count: count(i), depth, hasKids: kids.length > 0 || mine.length > 0, title: `${folder(i).name}\n${path}` });
+    if (collapsed.has(path)) return;
+    for (const k of kids) walk(k, depth + 1);
+    for (const x of mine) leaf(x, depth + 1);
+  };
+  const top = soleRoot === null ? roots : store.folderKids[soleRoot].filter((k) => under.get(k).length);
+  for (const r of top) walk(r, 1);
+  // The merged root's own items have nowhere else to go: they belong to the
+  // "All …" row that stands in for it.
+  if (soleRoot !== null) for (const x of own(soleRoot)) leaf(x, 1);
+  return nodes;
+}
+
+// A model files every view under one top-level folder called "Views", and every
+// relationship under one called "Relations". A root that holds the whole
+// collection says exactly what the "All …" row above it says, so it is not
+// drawn twice; its folders hang off that row instead.
+const soleRootOf = (roots, under, total) =>
+  (roots.length === 1 && under.get(roots[0]).length === total ? roots[0] : null);
 
 // Folder index → every item in it and everything under it.
 function subtreeCounts(byFolder) {
@@ -398,29 +475,37 @@ function subtreeCounts(byFolder) {
 /* ---- the rail on a single drawing -------------------------------------------
    Opening a view used to empty the rail: the folder tree went, and with it the
    only way to see where the drawing sits and what is beside it. The scope of a
-   view page is *which view*, so the same tree stays, over the same folders,
-   with the drawings in the chosen branch listed under it. That is also where
-   the toolbar's picker went — a <select> of eighty-six names was a third route
-   to this, and a worse one. */
+   view page is *which view*, so the same tree stays — the same one the Views
+   list is narrowed by, drawings and all. It used to be two halves, a tree of
+   folders above a flat list of the drawings in the chosen one, which is the
+   same eighty-six names twice and a fold to keep in step between them. One
+   tree: the folders divide, the drawings hang off them, and the one you are
+   reading is marked in it. That is also where the toolbar's picker went — a
+   <select> of eighty-six names was a third route to this, and a worse one. */
 
-let scopeFolder = null;              // remembered while flipping between drawings
 const scopeHidden = new Set();       // viewpoints the reader has switched off
 
 export function viewsScope(viewId) {
-  const kind = "views";
-  if (!folded.has(kind)) folded.set(kind, new Set());
-  const collapsed = folded.get(kind);
+  const spec = specFor("views");
+  if (!folded.has(spec.kind)) folded.set(spec.kind, new Set());
+  const collapsed = folded.get(spec.kind);
 
-  const under = subtreeCounts(store.folderViews);
+  const under = subtreeCounts(spec.inFolders);
   const roots = store.roots.filter((i) => under.get(i).length);
+  const soleRoot = soleRootOf(roots, under, spec.all().length);
   const here = store.byId.get(viewId);
-  const mine = here && here.kind === "view" ? folderPath(view(here.i).folder) : "";
+  const at = here && here.kind === "view" ? here.i : null;
 
-  // Follow the drawing unless the reader has said otherwise this session.
-  if (scopeFolder === null) scopeFolder = mine;
+  // Open the branch the drawing is in. A rail that has to be dug into before
+  // it can say where you are is a rail that says nothing.
+  if (at !== null) {
+    const path = folderPath(view(at).folder);
+    for (let cut = path.length; cut > 0; cut = path.lastIndexOf("/", cut - 1)) {
+      collapsed.delete(path.slice(0, cut));
+    }
+  }
 
   const treePane = h("div", { class: "rail-scope" });
-  const listPane = h("div", { class: "rail-scope" });
 
   // The same dimension the Views list offers, in the same place and the same
   // shape. A drawing's scope is which drawing, and that is narrowed by folder
@@ -429,83 +514,46 @@ export function viewsScope(viewId) {
   const filters = filterBar([{
     key: "viewpoint", label: "Viewpoints", noun: "viewpoints", hidden: scopeHidden,
     values: vpValues,
-    onChange: () => { drawTree(); drawList(); },
+    onChange: () => drawTree(),
   }]);
-  // Both halves grow and both scroll, so a deep tree cannot push the list of
-  // drawings off the bottom of the rail — which is the half you came for.
-  // Both list halves grow and both scroll, so a deep tree cannot push the list
-  // of drawings off the bottom of the rail — which is the half you came for.
   const box = h("div", { class: "rail-split" },
     h("div", { class: "rail-group" }, h("h2", { class: "caps rail-group-title" }, "Filter"), filters),
-    h("div", { class: "rail-group rail-group-grow" }, h("h2", { class: "caps rail-group-title" }, "Folders"), treePane),
-    h("div", { class: "rail-group rail-group-grow" }, h("h2", { class: "caps rail-group-title" }, "Views"), listPane));
+    h("div", { class: "rail-group rail-group-grow" }, h("h2", { class: "caps rail-group-title" }, "Views"), treePane));
 
-  const passesVp = (vi) => !scopeHidden.has(view(vi).viewpoint || "(none)");
-  const inFolder = (vi) => {
-    if (!scopeFolder) return true;
-    const f = folderPath(view(vi).folder);
-    return f === scopeFolder || f.startsWith(scopeFolder + "/");
-  };
-  const inScope = (vi) => passesVp(vi) && inFolder(vi);
-
-  function nodes() {
-    const count = (i) => under.get(i).reduce((n, vi) => n + (passesVp(vi) ? 1 : 0), 0);
-    const shown = store.data.views.reduce((n, _, vi) => n + (passesVp(vi) ? 1 : 0), 0);
-    const out = [{ key: "", label: "All views", count: shown, depth: 0, hasKids: false, title: "Every view the filter allows" }];
-    const walk = (i, depth) => {
-      const path = folderPath(i);
-      const kids = store.folderKids[i].filter((k) => under.get(k).length);
-      out.push({ key: path, label: folder(i).name, count: count(i), depth, hasKids: kids.length > 0, title: `${folder(i).name}\n${path}` });
-      if (!collapsed.has(path)) for (const k of kids) walk(k, depth + 1);
-    };
-    for (const r of roots) walk(r, 1);
-    return out;
-  }
+  const passing = () => new Set(store.data.views
+    .map((_, i) => i)
+    .filter((i) => !scopeHidden.has(view(i).viewpoint || "(none)")));
 
   function drawTree() {
     const held = treePane.contains(document.activeElement)
       ? document.activeElement.closest(".tree-row")?.dataset.key
       : null;
+    const scrolled = treePane.scrollTop;
     clear(treePane);
     treePane.appendChild(tree({
-      nodes: nodes(),
-      active: scopeFolder,
-      label: "Folders",
+      nodes: folderNodes({ spec, under, roots, soleRoot, collapsed, hits: passing() }),
+      selected: at === null ? null : `#${at}`,
+      label: "Views",
       isOpen: (k) => !collapsed.has(k),
       onToggle: (k) => { collapsed.has(k) ? collapsed.delete(k) : collapsed.add(k); drawTree(); },
-      // Picking a folder narrows the list below; it does not navigate, because
-      // the reader is looking at a drawing and did not ask to leave it.
-      onPick: (k) => { scopeFolder = k; collapsed.delete(k); drawTree(); drawList(); },
+      // A drawing opens on a single click here, as the list it replaces did:
+      // this rail is the way from one drawing to the next, not a selection
+      // surface. A folder has nothing to narrow any more, so it folds.
+      onPick: (k) => {
+        if (k.startsWith("#")) { location.hash = href("view", view(+k.slice(1)).id); return; }
+        collapsed.has(k) ? collapsed.delete(k) : collapsed.add(k);
+        drawTree();
+      },
     }));
+    treePane.scrollTop = scrolled;
     if (held != null) {
       const row = treePane.querySelector(`.tree-row[data-key="${esc(held)}"]`);
       if (row) { treePane.querySelectorAll(".tree-row").forEach((r) => r.setAttribute("tabindex", "-1")); row.setAttribute("tabindex", "0"); row.focus(); }
     }
-  }
-
-  function drawList() {
-    clear(listPane);
-    const mates = store.data.views
-      .map((_, i) => i)
-      .filter(inScope)
-      .sort((a, b) => view(a).name.localeCompare(view(b).name, undefined, { numeric: true }));
-    const list = h("div", { class: "link-list" });
-    for (const i of mates) {
-      const v = view(i);
-      list.appendChild(h("a", {
-        class: v.id === viewId ? "is-current" : "",
-        href: href("view", v.id),
-        title: `${v.name}\n${fmt(v.elements.length)} elements`,
-        "aria-current": v.id === viewId ? "page" : null,
-      }, icon("view"), h("span", { class: "ellipsis" }, v.name)));
-    }
-    listPane.appendChild(list);
+    treePane.querySelector(".tree-row.is-selected")?.scrollIntoView({ block: "nearest" });
   }
 
   drawTree();
-  drawList();
-  // The drawing the rail is following changed, so let it follow again.
-  box.forget = () => { scopeFolder = null; };
   return box;
 }
 

@@ -103,7 +103,7 @@ binary is the whole product, and it works offline.
   `assets/icons.js`, and no interface element may be a typed character:
   `the_chrome_has_no_text_icons` fails on `▣ ▶ ▼ ✕ ↗ ⤡ ◐ ‹ ↔ ▾`.
 
-### The design system, and the four tests that hold it up
+### The design system, and the five tests that hold it up
 
 The page came apart once — nine font sizes, twenty spacings, four radius
 idioms, thirty-seven inline styles, three copies of the sortable table header
@@ -125,6 +125,15 @@ pages. Care at the call site is what failed, so the rules are tests now. Read
   checks the pairs in both themes. The count inside a selected chip used to
   sit at 2.46:1 because `.muted` beat the chip's inverted colour; that is what
   `--invert-subtle` is for.
+- **Searching is one matcher**, `assets/fuzzy.js`, and every box on the page
+  goes through it. `one_matcher_behind_every_search` fails on a
+  `toLowerCase().includes(` anywhere else, which is the shape each of the four
+  boxes had written for itself. The matcher ranks in one currency — whole
+  name, prefix, substring, then the letters in order — and the fourth tier
+  only accepts what a reader could have meant: a match that starts a word and
+  then continues, jumps to another word start, or drops a letter or two
+  without leaving the word it is in. Without that last rule `data` matched
+  thirty-three names on a real model where five contain the word.
 - **A widget is written once**, in `assets/ui.js` — `toolbar`, `filterBar`,
   `dataTable`, `tree`, `popover`, `button`, `chip`, `badge`, `card`,
   `barChart`, `emptyState`. A second copy is a primitive that has not been
@@ -144,8 +153,33 @@ pages. Care at the call site is what failed, so the rules are tests now. Read
 - **One page-header anatomy**: title · meta · controls · trailing. It neither
   wraps nor scrolls sideways — what does not fit moves into the toolbar's
   overflow menu, because a control scrolled out of sight is a control you do
-  not have. Nothing in the viewer scrolls horizontally; tables are
+  not have. **That reflow must move nothing when nothing has changed**:
+  moving a node blurs whatever is focused inside it, and the bar is resized by
+  its own contents — the count beside the title is narrower at "6 of 272" than
+  at "272 of 272" — so a reflow that re-inserted every control unconditionally
+  took the filter box away from under the reader after every letter typed. Nothing in the viewer scrolls horizontally; tables are
   `table-layout: fixed` with a `colgroup`, and cells ellipsize.
+- **The camera on the graph belongs to the reader.** A redraw they did not ask
+  to move must not move: pinning one box adds one node, and refitting the whole
+  graph for it threw away the scale and the corner they had navigated to.
+  Narrowing — a pin, a filter — passes `keep` to `build`; asking for a
+  different neighbourhood — another centre, more hops, the other direction —
+  fits, because that is a different picture. The exception is a camera left
+  pointing at nothing, since the server lays the whole graph out afresh every
+  time and a blank sheet is worse than a moved one.
+- **One tree, not a tree beside a list.** `folderNodes` in `collection.js`
+  builds it once and both rails draw it: the Views page narrows its table with
+  it, and a drawing navigates with it. Three things it must keep doing —
+  (1) a single root that holds the whole collection is not drawn, because "All
+  views 86" and, indented under it, "Views 86" is the same list twice, and the
+  folders that divide anything were a level further down; Elements, with seven
+  top-level folders, is unaffected. (2) Where a spec declares `leaves`, what is
+  filed in a folder hangs off it — the drawing page used to carry a folder tree
+  above a flat list of the drawings in the chosen folder, which is eighty-six
+  names twice and a fold to keep in step between them. (3) A leaf is picked the
+  way its page picks things: on the Views list a click selects and a
+  double-click opens, because that is what its rows do; on a drawing a click
+  opens, because that rail is the way from one drawing to the next.
 - **One selection, one place for it.** A single click anywhere — a row, a
   figure, a graph node — sets the current concept and fills the inspector;
   nothing navigates on a single click. `#/element/ID` opens the collection it
@@ -153,7 +187,12 @@ pages. Care at the call site is what failed, so the rules are tests now. Read
   Surfaces stay in step through the `amcli:select` event.
 - **Every popover is `position: fixed` and placed by `anchorTo`.** Each
   container that holds a trigger clips its own overflow — that is how the old
-  search results were sliced 32px short of their right edge.
+  search results were sliced 32px short of their right edge, and how a focus
+  ring drawn outside a search field came to be a bracket down its right-hand
+  side and nothing on the other three edges. A ring inside a clipped rail is
+  drawn inward, `outline-offset: calc(-1 * var(--focus-w))`, exactly as a
+  full-bleed table row's is; the rail itself is stretched to the bar's height
+  so that nothing else in it is clipped top and bottom.
 - **The panes fold in the order of what a reader can do without**: the details
   of one concept first, then navigation. The filters go last, because a table
   you cannot narrow is a table you cannot use. The breakpoints are the

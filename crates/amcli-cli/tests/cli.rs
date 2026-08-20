@@ -2019,6 +2019,34 @@ fn page_modules_decide_no_lengths() {
     );
 }
 
+/// One matcher, behind every search box. Each box used to decide for itself
+/// what a match was, and all four decided the same thing — `includes` on a
+/// lowercased name — which meant a reader had to spell a name the way the file
+/// spells it, four times over. `fuzzy.js` is the answer now; a second copy of
+/// the question is a matcher that was written at a call site again.
+#[test]
+fn one_matcher_behind_every_search() {
+    let mut sins = Vec::new();
+    for (rel, src) in web_asset_paths("js") {
+        if rel == "fuzzy.js" {
+            continue; // it is the matcher, and it says what it replaced
+        }
+        for (n, line) in src.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
+            if line.contains("toLowerCase().includes(") {
+                sins.push(format!(
+                    "{rel}:{}: a search of its own — use matches() from fuzzy.js",
+                    n + 1
+                ));
+            }
+        }
+    }
+    assert!(sins.is_empty(), "searching is fuzzy.js's job:\n  {}", sins.join("\n  "));
+}
+
 /// Chrome icons are drawn, not typed. Fifteen unicode characters used to stand
 /// in for an icon set, each at the surrounding font's size, on its own
 /// baseline, in whatever face the platform had — sitting on the same line as a

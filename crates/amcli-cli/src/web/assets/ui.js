@@ -262,11 +262,39 @@ export function toolbar({ title, titleIcon, meta, controls, trailing, leading })
   rail.append(...items, anchor);
   bar.append(rail, h("div", { class: "toolbar-trail" }, (trailing || []).filter(Boolean)));
 
+  // True when the bar is already arranged for the width it has: what is in it
+  // fits, and what is in the menu would not come back. The second half can
+  // only be answered by trying it, since a width is not knowable otherwise —
+  // so it is tried and undone in the same breath, before the page is painted.
+  function settled() {
+    if (rail.scrollWidth > rail.clientWidth) return false;
+    const first = spill.firstElementChild;
+    if (!first) return true;
+    // A menu the reader is typing into is not furniture to be rearranged.
+    if (spill.contains(document.activeElement)) return true;
+    rail.insertBefore(first, anchor);
+    const room = rail.scrollWidth <= rail.clientWidth;
+    if (!room) spill.prepend(first);
+    return !room;
+  }
+
+  // A reflow that changes nothing must touch nothing. Moving a node in the DOM
+  // blurs whatever is focused inside it, and this bar is resized by its own
+  // contents: the count beside the title is narrower at "6 of 272" than at
+  // "272 of 272", so every letter typed into the filter box resized the rail,
+  // and a reflow that re-inserted every control unconditionally took the box
+  // away from under the reader after each one.
   function reflow() {
     // The panel is parked at fixed coordinates that a resize invalidates, and
     // its contents are about to move back into the bar. Shut it first, or
     // widening the window leaves an orphaned panel that reappears by itself.
-    close();
+    if (!spill.contains(document.activeElement)) close();
+    if (settled()) {
+      const out = spill.children.length > 0;
+      anchor.hidden = !out;
+      more.hidden = !out;
+      return;
+    }
     for (const c of items) rail.insertBefore(c, anchor);
     anchor.hidden = true;
     more.hidden = true;
@@ -552,16 +580,22 @@ export function dataTable(opts) {
 // path was a 41-entry flat `<select>` on one page and a tree on another; the
 // same shape has to look the same wherever it is asked for.
 //
-// nodes = [{ key, label, count, depth, hasKids, title }] — already flattened
-// by the caller, which knows what is collapsed.
-export function tree({ nodes, active, onPick, onToggle, isOpen, label }) {
+// nodes = [{ key, label, count, depth, hasKids, title, icon }] — already
+// flattened by the caller, which knows what is collapsed.
+//
+// A node with no `count` is a leaf: it stands for one thing rather than for a
+// group of things, so it carries an icon saying what kind of thing it is where
+// a folder carries how many it holds. `active` is what the tree is narrowed to
+// and `selected` is the concept being read — two different answers that used
+// to have to share one highlight.
+export function tree({ nodes, active, selected, onPick, onOpen, onToggle, isOpen, label }) {
   const box = h("div", { class: "tree", role: "tree", "aria-label": label || "Folders" });
   nodes.forEach((n, i) => {
     const on = n.key === active;
     const row = h("div", {
-      class: cls("tree-row", on && "is-active", !n.count && "is-empty"),
+      class: cls("tree-row", on && "is-active", n.key === selected && "is-selected", n.count === 0 && "is-empty"),
       role: "treeitem",
-      "aria-selected": String(on),
+      "aria-selected": String(on || n.key === selected),
       "aria-expanded": n.hasKids ? String(isOpen(n.key)) : null,
       "aria-level": String(n.depth + 1),
       tabindex: on || (!active && i === 0) ? 0 : -1,
@@ -572,6 +606,7 @@ export function tree({ nodes, active, onPick, onToggle, isOpen, label }) {
       style: { paddingLeft: `calc(var(--sp-2) + ${n.depth} * var(--tree-indent))` },
       dataset: { key: n.key },
       onclick: () => onPick(n.key),
+      ondblclick: onOpen ? () => onOpen(n.key) : null,
     },
       n.hasKids
         ? h("button", {
@@ -579,9 +614,9 @@ export function tree({ nodes, active, onPick, onToggle, isOpen, label }) {
             "aria-label": isOpen(n.key) ? `Collapse ${n.label}` : `Expand ${n.label}`,
             onclick: (e) => { e.stopPropagation(); onToggle(n.key); },
           }, icon(isOpen(n.key) ? "chevron-down" : "chevron-right"))
-        : h("span", { class: "twisty" }),
+        : h("span", { class: "twisty" }, n.icon || null),
       h("span", { class: "tree-label ellipsis" }, n.label),
-      h("span", { class: "tree-n" }, fmt(n.count)));
+      n.count === undefined || n.count === null ? null : h("span", { class: "tree-n" }, fmt(n.count)));
     box.appendChild(row);
   });
 

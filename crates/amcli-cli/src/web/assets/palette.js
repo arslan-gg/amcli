@@ -11,6 +11,9 @@ import { store, search, elem, view, rel } from "./store.js";
 import { typeIcon } from "./notation.js";
 import { icon } from "./icons.js";
 import { emptyState } from "./ui.js";
+// `mark` here is the local one that moves the highlight down the list; the
+// matcher's is the one that underlines letters inside a row.
+import { matches as looksLike, mark as underline } from "./fuzzy.js";
 import { href } from "./router.js";
 
 let root = null;
@@ -113,10 +116,8 @@ function draw(q) {
   hits = [];
   at = 0;
 
-  const needle = q.trim().toLowerCase();
-  const cmds = needle
-    ? commands().filter((c) => c.label.toLowerCase().includes(needle))
-    : commands();
+  const needle = q.trim();
+  const cmds = needle ? commands().filter((c) => looksLike(needle, c.label)) : commands();
 
   const group = (title, items) => {
     if (!items.length) return;
@@ -133,7 +134,7 @@ function draw(q) {
         "aria-selected": "false",
         onclick: (e) => { e.preventDefault(); it.run(); },
         onmousemove: () => { at = hits.indexOf(it); mark(); },
-      }, it.icon, h("span", { class: "ellipsis" }, it.label), h("span", { class: "hit-type" }, it.hint));
+      }, it.icon, h("span", { class: "ellipsis" }, underline(it.label, needle)), h("span", { class: "hit-type" }, it.hint));
       hits.push(it);
       list.appendChild(row);
     }
@@ -163,7 +164,7 @@ function draw(q) {
   if (!hits.length) {
     list.appendChild(emptyState({
       iconName: "search", title: "No match",
-      body: `Nothing in this model is called “${q.trim()}”.`,
+      body: `Nothing in this model has the letters of “${q.trim()}” in its name.`,
     }));
   }
   box?.setAttribute("aria-expanded", String(hits.length > 0));

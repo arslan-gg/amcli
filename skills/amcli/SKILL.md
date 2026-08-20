@@ -355,7 +355,8 @@ chosen depth, or the whole model when nothing is centred, with SVG and PNG of
 whatever is on screen. What narrows a page — the folder tree, the filters, the
 pinned elements — is in the sidebar on the left; whatever was last clicked is
 described in the panel on the right; and ⌘K searches the whole model from
-anywhere. Nothing on the page edits anything, and the process writes nothing —
+anywhere — by the letters rather than the spelling, so initials and a typo
+still find the thing, and every box on the page searches the same way. Nothing on the page edits anything, and the process writes nothing —
 it is the one command that keeps running after it has answered, so **run it in
 the background** (`amcli web --no-open &`, or a second terminal) and hand the URL
 to the person. Stdout is one tab-separated record — the URL, then the model

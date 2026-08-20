@@ -104,6 +104,13 @@ applyRail(railPref == null ? narrowerThan("--fold-rail") : railPref === "1", rai
 const paletteBtn = document.getElementById("open-palette");
 paletteBtn.addEventListener("click", openPalette);
 
+// The wordmark goes home, which is the list of views — the same place an empty
+// hash lands on, and the one page that describes the model rather than a
+// corner of it.
+const brand = document.getElementById("brand");
+brand.href = href("views");
+brand.title = "Views — the front of the model";
+
 const nav = document.getElementById("nav");
 function buildNav() {
   clear(nav);

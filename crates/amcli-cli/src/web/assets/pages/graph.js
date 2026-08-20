@@ -16,6 +16,7 @@ import { ensureSymbols, nodeGroup, relStyle, typeOf, typeIcon } from "../notatio
 import { icon } from "../icons.js";
 import { toolbar, filterBar, chip, button, iconButton, segmented, selectField, searchField, emptyState, hint, anchorTo } from "../ui.js";
 import { replaceParams } from "../router.js";
+import { mark } from "../fuzzy.js";
 import { attachPanZoom } from "../panzoom.js";
 import { select, selectedId, clearSelection, railContext } from "../app.js";
 import { pins, isPinned, setPin, clearPins, replacePins, onPins } from "../pins.js";
@@ -94,18 +95,18 @@ export function mount(main, route) {
     {
       key: "layer", label: "Layers", noun: "layers", hidden: hidden.layer,
       values: () => LAYERS.filter((l) => layerN.has(l)).map((l) => ({ value: l, label: l, count: layerN.get(l), swatch: layerFill(l) })),
-      onChange: () => { state.confirmed = false; push(); filters.redraw(); build(); },
+      onChange: () => { state.confirmed = false; push(); filters.redraw(); build({ keep: true }); },
     },
     {
       key: "type", label: "Types", noun: "types", hidden: hidden.type,
       values: () => [...typeN.keys()].filter((t) => !hidden.layer.has(typeOf(t).layer)).sort()
         .map((t) => ({ value: t, label: t, count: typeN.get(t), swatch: typeOf(t).fill })),
-      onChange: () => { state.confirmed = false; push(); build(); },
+      onChange: () => { state.confirmed = false; push(); build({ keep: true }); },
     },
     {
       key: "kind", label: "Kinds", noun: "kinds", hidden: hidden.kind,
       values: () => [...kindN.keys()].sort().map((t) => ({ value: t, label: relLabel(t), count: kindN.get(t) })),
-      onChange: () => { state.confirmed = false; push(); build(); },
+      onChange: () => { state.confirmed = false; push(); build({ keep: true }); },
     },
   ];
   const filters = filterBar(dims);
@@ -135,7 +136,7 @@ export function mount(main, route) {
     }
     if (live.length > 1) pinRow.appendChild(chip({ label: "Unpin all", onclick: clearPins }));
   }
-  const stopWatchingPins = onPins(() => { push(); drawPins(); build(); });
+  const stopWatchingPins = onPins(() => { push(); drawPins(); build({ keep: true }); });
 
   /* ---- the canvas -------------------------------------------------------- */
   const canvas = h("div", { class: "canvas" });
@@ -239,7 +240,7 @@ export function mount(main, route) {
       list.appendChild(h("a", {
         class: "palette-hit", href: "#",
         onclick: (ev) => { ev.preventDefault(); recentre(e.id); },
-      }, typeIcon(e.type), h("span", { class: "ellipsis" }, e.name), h("span", { class: "hit-type" }, e.type)));
+      }, typeIcon(e.type), h("span", { class: "ellipsis" }, mark(e.name || "", q)), h("span", { class: "hit-type" }, e.type)));
     }
     hits.appendChild(list);
     hits.hidden = false;
@@ -263,7 +264,14 @@ export function mount(main, route) {
   });
 
   /* ---- building ---------------------------------------------------------- */
-  function build() {
+  // `keep` asks the redraw not to move the camera. A redraw the reader did not
+  // ask to move must not move: pinning one box adds one node to the picture,
+  // and refitting the whole graph for it threw away the scale and the corner
+  // they had navigated to. Narrowing — a pin, a filter — keeps the camera;
+  // asking for a different neighbourhood — another centre, more hops, the
+  // other way round — fits, because that is a different picture. The one
+  // exception is in `draw`.
+  function build({ keep = false } = {}) {
     const set = chooseNodes();
     if (set === null) return;
     const want = [...set].sort((a, b) => a - b);
@@ -277,7 +285,7 @@ export function mount(main, route) {
       .then((placed) => {
         if (!alive || mine !== generation) return;
         msg.hidden = true;
-        draw(want, placed);
+        draw(want, placed, keep);
       })
       .catch((e) => {
         if (!alive || mine !== generation) return;
@@ -354,7 +362,7 @@ export function mount(main, route) {
   }
 
   /* ---- drawing ----------------------------------------------------------- */
-  function draw(want, placed) {
+  function draw(want, placed, keep) {
     clear(gEdges); clear(gNodes);
     nodes = want.map((i, at) => {
       const [x, y, w, hh] = placed.nodes[at];
@@ -412,7 +420,11 @@ export function mount(main, route) {
       gNodes.appendChild(g);
     }
     position();
-    fitAll();
+    // The exception to `keep`: a camera left pointing at nothing. The server
+    // lays the whole picture out again for every redraw, so a graph that has
+    // just lost most of its nodes to a filter can end up nowhere near where
+    // the reader was looking — and a blank sheet is worse than a moved one.
+    if (!keep || !meets(pz.viewBox, box)) fitAll();
     drawLegend();
     markSelection(selectedId());
   }
@@ -485,6 +497,10 @@ export function mount(main, route) {
     if (!nodes.length) return;
     pz.fit(extent(), 40);
   }
+
+  // Do the camera and the drawing have any pixel in common?
+  const meets = (a, b) =>
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
   /* ---- taking it away ----------------------------------------------------
      A graph is not saved, so there is no id for the server to render from and

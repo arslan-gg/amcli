@@ -35,6 +35,14 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: var(--track-tight); }
 p { margin: 0; }
 [hidden] { display: none !important; }
 
+/* Which letters a search matched, wherever a name is shown while one is being
+   typed. A search that matches loosely has to say why a row is there, and it
+   says it in the ink already on the row: a hairline under the letters and a
+   little more weight. Not a highlighter — a mark lands in a table cell, in a
+   palette row and inside a selected row alike, and the palette has no colour
+   to spend on it. */
+mark { background: none; color: inherit; font-weight: 600; box-shadow: inset 0 -1px 0 currentColor; }
+
 /* One focus treatment, on everything. There was none at all before, and the
    table's sort buttons and the folder tree could not be reached at all. */
 :focus { outline: none; }
@@ -212,7 +220,15 @@ kbd {
      rule below can widen one that has spilled into the overflow menu. */
   width: var(--field-w, auto);
 }
-.field:focus-within { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+/* The ring belongs on the field and not on the input inside it — the input has
+   no border of its own, so a ring there would hug the text rather than the box
+   — and it is drawn *inside*, the way a full-bleed table row's is. A field sits
+   flush against the toolbar's control rail, which clips its own overflow so
+   that nothing spills sideways out of the bar; a ring outside the box was
+   shaved off on three edges and left a bracket down the right-hand side. Drawn
+   inward it is the same two pixels in the same ink as every other focused
+   control, and nothing can trim it. */
+.field:focus-within { outline: var(--focus-w) solid var(--focus); outline-offset: calc(-1 * var(--focus-w)); }
 .field-icon { color: var(--fg-subtle); }
 .field-input {
   flex: 1 1 auto; min-width: 0;
@@ -437,9 +453,14 @@ kbd {
 .toolbar-title .icon { align-self: center; color: var(--fg-muted); }
 .toolbar-title h1 { font-size: var(--fs-lg); white-space: nowrap; }
 .toolbar-meta { font-size: var(--fs-sm); color: var(--fg-subtle); }
+/* Stretched to the bar's full height, not sized to the controls in it: the
+   rail has to clip sideways — that is what sends a control into the overflow
+   menu instead of off the edge — but a rail exactly as tall as a 26px control
+   clipped the top and bottom of every focus ring inside it too. */
 .toolbar-controls {
   display: flex; align-items: center; gap: var(--sp-2);
   flex: 1 1 auto; min-width: 0;
+  align-self: stretch;
   overflow: hidden;
 }
 .toolbar-controls > * { flex: none; }
@@ -501,6 +522,10 @@ kbd {
 }
 .tree-row:hover { background: var(--tint); }
 .tree-row.is-active { background: var(--invert); color: var(--invert-fg); }
+/* The concept being read, marked exactly as a selected table row is. It is not
+   the same thing as `is-active` — that is the folder the tree is narrowed to —
+   and one highlight could not honestly mean both. */
+.tree-row.is-selected { background: var(--tint-firm); box-shadow: inset var(--sp-h) 0 0 var(--fg); }
 .tree-row.is-empty .tree-label { color: var(--fg-subtle); }
 .twisty {
   flex: none;
