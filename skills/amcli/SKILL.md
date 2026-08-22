@@ -70,7 +70,7 @@ Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
 
-This skill is written for **amcli 0.11.0**. The installer always gives you the
+This skill is written for **amcli 0.12.0**. The installer always gives you the
 newest *release*, and this file ships from the repository's main branch, so
 for a short while after a change lands the binary can be one release behind
 what is described here. If a command or flag below is refused, the binary
@@ -354,15 +354,18 @@ graph laid out by the same code `view auto` runs — centred on an element to a
 chosen depth, or the whole model when nothing is centred, with SVG and PNG of
 whatever is on screen. What narrows a page — the folder tree, the filters, the
 pinned elements — is in the sidebar on the left; whatever was last clicked is
-described in the panel on the right; and ⌘K searches the whole model from
-anywhere — by the letters rather than the spelling, so initials and a typo
-still find the thing, and every box on the page searches the same way. Nothing on the page edits anything, and the process writes nothing —
-it is the one command that keeps running after it has answered, so **run it in
-the background** (`amcli web --no-open &`, or a second terminal) and hand the URL
-to the person. Stdout is one tab-separated record — the URL, then the model
-path — so the URL is `cut -f1`; `-q` drops the header and the note on stderr
-but not the second field. `-F json` puts both in the usual envelope. Ctrl-C
-stops it, and nothing needs cleaning up.
+described in the panel on the right; moving between pages keeps a reader's
+place, so the filters they set and the corner of a drawing or of the graph
+they had zoomed into are still there when they come back; and ⌘K searches the
+whole model from anywhere — by the letters rather than the spelling, so
+initials and a typo still find the thing, and every box on the page searches
+the same way. Nothing on the page edits anything, and the process writes
+nothing — it is the one command that keeps running after it has answered, so
+**run it in the background** (`amcli web --no-open &`, or a second terminal)
+and hand the URL to the person. Stdout is one tab-separated record — the URL,
+then the model path — so the URL is `cut -f1`; `-q` drops the header and the
+note on stderr but not the second field. `-F json` puts both in the usual
+envelope. Ctrl-C stops it, and nothing needs cleaning up.
 
 The page follows the file: keep editing the model with amcli in the same
 session and the browser picks up each write within a couple of seconds, so a
