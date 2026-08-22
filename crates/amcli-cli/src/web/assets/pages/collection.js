@@ -15,15 +15,16 @@ import { typeIcon, typeOf, accessLabel } from "../notation.js";
 import { icon } from "../icons.js";
 import { toolbar, filterBar, dataTable, tree, searchField, countLabel } from "../ui.js";
 import { href, replaceParams } from "../router.js";
+import { keepParams } from "../kept.js";
 import { select, selectedId, railContext } from "../app.js";
 
 const LAYERS = ["Strategy", "Business", "Application", "Technology", "Physical", "Motivation", "Implementation & Migration", "Other"];
 
-// Which branches are folded, and how each collection was last left. Kept for
-// the session so that opening a drawing and coming back lands on the rows it
-// was opened from rather than at the top of all eighty-six.
+// Which branches are folded. Kept for the visit, like the query each
+// collection was last left under — that one lives in `kept.js`, because the
+// nav needs it too — so that opening a drawing and coming back lands on the
+// rows it was opened from rather than at the top of all eighty-six.
 const folded = new Map();   // kind → Set of folder paths
-const lastLeft = new Map(); // kind → params
 
 const cell = (...kids) => h("span", { class: "cell" }, kids);
 
@@ -216,7 +217,7 @@ export function mount(main, route) {
       dir: state.dir === "asc" ? "" : state.dir,
     };
     for (const d of spec.dimensions) params[`no_${d.key}`] = [...hidden[d.key]].join(",");
-    lastLeft.set(spec.kind, params);
+    keepParams(spec.kind, params);
     replaceParams(params);
   };
   push();
@@ -555,9 +556,4 @@ export function viewsScope(viewId) {
 
   drawTree();
   return box;
-}
-
-// Where a "back to the list" button should go.
-export function lastListParams(kind) {
-  return lastLeft.get(kind) || {};
 }

@@ -11,6 +11,7 @@ import { parse, onRoute, href } from "./router.js";
 import { icon } from "./icons.js";
 import { iconButton, emptyState } from "./ui.js";
 import { openPalette, closePalette, paletteIsOpen } from "./palette.js";
+import { lastParams } from "./kept.js";
 import { renderConcept } from "./pages/detail.js";
 import * as collection from "./pages/collection.js";
 import * as viewPage from "./pages/view.js";
@@ -111,11 +112,27 @@ const brand = document.getElementById("brand");
 brand.href = href("views");
 brand.title = "Views — the front of the model";
 
+// A nav entry goes back to the page as the reader left it — their folder,
+// their search, the layers they hid, the centre the graph was on — which is
+// what `kept.js` holds and what the bare route in the href does not. It is
+// resolved on the click rather than written into the href, because a href
+// built when the nav was would be one filter out of date by the second letter
+// typed into a box, and because the link that is copied, opened in a tab or
+// read off the status bar should be the plain page. The wordmark is the other
+// route: it goes to Views whole, which is how a reader gets out of a filter
+// they no longer want.
 const nav = document.getElementById("nav");
 function buildNav() {
   clear(nav);
   for (const n of NAV) {
-    nav.appendChild(h("a", { href: href(n.page), dataset: { page: n.page }, title: n.label },
+    nav.appendChild(h("a", {
+      href: href(n.page), dataset: { page: n.page }, title: n.label,
+      onclick: (e) => {
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        location.hash = href(n.page, null, lastParams(n.page));
+      },
+    },
       icon(n.iconName),
       h("span", { class: "nav-label" }, n.label),
       n.count ? h("span", { class: "nav-n" }, fmt(n.count(store.data))) : null));
@@ -146,7 +163,7 @@ export function select(id, opts = {}) {
   const where = { element: ["elements", "Elements"], relation: ["relations", "Relationships"], view: ["views", "Views"] }[found.kind];
   inspectorActions.append(
     where ? iconButton(where[0] === "views" ? "view" : where[0], `Find this in ${where[1]}`,
-      () => { location.hash = href(where[0], null, collection.lastListParams(where[0])); }, { variant: "quiet" }) : null,
+      () => { location.hash = href(where[0], null, lastParams(where[0])); }, { variant: "quiet" }) : null,
   );
   renderConcept(inspectorBody, id);
   if (opts.focus !== false) inspectorBody.scrollTop = 0;

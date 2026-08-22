@@ -167,6 +167,20 @@ pages. Care at the call site is what failed, so the rules are tests now. Read
   fits, because that is a different picture. The exception is a camera left
   pointing at nothing, since the server lays the whole graph out afresh every
   time and a blank sheet is worse than a moved one.
+- **Leaving a page is not asking it to forget.** `kept.js` holds, for the
+  visit, the query each page was last left under and where each picture's
+  camera was pointing; both are the reader's own work and neither can be
+  rebuilt from the file. A nav entry resolves its destination through
+  `lastParams` *on the click*, not into its href, which would be one filter out
+  of date by the second letter typed; the wordmark stays the bare route, so
+  there is still one way to Views whole. A camera is filed under the picture it
+  was pointing at — `view:<id>`, or the graph's centre, hops and direction, the
+  three things that make it a different picture — and taken again by
+  `pz.resume(box)` on the first drawing after a mount, which refuses a seat
+  that no longer meets the drawing for the same reason `keep` does. It is a
+  centre and a scale, never a viewBox: the pane is not the same width on the
+  way back. None of it outlives the tab; what is worth keeping longer is in
+  localStorage, as the pins and the pane widths are.
 - **One tree, not a tree beside a list.** `folderNodes` in `collection.js`
   builds it once and both rails draw it: the Views page narrows its table with
   it, and a drawing navigates with it. Three things it must keep doing —

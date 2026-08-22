@@ -8,7 +8,8 @@ import { href } from "../router.js";
 import { attachPanZoom } from "../panzoom.js";
 import { toolbar, button, iconButton, emptyState, badge } from "../ui.js";
 import { select, selectedId, clearSelection, railContext } from "../app.js";
-import { lastListParams, viewsScope } from "./collection.js";
+import { lastParams } from "../kept.js";
+import { viewsScope } from "./collection.js";
 
 export function mount(main, route) {
   const found = store.byId.get(route.id);
@@ -22,7 +23,7 @@ export function mount(main, route) {
 }
 
 function backButton() {
-  return button({ iconName: "chevron-left", label: "Views", title: "Back to the list of views", href: href("views", null, lastListParams("views")) });
+  return button({ iconName: "chevron-left", label: "Views", title: "Back to the list of views", href: href("views", null, lastParams("views")) });
 }
 
 function render(main, vi, focus) {
@@ -79,8 +80,13 @@ function render(main, vi, focus) {
       svg.removeAttribute("height");
       svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
       canvas.insertBefore(svg, hud);
-      pz = attachPanZoom(svg, canvas, { maxFitScale: 1.25 });
-      pz.fit(box);
+      pz = attachPanZoom(svg, canvas, { maxFitScale: 1.25, seat: `view:${v.id}` });
+      // Where this drawing was last left, if it has been read already this
+      // visit. Opening another page and coming back is not asking for the
+      // picture to be refitted — the corner of a large drawing a reader
+      // navigated to is theirs, and finding it again is the whole cost of
+      // stepping away from it.
+      if (!pz.resume(box)) pz.fit(box);
       hud.append(
         iconButton("fit", "Fit to the window", () => pz.fit(box)),
         iconButton("plus", "Zoom in", () => pz.zoomIn()),

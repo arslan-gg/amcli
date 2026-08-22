@@ -17,9 +17,10 @@ import { icon } from "../icons.js";
 import { toolbar, filterBar, chip, button, iconButton, segmented, selectField, searchField, emptyState, hint, anchorTo } from "../ui.js";
 import { replaceParams } from "../router.js";
 import { mark } from "../fuzzy.js";
-import { attachPanZoom } from "../panzoom.js";
+import { attachPanZoom, meets } from "../panzoom.js";
 import { select, selectedId, clearSelection, railContext } from "../app.js";
 import { pins, isPinned, setPin, clearPins, replacePins, onPins } from "../pins.js";
+import { keepParams } from "../kept.js";
 
 const LAYERS = ["Strategy", "Business", "Application", "Technology", "Physical", "Motivation", "Implementation & Migration", "Other"];
 const WARN_AT = 400;   // ask before drawing more than this
@@ -43,15 +44,29 @@ export function mount(main, route) {
     type: new Set((p.get("no_type") || "").split(",").filter(Boolean)),
     kind: new Set((p.get("no_kind") || "").split(",").filter(Boolean)),
   };
-  const push = () => replaceParams({
-    focus: state.focus,
-    depth: state.depth === 2 ? "" : String(state.depth),
-    dir: state.dir === "both" ? "" : state.dir,
-    pin: pins().join(","),
-    no_layer: [...hidden.layer].join(","),
-    no_type: [...hidden.type].join(","),
-    no_kind: [...hidden.kind].join(","),
-  });
+  const push = () => {
+    const params = {
+      focus: state.focus,
+      depth: state.depth === 2 ? "" : String(state.depth),
+      dir: state.dir === "both" ? "" : state.dir,
+      pin: pins().join(","),
+      no_layer: [...hidden.layer].join(","),
+      no_type: [...hidden.type].join(","),
+      no_kind: [...hidden.kind].join(","),
+    };
+    // The URL is where a graph's shape is recorded, and `kept.js` is where the
+    // nav reads it back from: `#/graph` written fresh by a nav link carries no
+    // centre, no hops and no filters, and arriving at the whole model again
+    // was the reader's neighbourhood thrown away for a click.
+    keepParams("graph", params);
+    replaceParams(params);
+  };
+  push();
+
+  // Which picture the camera is pointing at. Filters and pins narrow a
+  // picture; a centre, a hop count and a direction *are* the picture, so those
+  // three name the seat and the other two do not.
+  const picture = () => `graph:${state.focus}:${state.depth}:${state.dir}`;
 
   /* ---- the toolbar ------------------------------------------------------- */
   // The centre is a chip, not text left in the search box: typing a name is
@@ -160,7 +175,7 @@ export function mount(main, route) {
 
   // The floor stops a drawing far wider than the pane being shrunk until every
   // box is a fraction of a pixel and the canvas looks empty.
-  const pz = attachPanZoom(svg, canvas, { maxFitScale: 1.25, minFitScale: 0.14 });
+  const pz = attachPanZoom(svg, canvas, { maxFitScale: 1.25, minFitScale: 0.14, seat: picture });
   hud.append(
     iconButton("fit", "Fit to the window", () => fitAll()),
     iconButton("plus", "Zoom in", () => pz.zoomIn()),
@@ -169,6 +184,7 @@ export function mount(main, route) {
   let nodes = [], links = [];
   let generation = 0;
   let alive = true;
+  let fresh = true;   // nothing has been drawn on this canvas yet
 
   /* ---- centring ---------------------------------------------------------- */
   // The whole model is not centred on anything: the node set is every element
@@ -420,11 +436,16 @@ export function mount(main, route) {
       gNodes.appendChild(g);
     }
     position();
-    // The exception to `keep`: a camera left pointing at nothing. The server
-    // lays the whole picture out again for every redraw, so a graph that has
-    // just lost most of its nodes to a filter can end up nowhere near where
-    // the reader was looking — and a blank sheet is worse than a moved one.
-    if (!keep || !meets(pz.viewBox, box)) fitAll();
+    // Where the camera points. `keep` holds it exactly where it is, with one
+    // exception: a camera left pointing at nothing. The server lays the whole
+    // picture out again for every redraw, so a graph that has just lost most
+    // of its nodes to a filter can end up nowhere near where the reader was
+    // looking — and a blank sheet is worse than a moved one. Failing that, a
+    // first drawing takes the seat this picture was last left in, because
+    // coming back from another page is not asking for a different picture.
+    const held = keep && meets(pz.viewBox, box);
+    if (!held && !(fresh && pz.resume(box))) fitAll();
+    fresh = false;
     drawLegend();
     markSelection(selectedId());
   }
@@ -497,10 +518,6 @@ export function mount(main, route) {
     if (!nodes.length) return;
     pz.fit(extent(), 40);
   }
-
-  // Do the camera and the drawing have any pixel in common?
-  const meets = (a, b) =>
-    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
   /* ---- taking it away ----------------------------------------------------
      A graph is not saved, so there is no id for the server to render from and

@@ -36,6 +36,7 @@ pub const ASSETS: &[(&str, &str, &str)] = &[
     ("/icons.js", "text/javascript; charset=utf-8", include_str!("assets/icons.js")),
     ("/palette.js", "text/javascript; charset=utf-8", include_str!("assets/palette.js")),
     ("/pins.js", "text/javascript; charset=utf-8", include_str!("assets/pins.js")),
+    ("/kept.js", "text/javascript; charset=utf-8", include_str!("assets/kept.js")),
     ("/store.js", "text/javascript; charset=utf-8", include_str!("assets/store.js")),
     ("/fuzzy.js", "text/javascript; charset=utf-8", include_str!("assets/fuzzy.js")),
     ("/router.js", "text/javascript; charset=utf-8", include_str!("assets/router.js")),

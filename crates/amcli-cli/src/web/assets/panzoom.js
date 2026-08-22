@@ -2,11 +2,26 @@
 // a rendered view straight from the server, or a graph we drew — is left
 // untouched. Wheel zooms about the cursor; dragging the background pans.
 
+import { keepCamera, lastCamera } from "./kept.js";
+
 export function attachPanZoom(svg, container, opts = {}) {
   const state = { x: 0, y: 0, w: 100, h: 100, content: null };
   let dragging = null;
 
-  const apply = () => svg.setAttribute("viewBox", `${state.x} ${state.y} ${state.w} ${state.h}`);
+  // Which picture this camera is pointing at, for `kept.js` to file it under —
+  // given as a function where the picture changes under a canvas that stays,
+  // which is what recentring the graph does.
+  const seat = () => (typeof opts.seat === "function" ? opts.seat() : opts.seat);
+
+  const apply = () => {
+    svg.setAttribute("viewBox", `${state.x} ${state.y} ${state.w} ${state.h}`);
+    // Every move is remembered, because the reader never says when they have
+    // finished looking. A pane with no width yet is not a place to remember.
+    const cw = container.clientWidth;
+    if (opts.seat && cw > 0 && state.w > 0) {
+      keepCamera(seat(), { cx: state.x + state.w / 2, cy: state.y + state.h / 2, scale: cw / state.w });
+    }
+  };
 
   // Fit `box` ({x,y,w,h}) into the container with a margin.
   //
@@ -28,6 +43,25 @@ export function attachPanZoom(svg, container, opts = {}) {
     state.x = box.x + box.w / 2 - state.w / 2;
     state.y = box.y + box.h / 2 - state.h / 2;
     apply();
+  };
+
+  // Take the seat this picture was last left in — the answer is whether there
+  // was one, so a page can fit instead when there was not. A seat pointing at
+  // nothing is refused: the drawing behind it may have been laid out afresh or
+  // changed on disk while the reader was elsewhere, and a blank sheet is worse
+  // than a moved one.
+  const resume = (box) => {
+    const was = opts.seat ? lastCamera(seat()) : null;
+    if (!was || !(was.scale > 0)) return false;
+    const cw = container.clientWidth || 800, ch = container.clientHeight || 600;
+    const at = { w: cw / was.scale, h: ch / was.scale };
+    at.x = was.cx - at.w / 2;
+    at.y = was.cy - at.h / 2;
+    if (box && !meets(at, box)) return false;
+    Object.assign(state, at);
+    if (box) state.content = box;
+    apply();
+    return true;
   };
 
   const actual = () => {
@@ -115,7 +149,7 @@ export function attachPanZoom(svg, container, opts = {}) {
   };
 
   return {
-    fit, actual, toSvg, apply,
+    fit, actual, resume, toSvg, apply,
     zoomIn: () => { const r = container.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, 0.8); },
     zoomOut: () => { const r = container.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1.25); },
     get viewBox() { return { ...state }; },
@@ -129,3 +163,8 @@ export function attachPanZoom(svg, container, opts = {}) {
     },
   };
 }
+
+// Do two boxes have any pixel in common? The camera against the drawing: a
+// camera that meets nothing is pointing at a blank sheet.
+export const meets = (a, b) =>
+  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
